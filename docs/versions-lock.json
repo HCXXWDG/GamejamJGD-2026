@@ -2,7 +2,7 @@
   "SchemaVersion": 1,
   "RecordedOn": "2026-10-03",
   "Repository": "https://github.com/HCXXWDG/GamejamJGD-2026",
-  "Status": "project_repository_initialized",
+  "Status": "initial_git_commit_pushed",
   "ProjectCreated": true,
   "Engine": {
     "Distribution": "Epic Games Launcher",
@@ -235,10 +235,13 @@
     "JamProjectOpenTested": true,
     "JamProjectCompileTested": false,
     "JamProjectPackageTested": false,
-    "GitHubRepositoryWritten": false,
+    "GitHubRepositoryWritten": true,
     "GitInitializedInWorkspace": true,
     "Paper2DLoadedFromProjectLog": true,
-    "ProjectFilesStagedLocally": true
+    "ProjectFilesStagedLocally": true,
+    "InitialGitHubPushMatchedLocalCommit": true,
+    "InitialProjectCommitSHA": "14d4ca1a4bff441bea5c1ff5a97893c93f1b3c24",
+    "LfsObjectsIncludedInSuccessfulPush": 145
   },
   "ProjectTemplate": "Games > Blank > C++",
   "RequiredEnginePlugins": [
