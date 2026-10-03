@@ -2,11 +2,11 @@
 
 适用仓库：[HCXXWDG/GamejamJGD-2026](https://github.com/HCXXWDG/GamejamJGD-2026)。制定日期：2026-10-03。
 
-本规范适用于几位程序共同开发的短期 UE Game Jam。工程尚未创建；以下版本依据发起人的本机实测制定。默认开发与交付平台为 Windows / Win64，赛题要求其他平台时，在建工程前统一修改平台和工具链基线。完整检测记录见 [环境与插件版本](docs/ENVIRONMENT.md)。
+本规范适用于几位程序共同开发的短期 UE Game Jam。JGD2026 工程已创建并纳入本仓库；团队版本基线依据发起人本机当前 UE 安装及项目配置记录。默认开发与交付平台为 Windows / Win64，赛题要求其他平台时，团队需统一修改平台和工具链基线。完整检测记录见 [环境与插件版本](docs/ENVIRONMENT.md)。
 
 ## 1. 开工前必须达成的十条约定
 
-1. 全员使用 **Epic Games Launcher 版 UE 5.8.2，Changelist 56702186**；比赛期间冻结引擎与项目插件版本。
+1. 全员使用 **Epic Games Launcher 版 UE 5.8.3，Changelist 58210709**；比赛期间冻结引擎与项目插件版本。
 2. 使用 Git + Git LFS；所有 `.uasset`、`.umap` 都走 LFS，修改已有文件前先取得文件锁。
 3. `main` 始终尽力保持可打开、可运行、可打包；开发放在任务短分支，通过 PR 合并。
 4. 一个蓝图、一个地图文件，同一时间只有一人编辑；程序代码按功能拆分，公共接口改动先与使用方确认。
@@ -21,8 +21,8 @@
 
 | 项目 | 团队规定 | 说明 |
 | --- | --- | --- |
-| UE | **5.8.2 / CL 56702186 / `++UE5+Release-5.8`** | 必须一致，包括补丁版本；不用 Preview、源码自改版或其他 UE 版本保存团队资源 |
-| `.uproject` | `EngineAssociation` 使用 `5.8` | 此字段只表示主次版本，仍需查看 `Engine/Build/Build.version` 验证 5.8.2 和 CL |
+| UE | **5.8.3 / CL 58210709 / `++UE5+Release-5.8`** | 必须一致，包括补丁版本；不用 Preview、源码自改版或其他 UE 版本保存团队资源 |
+| `.uproject` | `EngineAssociation` 使用 `5.8` | 该字段表示主次版本；团队补丁版本与 CL 以 `versions-lock.json` 和引擎 `Build.version` 为准 |
 | Git | **2.50.0 或更新的稳定版** | 发起人实测 2.50.0.windows.1；不要求 Git 补丁号一致 |
 | Git LFS | **3.6.1 或更新的稳定版** | 发起人实测 3.6.1；每台机器、每个克隆都要初始化 LFS |
 | UE Git 插件 | 引擎内置 **GitSourceControl 1.4，Version 14** | 可用作编辑器状态提示；团队 Git/LFS 流程以终端命令为准 |
@@ -34,9 +34,9 @@ UE 5.8 对 VS 2026/VS 2022 的支持及工具链要求可查 [Epic 官方说明]
 
 比赛期间不接受“先在自己电脑升级看看，再保存资源到共享分支”。确需升级时，先在独立分支由集成人员完成工程打开、完整编译、PIE 和目标平台打包验证，再统一更新版本记录；旧基线至少保留一个可用提交。
 
-## 3. 仓库内容与首次建立工程
+## 3. 仓库内容与现有工程
 
-工程文件放在仓库根目录，建议统一工程名 `JGD2026`，避免每个人创建自己的工程后互相复制。
+当前工程 `JGD2026` 已放在仓库根目录；所有成员克隆并打开同一个 `.uproject`，不要各自新建工程后复制资源。
 
 ```text
 JGD2026.uproject
@@ -57,28 +57,28 @@ docs/                       # 协作规则、版本记录、接口约定
 
 **无源码的预编译插件是例外：** 必须保留才能使用的 `Plugins/<插件>/Binaries/`，需要在 `.gitignore` 为该插件精确放行，并让二进制走 LFS；同时验证公开分发权限。不要放行整个工程的 `Binaries/`。
 
-首个工程由一名初始化负责人创建并提交：用上述 UE 版本，选择 **Games → Blank → C++**。UE 5.8.2 没有专门的 Paper2D 项目模板；Blank C++ 给多位程序员一个干净、可共同编译的项目骨架，关卡和角色再用 Paper2D 资源及蓝图搭建。不要从 First Person、Third Person、Top Down 或 Motion Design 模板起步，它们会带入不需要的玩法和资产。目标为 Win64 Desktop；如向导询问 Starter Content，关闭。创建后在 Edit → Plugins 中启用 **Paper2D 1.0** 并重启编辑器，确认它写入 `.uproject`；之后全员使用同一引擎版本和同一项目插件清单。Paper2D 提供 Sprite、Flipbook 和 Tile Map 等 2D 组件，具体功能见 [Epic Paper 2D 文档](https://dev.epicgames.com/documentation/en-us/unreal-engine/paper-2d-overview-in-unreal-engine)。若在项目前已经共同决定完全使用蓝图且不提交 C++，只把向导中的 C++ 改为 Blueprint，其他选择不变。提交前先放入 `.gitattributes`，确保资源第一次入库就走 LFS。初始化负责人同时负责首轮插件清单、默认地图和首次打包。后续人员只克隆同一个工程。
+当前 `JGD2026` 工程按 **Games → Blank → C++** 模板创建，目标为 Win64 Desktop，并关闭 Starter Content。Blank C++ 为程序协作提供可共同编译的骨架，2D 游戏功能由 Paper2D 资源与蓝图搭建。项目已启用内置 **Paper2D 1.0** 和 Editor-only 的 **ModelingToolsEditorMode 0.1**；以 `.uproject` 和版本锁文件为准，不要在成员电脑上另建工程。Paper2D 提供 Sprite、Flipbook 和 Tile Map 等 2D 组件，详见 [Epic Paper 2D 文档](https://dev.epicgames.com/documentation/en-us/unreal-engine/paper-2d-overview-in-unreal-engine)。如团队决定改为纯蓝图并不提交 C++，先由集成人员单独验证后再统一修改工程。资源第一次入库前先确认 `.gitattributes` 生效，初始化负责人负责默认地图和首次打包。
 
-当前文件夹尚未初始化 Git，规范也未发布到远端。初始化负责人可在当前工程根目录依次执行以下命令；它们是操作说明，尚未由本文的编写过程执行：
+当前工程已由目标 GitHub 仓库管理。新成员克隆现有仓库并为该克隆配置 Git LFS；不要再次初始化仓库或复制另一份 UE 工程：
 
 ```powershell
-git init -b main
-git remote add origin https://github.com/HCXXWDG/GamejamJGD-2026.git
+git clone https://github.com/HCXXWDG/GamejamJGD-2026.git
+cd GamejamJGD-2026
 git lfs install --local
 git config --local lfs.https://github.com/HCXXWDG/GamejamJGD-2026.git/info/lfs.locksverify true
 git status --short
 ```
 
-检查文件后显式添加要提交的路径，例如先提交协作文件：
+克隆后先同步 main 并创建个人任务分支：
 
 ```powershell
-git add .gitignore .gitattributes CONTRIBUTING.md README.md docs .github
-git diff --cached --stat
-git commit -m "docs: establish UE collaboration baseline"
-git push -u origin main
+git switch main
+git pull --ff-only origin main
+git switch -c feat/xy-example-task
+git status --short
 ```
 
-创建 UE 工程后，另做工程初始化提交；上传资产前用 `git lfs ls-files` 确认已加入 LFS。若仓库已经由别人初始化，直接克隆，不再执行 `git init` 或额外创建无关历史。
+分支名使用本人缩写和实际任务名；完成后按第 4 节提交、推送分支并通过 PR 合并。运行 `git lfs ls-files` 可检查仓库跟踪的 LFS 文件。
 
 ## 4. 分支、提交和 PR
 
@@ -209,7 +209,7 @@ C++ 按 UE 命名与反射规范开发；提交 `.h/.cpp`、模块构建与目�
 
 ## 8. 插件与项目配置变更
 
-内置插件随 **同一份 UE 5.8.2 / CL 56702186** 统一，不因许多描述文件都写 `1.0` 就认为跨引擎版本兼容。项目首次创建后，初始化负责人记录 `.uproject` 显式启用/禁用项，并核对默认启用和依赖带来的插件。
+内置插件随 **UE 5.8.3 / CL 58210709** 统一，不因许多描述文件都写 `1.0` 就认为跨引擎版本兼容。当前 `.uproject` 显式启用 Paper2D 与 Editor-only 的 ModelingToolsEditorMode；新增、移除或改插件必须同步更新版本锁，并检查默认启用项和传递依赖。
 
 引入新插件时单独开 PR，写清：插件名称、来源、`VersionName` / `Version`、Git commit 或发行包 SHA-256、适配引擎、运行时/编辑器用途、依赖、安装路径、许可与全员取得方式。能合法入库的第三方插件优先放 `Plugins/`，避免只装在某人的 Engine 目录。
 

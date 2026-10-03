@@ -1,13 +1,13 @@
 # 环境与插件版本记录
 
-检测日期：2026-10-03。依据是 UE 安装信息、`JGD2026.uproject`、项目日志及 Git 索引。工程已在本机 UE 5.8.2 中打开，日志确认 Paper2D 加载；145 个 UE 资产由仓库属性配置为 Git LFS。
+检测日期：2026-10-03。UE Launcher 安装清单和 `Engine/Build/Build.version` 均确认本机引擎为 UE 5.8.3 / CL 58210709。项目最近一次已知日志仍来自升级前的 UE 5.8.2 / CL 56702186，因此本次尚未验证项目能否在 5.8.3 下打开、编译或打包。仓库属性将 145 个 UE 资产配置为 Git LFS。
 
 ## 1. 检测结果与团队约束
 
 | 项目 | 实测结果 | 团队使用规则 |
 | --- | --- | --- |
-| Launcher 安装 | UE 5.8.2，`5.8.2-56702186+++UE5+Release-5.8-Windows` | 固定此正式发行构建 |
-| `Engine/Build/Build.version` | Major 5 / Minor 8 / Patch 2；CL **56702186**；CompatibleCL **55116800**；Branch **`++UE5+Release-5.8`** | UE 版本与 CL 必须一致 |
+| Launcher 安装 | UE 5.8.3，`5.8.3-58210709+++UE5+Release-5.8-Windows` | 固定此正式发行构建；Launcher 安装目录名仍为 `UE_5.8` |
+| `Engine/Build/Build.version` | Major 5 / Minor 8 / Patch 3；CL **58210709**；CompatibleCL **55116800**；Branch **`++UE5+Release-5.8`** | UE 版本与 CL 必须一致 |
 | Git | **2.50.0.windows.1** | 最低 2.50.0，更新的稳定版可用 |
 | Git LFS | **3.6.1** | 最低 3.6.1，初始化每个克隆的 LFS hook 与锁校验 |
 | 项目模板 | 本机引擎安装中无专门的 Paper2D/2D 项目模板 | 统一从 **Games → Blank → C++** 新建；若团队共同决定全用蓝图，可改为 Blank Blueprint |
@@ -16,13 +16,13 @@
 | MSVC | `cl.exe` ProductVersion **14.50.35729.0**；FileVersion **19.50.35729.0** | C++ 基线为 UBT 工具链 **14.50.35729** |
 | Windows SDK | 安装有 **10.0.22621.0** 和 **10.0.26100.0** | C++ 基线固定 **10.0.22621.0** |
 | 历史 UBT 日志 | 选择过 MSVC **14.50.35729**、SDK **10.0.22621.0** | 这是其他编译记录，不能代替新工程编译验收 |
-| UE 项目 | `JGD2026.uproject`；C++ 模块 `JGD2026`；主机日志确认 UE **5.8.2 / CL 56702186** | 全员用同一发行版本打开 |
-| Paper2D | `JGD2026.log` 显示 Paper2D Runtime 与 Editor 模块均加载 | 项目文件显式启用，确保协作者使用相同依赖 |
+| UE 项目 | `JGD2026.uproject`；C++ 模块 `JGD2026`；`EngineAssociation` 为 `5.8`；最近一次日志是升级前的 UE **5.8.2 / CL 56702186** | 全员使用 UE 5.8.3 / CL 58210709；用新日志完成打开验证 |
+| Paper2D | `.uproject` 显式启用 Paper2D；旧版 `JGD2026.log` 曾显示其 Runtime 与 Editor 模块加载 | 插件为 1.0 / Version 1；在 UE 5.8.3 下重新打开后再更新运行验证状态 |
 | 工作目录 | 工程与 Git 根目录：`Games/JGD2026`；规范副本已置于仓库内 | 原 `Games/JGDgamejam` 文件夹保留作本地备份 |
 | Git | Git **2.50.0**、LFS **3.6.1**；`main` 已初始化，`origin` 和 LFS 锁校验已配置 | UE 二进制资源由 LFS 管理，生成文件由 `.gitignore` 排除 |
 | GitHub | 目标仓库公开、默认分支名 `main` | 由 `origin` 远端关联 |
 
-注册表还有 UE 5.4 的旧安装条目，但对应 `Build.version` 未找到，不能据此认为 5.4 仍可使用。本次版本采用已核实的 5.8.2。
+注册表还有 UE 5.4 的旧安装条目，但对应 `Build.version` 未找到，不能据此认为 5.4 仍可使用。本次版本采用已核实的 5.8.3 / CL 58210709。
 
 MSVC 的安装目录名是 **14.50.35717**，实际编译器产品版本是 **14.50.35729**，二者不要混淆。本机 UE 的 `Engine/Config/Windows/Windows_SDK.json` 列出的 MSVC 禁用区间包括 `14.50.0–14.50.35722`；实际二进制 14.50.35729 不在该区间。新成员以 `cl.exe` 产品版本和 UBT 输出核对，不仅看文件夹名。
 
@@ -58,7 +58,7 @@ JGD2026 当前还启用了 `ModelingToolsEditorMode`（VersionName 0.1、Beta、
 ## 3. 完整快照与机器可读基线
 
 - [versions-lock.json](versions-lock.json)：团队版本基线、实测工具链、重点插件的描述哈希及验收状态。
-- [plugins-snapshot.csv](plugins-snapshot.csv)：**895 个引擎插件描述文件 + 1 个其他工程插件，共 896 行记录**；包含版本、描述文件路径、默认启用/Beta/Experimental 标志与 SHA-256。
+- [plugins-snapshot.csv](plugins-snapshot.csv)：**895 个引擎插件描述文件 + 1 个其他工程插件，共 896 行记录**；包含版本、描述文件路径、默认启用/Beta/Experimental 标志与 SHA-256。已对照 UE 5.8.3 安装重新核查，895 个引擎插件描述的版本元数据与哈希均未变化。
 
 快照的范围是安装引擎的插件描述文件，加上一个已发现的其他工程项目插件；没有把所有本机工程复制进来。`EnabledByDefault` 缺省、为 false 或为 true，都不等于“已在 Game Jam 运行时挂载”。实际启用情况还受 `.uproject`、插件依赖、目标平台及 Editor/Runtime 限制影响。
 
@@ -74,4 +74,4 @@ JGD2026 当前还启用了 `ModelingToolsEditorMode`（VersionName 0.1、Beta、
 4. 从新工程完整编译日志确认 MSVC 与 SDK；纯蓝图工程注明 C++ 编译检查不适用，仍验证打包。
 5. 两台电脑确认工程可打开；首轮目标平台打包并运行后，更新 JSON 的对应 `Verification` 字段。
 
-检测和规则文件已准备；Git 初始化、远端上传、仓库权限/保护设置、UE 工程创建和这些工程验收均未由本次编写过程执行。
+本次已核实 UE 5.8.3 安装构建信息，并将规则和版本锁文件更新到该基线。项目最新可用日志仍是升级前的 UE 5.8.2；请首次用 5.8.3 打开工程、检查 Paper2D 与 ModelingToolsEditorMode 加载，再更新 JSON 中的打开验证状态。5.8.3 下的 C++ 编译、PIE 和目标平台打包仍待团队实测。

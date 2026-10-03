@@ -2,17 +2,18 @@
   "SchemaVersion": 1,
   "RecordedOn": "2026-10-03",
   "Repository": "https://github.com/HCXXWDG/GamejamJGD-2026",
-  "Status": "initial_git_commit_pushed",
+  "Status": "engine_baseline_updated_to_5.8.3",
   "ProjectCreated": true,
   "Engine": {
     "Distribution": "Epic Games Launcher",
-    "Version": "5.8.2",
-    "Changelist": 56702186,
+    "Version": "5.8.3",
+    "Changelist": 58210709,
     "CompatibleChangelist": 55116800,
     "Branch": "++UE5+Release-5.8",
     "EngineAssociation": "5.8",
-    "BuildVersionSHA256": "ff99fc3dd98e7c7fd2f5700334bc792dfb7baced3828cdee32940bb69581a6a4",
-    "Policy": "exact_match"
+    "BuildVersionSHA256": "eab58750e84719489f3ee0d42d05a533ceb357eb3ee511777e9408d27a85f43c",
+    "Policy": "exact_match",
+    "LauncherAppVersion": "5.8.3-58210709+++UE5+Release-5.8-Windows"
   },
   "Target": {
     "Platform": "Win64",
@@ -225,26 +226,57 @@
     "EngineDescriptorCount": 895,
     "OtherProjectDescriptorCount": 1,
     "Scope": "installed_engine_descriptors_plus_one_observed_custom_plugin; not_all_enabled_plugins",
-    "HashMeaning": "descriptor_only_not_full_plugin_package"
+    "HashMeaning": "descriptor_only_not_full_plugin_package",
+    "ReverifiedOn": "2026-10-03",
+    "ReverifiedEngine": "5.8.3 / CL 58210709",
+    "EngineDescriptorHashesChangedSincePreviousSnapshot": 0
   },
   "Verification": {
     "EngineBuildVersionRead": true,
     "PluginDescriptorsParsed": true,
     "CompilerBinaryVersionRead": true,
     "PriorUnrealBuildToolLogObserved": true,
-    "JamProjectOpenTested": true,
+    "JamProjectOpenTested": false,
     "JamProjectCompileTested": false,
     "JamProjectPackageTested": false,
     "GitHubRepositoryWritten": true,
     "GitInitializedInWorkspace": true,
-    "Paper2DLoadedFromProjectLog": true,
+    "Paper2DLoadedFromProjectLog": false,
     "ProjectFilesStagedLocally": true,
     "InitialGitHubPushMatchedLocalCommit": true,
     "InitialProjectCommitSHA": "14d4ca1a4bff441bea5c1ff5a97893c93f1b3c24",
-    "LfsObjectsIncludedInSuccessfulPush": 145
+    "LfsObjectsIncludedInSuccessfulPush": 145,
+    "EngineLauncherManifestVerified": true,
+    "CurrentEngineBuildVersionVerified": true,
+    "PluginSnapshotMatchesCurrentEngine": true,
+    "PreviousEngineProjectOpenTested": true,
+    "PreviousEngineProjectLogConfirmedPaper2DLoaded": true,
+    "PreviousProjectLogEngineVersion": "5.8.2 / CL 56702186",
+    "ProjectOpenedOnLockedEngine": false
   },
   "ProjectTemplate": "Games > Blank > C++",
   "RequiredEnginePlugins": [
     "Paper2D 1.0"
+  ],
+  "ProjectPluginVersions": [
+    {
+      "Name": "Paper2D",
+      "VersionName": "1.0",
+      "Version": 1,
+      "Enabled": true,
+      "Scope": "project_runtime_2d_plugin",
+      "DescriptorSHA256": "e98b22501a4fb0d91ba8efc8fb16e2b7ae107d7751a275f0dfcebdf24d603db0"
+    },
+    {
+      "Name": "ModelingToolsEditorMode",
+      "VersionName": "0.1",
+      "Version": 1,
+      "Enabled": true,
+      "TargetAllowList": [
+        "Editor"
+      ],
+      "IsBetaVersion": true,
+      "DescriptorSHA256": "a09d756a40247bd9e6fb73cb9d4ca92ba11960215fcd5c77f2bb8e2bf114a0d0"
+    }
   ]
 }
