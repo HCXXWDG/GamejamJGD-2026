@@ -1,0 +1,247 @@
+{
+  "SchemaVersion": 1,
+  "RecordedOn": "2026-10-03",
+  "Repository": "https://github.com/HCXXWDG/GamejamJGD-2026",
+  "Status": "project_repository_initialized",
+  "ProjectCreated": true,
+  "Engine": {
+    "Distribution": "Epic Games Launcher",
+    "Version": "5.8.2",
+    "Changelist": 56702186,
+    "CompatibleChangelist": 55116800,
+    "Branch": "++UE5+Release-5.8",
+    "EngineAssociation": "5.8",
+    "BuildVersionSHA256": "ff99fc3dd98e7c7fd2f5700334bc792dfb7baced3828cdee32940bb69581a6a4",
+    "Policy": "exact_match"
+  },
+  "Target": {
+    "Platform": "Win64",
+    "Status": "default_team_policy_not_jam_rule_confirmation"
+  },
+  "Git": {
+    "Observed": "2.50.0.windows.1",
+    "TeamMinimum": "2.50.0",
+    "Policy": "minimum_version"
+  },
+  "GitLFS": {
+    "Observed": "3.6.1",
+    "TeamMinimum": "3.6.1",
+    "Policy": "minimum_version"
+  },
+  "WindowsCpp": {
+    "VisualStudioObserved": "2026 Community 18.5.1",
+    "VisualStudioPolicy": "2026 recommended; IDE patch version may differ",
+    "MSVCProductVersion": "14.50.35729.0",
+    "MSVCToolchainVersion": "14.50.35729",
+    "MSVCFamilyDirectory": "14.50.35717",
+    "WindowsSDK": "10.0.22621.0",
+    "OtherSDKObserved": [
+      "10.0.26100.0"
+    ],
+    "Policy": "exact_compiler_and_sdk_baseline_if_cpp; no_jam_build_verified"
+  },
+  "ProjectPluginManifest": {
+    "Status": "observed_from_uproject",
+    "EnabledPlugins": [
+      {
+        "Name": "ModelingToolsEditorMode",
+        "Enabled": true,
+        "TargetAllowList": [
+          "Editor"
+        ]
+      },
+      {
+        "Name": "Paper2D",
+        "Enabled": true,
+        "TargetAllowList": null
+      }
+    ],
+    "RequiredThirdPartyPlugins": [],
+    "Policy": "record_explicit_and_transitive_requirements_after_initial_project_creation",
+    "ProjectName": "JGD2026"
+  },
+  "ReferenceEnginePlugins": [
+    {
+      "Name": "AIAssistant",
+      "VersionName": "1.0",
+      "Version": 1,
+      "Scope": "engine_inventory_not_project_enablement",
+      "DescriptorPath": "Engine/Plugins/Experimental/AIAssistant/AIAssistant.uplugin",
+      "EngineVersion": null,
+      "EnabledByDefault": false,
+      "Installed": false,
+      "IsBetaVersion": false,
+      "IsExperimentalVersion": true,
+      "DescriptorSHA256": "5d67027471655b0d18581509bddf669dae9472ae943b911688fd18b7edbc02cd"
+    },
+    {
+      "Name": "AllToolsets",
+      "VersionName": "1.0",
+      "Version": 1,
+      "Scope": "engine_inventory_not_project_enablement",
+      "DescriptorPath": "Engine/Plugins/Experimental/Toolsets/AllToolsets/AllToolsets.uplugin",
+      "EngineVersion": null,
+      "EnabledByDefault": false,
+      "Installed": null,
+      "IsBetaVersion": null,
+      "IsExperimentalVersion": true,
+      "DescriptorSHA256": "0a0fecaded0ef2f88bfe235b96eedf211acc6bc27f4684a116942ece2892cec3"
+    },
+    {
+      "Name": "EnhancedInput",
+      "VersionName": "1.0",
+      "Version": 1,
+      "Scope": "engine_inventory_not_project_enablement",
+      "DescriptorPath": "Engine/Plugins/EnhancedInput/EnhancedInput.uplugin",
+      "EngineVersion": null,
+      "EnabledByDefault": true,
+      "Installed": false,
+      "IsBetaVersion": false,
+      "IsExperimentalVersion": null,
+      "DescriptorSHA256": "6bcbbfefeb6309db8fa805cd758250780d8cbaf2ca0092760c5fd9be921901ff"
+    },
+    {
+      "Name": "GameplayStateTree",
+      "VersionName": "1.0",
+      "Version": 1,
+      "Scope": "engine_inventory_not_project_enablement",
+      "DescriptorPath": "Engine/Plugins/Runtime/GameplayStateTree/GameplayStateTree.uplugin",
+      "EngineVersion": null,
+      "EnabledByDefault": false,
+      "Installed": false,
+      "IsBetaVersion": false,
+      "IsExperimentalVersion": null,
+      "DescriptorSHA256": "0a703b9ea5aaf717bb2d4a584956810e2fc0018d3644fe11a1c69af713809ca6"
+    },
+    {
+      "Name": "GitSourceControl",
+      "VersionName": "1.4",
+      "Version": 14,
+      "Scope": "engine_inventory_not_project_enablement",
+      "DescriptorPath": "Engine/Plugins/Developer/GitSourceControl/GitSourceControl.uplugin",
+      "EngineVersion": null,
+      "EnabledByDefault": true,
+      "Installed": false,
+      "IsBetaVersion": true,
+      "IsExperimentalVersion": null,
+      "DescriptorSHA256": "ce08b9e8100e7e2ce13939d89b241202cd196f6cc330dc2491c4d2977eb095a4"
+    },
+    {
+      "Name": "ModelContextProtocol",
+      "VersionName": "1.0",
+      "Version": 1,
+      "Scope": "engine_inventory_not_project_enablement",
+      "DescriptorPath": "Engine/Plugins/Experimental/ModelContextProtocol/ModelContextProtocol.uplugin",
+      "EngineVersion": null,
+      "EnabledByDefault": false,
+      "Installed": false,
+      "IsBetaVersion": false,
+      "IsExperimentalVersion": true,
+      "DescriptorSHA256": "74420534edcd6baafcb48e0af919d53b84891bdade7b97869b0ef485c3ea1518"
+    },
+    {
+      "Name": "ModelingToolsEditorMode",
+      "VersionName": "0.1",
+      "Version": 1,
+      "Scope": "engine_inventory_not_project_enablement",
+      "DescriptorPath": "Engine/Plugins/Editor/ModelingToolsEditorMode/ModelingToolsEditorMode.uplugin",
+      "EngineVersion": null,
+      "EnabledByDefault": null,
+      "Installed": false,
+      "IsBetaVersion": true,
+      "IsExperimentalVersion": null,
+      "DescriptorSHA256": "a09d756a40247bd9e6fb73cb9d4ca92ba11960215fcd5c77f2bb8e2bf114a0d0"
+    },
+    {
+      "Name": "Niagara",
+      "VersionName": "1.0",
+      "Version": 1,
+      "Scope": "engine_inventory_not_project_enablement",
+      "DescriptorPath": "Engine/Plugins/FX/Niagara/Niagara.uplugin",
+      "EngineVersion": null,
+      "EnabledByDefault": true,
+      "Installed": false,
+      "IsBetaVersion": false,
+      "IsExperimentalVersion": null,
+      "DescriptorSHA256": "c719837e3542eab8ff412bbe5ce45b94615cae634720186b93d1775f846a0350"
+    },
+    {
+      "Name": "PythonScriptPlugin",
+      "VersionName": "1.0",
+      "Version": 1,
+      "Scope": "engine_inventory_not_project_enablement",
+      "DescriptorPath": "Engine/Plugins/Experimental/PythonScriptPlugin/PythonScriptPlugin.uplugin",
+      "EngineVersion": null,
+      "EnabledByDefault": false,
+      "Installed": false,
+      "IsBetaVersion": true,
+      "IsExperimentalVersion": null,
+      "DescriptorSHA256": "bd796b32b69f8c4113e0b2547ee12e3620507c063f23090d5cc6042ad387b5cb"
+    },
+    {
+      "Name": "StateTree",
+      "VersionName": "0.1",
+      "Version": 1,
+      "Scope": "engine_inventory_not_project_enablement",
+      "DescriptorPath": "Engine/Plugins/Runtime/StateTree/StateTree.uplugin",
+      "EngineVersion": null,
+      "EnabledByDefault": false,
+      "Installed": false,
+      "IsBetaVersion": false,
+      "IsExperimentalVersion": null,
+      "DescriptorSHA256": "7a4c680317080232fae2c6bd7afcba216ad46bc93992c37fbf6106a8333f5068"
+    },
+    {
+      "Name": "Paper2D",
+      "VersionName": "1.0",
+      "Version": 1,
+      "Scope": "engine_inventory_not_project_enablement",
+      "DescriptorPath": "Engine/Plugins/2D/Paper2D/Paper2D.uplugin",
+      "EngineVersion": "",
+      "EnabledByDefault": true,
+      "Installed": false,
+      "IsBetaVersion": false,
+      "IsExperimentalVersion": null,
+      "DescriptorSHA256": "e98b22501a4fb0d91ba8efc8fb16e2b7ae107d7751a275f0dfcebdf24d603db0"
+    }
+  ],
+  "OtherProjectPluginObservations": [
+    {
+      "Name": "UnrealMCPToolkit",
+      "VersionName": "1.1",
+      "Version": 2,
+      "Scope": "other_project_observation_not_jam_dependency",
+      "DescriptorPath": "RowenAndSiye_Fuke/Plugins/UnrealMCPToolkit/UnrealMCPToolkit.uplugin",
+      "EngineVersion": "5.8.0",
+      "EnabledByDefault": null,
+      "Installed": false,
+      "IsBetaVersion": false,
+      "IsExperimentalVersion": false,
+      "DescriptorSHA256": "aa83aa52300080629cf7b494234ebab32db5f17726966c42a1cbf6e2ae9e7c77"
+    }
+  ],
+  "Inventory": {
+    "File": "plugins-snapshot.csv",
+    "EngineDescriptorCount": 895,
+    "OtherProjectDescriptorCount": 1,
+    "Scope": "installed_engine_descriptors_plus_one_observed_custom_plugin; not_all_enabled_plugins",
+    "HashMeaning": "descriptor_only_not_full_plugin_package"
+  },
+  "Verification": {
+    "EngineBuildVersionRead": true,
+    "PluginDescriptorsParsed": true,
+    "CompilerBinaryVersionRead": true,
+    "PriorUnrealBuildToolLogObserved": true,
+    "JamProjectOpenTested": true,
+    "JamProjectCompileTested": false,
+    "JamProjectPackageTested": false,
+    "GitHubRepositoryWritten": false,
+    "GitInitializedInWorkspace": true,
+    "Paper2DLoadedFromProjectLog": true,
+    "ProjectFilesStagedLocally": true
+  },
+  "ProjectTemplate": "Games > Blank > C++",
+  "RequiredEnginePlugins": [
+    "Paper2D 1.0"
+  ]
+}

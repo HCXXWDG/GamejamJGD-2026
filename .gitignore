@@ -1,0 +1,43 @@
+# Generated UE directories, at project and plugin levels.
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+
+# IDE state and generated project files.
+.vs/
+.idea/
+.vscode/
+*.sln
+*.slnx
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.VC.db
+*.VC.opendb
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.opensdf
+*.sdf
+*.code-workspace
+
+# Local build/package destinations; required Build/ inputs remain tracked.
+/Packaged/
+/Packages/
+/Releases/
+/Artifacts/
+/Backup/
+/UpgradeLog.htm
+
+# OS and local credentials.
+.DS_Store
+Thumbs.db
+Desktop.ini
+.env
+.env.*
+!.env.example
+
+# Binary-only plugins need narrowly scoped Binaries/ exceptions before use.
+# Do not ignore Content/**/__ExternalActors__ or __ExternalObjects__.
