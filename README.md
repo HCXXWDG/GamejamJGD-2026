@@ -4,7 +4,7 @@ UE Game Jam 团队协作仓库，目标地址：[HCXXWDG/GamejamJGD-2026](https:
 
 UE 工程位于 `E:/Code_from_class/Games/JGD2026`，它也是 Git 仓库根目录。协作文件现在放在工程下并与项目一起版本管理；原 `JGDgamejam` 文件夹保留为本地副本。
 
-- **团队引擎：UE 5.8.2，Changelist 56702186，Epic Games Launcher 发行版。**
+- **团队引擎：UE 5.8.3，Changelist 58210709，Epic Games Launcher 发行版。**
 - 项目模板：**Games → Blank → C++**；创建后启用内置 **Paper2D 1.0**。
 - 当前 `.uproject` 有 C++ 模块，并显式启用 Paper2D 与 ModelingToolsEditorMode。
 - Git ≥ 2.50.0；Git LFS ≥ 3.6.1。
