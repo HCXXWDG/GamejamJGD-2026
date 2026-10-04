@@ -1,8 +1,8 @@
 {
   "SchemaVersion": 1,
-  "RecordedOn": "2026-10-03",
+  "RecordedOn": "2026-10-04",
   "Repository": "https://github.com/HCXXWDG/GamejamJGD-2026",
-  "Status": "engine_baseline_updated_to_5.8.3",
+  "Status": "ue_5.8.3_2d_starter_verified",
   "ProjectCreated": true,
   "Engine": {
     "Distribution": "Epic Games Launcher",
@@ -53,12 +53,60 @@
       },
       {
         "Name": "Paper2D",
+        "Enabled": true
+      },
+      {
+        "Name": "ModelContextProtocol",
         "Enabled": true,
-        "TargetAllowList": null
+        "TargetAllowList": [
+          "Editor"
+        ]
+      },
+      {
+        "Name": "PythonScriptPlugin",
+        "Enabled": true,
+        "TargetAllowList": [
+          "Editor"
+        ]
+      },
+      {
+        "Name": "EditorScriptingUtilities",
+        "Enabled": true,
+        "TargetAllowList": [
+          "Editor"
+        ]
+      },
+      {
+        "Name": "EditorToolset",
+        "Enabled": true,
+        "TargetAllowList": [
+          "Editor"
+        ]
+      },
+      {
+        "Name": "ConfigSettingsToolset",
+        "Enabled": true,
+        "TargetAllowList": [
+          "Editor"
+        ]
+      },
+      {
+        "Name": "SlateInspectorToolset",
+        "Enabled": true,
+        "TargetAllowList": [
+          "Editor"
+        ]
+      },
+      {
+        "Name": "PluginToolset",
+        "Enabled": true,
+        "TargetAllowList": [
+          "Editor"
+        ]
       }
     ],
     "RequiredThirdPartyPlugins": [],
-    "Policy": "record_explicit_and_transitive_requirements_after_initial_project_creation",
+    "Policy": "explicit_plugins_and_enabled_descriptor_dependencies_recorded; engine_defaults_are_not_an_exhaustive_runtime_manifest",
     "ProjectName": "JGD2026"
   },
   "ReferenceEnginePlugins": [
@@ -236,12 +284,12 @@
     "PluginDescriptorsParsed": true,
     "CompilerBinaryVersionRead": true,
     "PriorUnrealBuildToolLogObserved": true,
-    "JamProjectOpenTested": false,
+    "JamProjectOpenTested": true,
     "JamProjectCompileTested": false,
     "JamProjectPackageTested": false,
     "GitHubRepositoryWritten": true,
     "GitInitializedInWorkspace": true,
-    "Paper2DLoadedFromProjectLog": false,
+    "Paper2DLoadedFromProjectLog": true,
     "ProjectFilesStagedLocally": true,
     "InitialGitHubPushMatchedLocalCommit": true,
     "InitialProjectCommitSHA": "14d4ca1a4bff441bea5c1ff5a97893c93f1b3c24",
@@ -252,31 +300,514 @@
     "PreviousEngineProjectOpenTested": true,
     "PreviousEngineProjectLogConfirmedPaper2DLoaded": true,
     "PreviousProjectLogEngineVersion": "5.8.2 / CL 56702186",
-    "ProjectOpenedOnLockedEngine": false
+    "ProjectOpenedOnLockedEngine": true,
+    "LockedEnginePIETested": true,
+    "StarterBlueprintsCompiled": true,
+    "StarterMapSaveAndReloadTested": true,
+    "OfficialMCPConnected": true,
+    "CppValidationNote": "No C++ changes; editor module loaded on UE 5.8.3. Full C++ rebuild and standalone packaged launch were not performed.",
+    "LockedEngineSmokeCookTested": true,
+    "SmokeCookPlatform": "Windows / Win64",
+    "SmokeCookMap": "/Game/JGD2026/Maps/L_2D_Sandbox",
+    "SmokeCookExitCode": 0,
+    "SmokeCookSummary": "Success - 0 error(s), 0 warning(s)",
+    "StarterAuthoringScriptFirstCreationTested": true,
+    "StarterAuthoringScriptExistingAssetsTested": true
   },
   "ProjectTemplate": "Games > Blank > C++",
   "RequiredEnginePlugins": [
-    "Paper2D 1.0"
+    "ModelingToolsEditorMode 0.1",
+    "Paper2D 1.0",
+    "ModelContextProtocol 1.0",
+    "PythonScriptPlugin 1.0",
+    "EditorScriptingUtilities 1.0",
+    "EditorToolset 1.0",
+    "ConfigSettingsToolset 1.0",
+    "SlateInspectorToolset 1.0",
+    "PluginToolset 1.0"
   ],
   "ProjectPluginVersions": [
-    {
-      "Name": "Paper2D",
-      "VersionName": "1.0",
-      "Version": 1,
-      "Enabled": true,
-      "Scope": "project_runtime_2d_plugin",
-      "DescriptorSHA256": "e98b22501a4fb0d91ba8efc8fb16e2b7ae107d7751a275f0dfcebdf24d603db0"
-    },
     {
       "Name": "ModelingToolsEditorMode",
       "VersionName": "0.1",
       "Version": 1,
+      "Scope": "project_editor_tool",
+      "DescriptorPath": "Engine/Plugins/Editor/ModelingToolsEditorMode/ModelingToolsEditorMode.uplugin",
+      "DescriptorSHA256": "a09d756a40247bd9e6fb73cb9d4ca92ba11960215fcd5c77f2bb8e2bf114a0d0",
+      "EditorOnly": false,
+      "Dependencies": [
+        {
+          "Name": "MeshModelingToolset",
+          "Enabled": true,
+          "TargetAllowList": [
+            "Editor"
+          ]
+        },
+        {
+          "Name": "MeshModelingToolsetExp",
+          "Enabled": true,
+          "TargetAllowList": [
+            "Editor"
+          ]
+        },
+        {
+          "Name": "MeshLODToolset",
+          "Enabled": true,
+          "TargetAllowList": [
+            "Editor"
+          ]
+        },
+        {
+          "Name": "ToolPresets",
+          "Enabled": true,
+          "TargetAllowList": [
+            "Editor"
+          ]
+        },
+        {
+          "Name": "StylusInput",
+          "Enabled": true,
+          "TargetAllowList": [
+            "Editor"
+          ]
+        }
+      ],
       "Enabled": true,
       "TargetAllowList": [
         "Editor"
+      ]
+    },
+    {
+      "Name": "Paper2D",
+      "VersionName": "1.0",
+      "Version": 1,
+      "Scope": "project_runtime_2d_plugin",
+      "DescriptorPath": "Engine/Plugins/2D/Paper2D/Paper2D.uplugin",
+      "DescriptorSHA256": "e98b22501a4fb0d91ba8efc8fb16e2b7ae107d7751a275f0dfcebdf24d603db0",
+      "EditorOnly": false,
+      "Dependencies": [],
+      "Enabled": true,
+      "TargetAllowList": null
+    },
+    {
+      "Name": "ModelContextProtocol",
+      "VersionName": "1.0",
+      "Version": 1,
+      "Scope": "project_editor_tool",
+      "DescriptorPath": "Engine/Plugins/Experimental/ModelContextProtocol/ModelContextProtocol.uplugin",
+      "DescriptorSHA256": "74420534edcd6baafcb48e0af919d53b84891bdade7b97869b0ef485c3ea1518",
+      "EditorOnly": false,
+      "Dependencies": [
+        {
+          "Name": "EngineAssetDefinitions",
+          "Enabled": true
+        },
+        {
+          "Name": "ToolsetRegistry",
+          "Enabled": true
+        }
       ],
-      "IsBetaVersion": true,
-      "DescriptorSHA256": "a09d756a40247bd9e6fb73cb9d4ca92ba11960215fcd5c77f2bb8e2bf114a0d0"
+      "Enabled": true,
+      "TargetAllowList": [
+        "Editor"
+      ]
+    },
+    {
+      "Name": "PythonScriptPlugin",
+      "VersionName": "1.0",
+      "Version": 1,
+      "Scope": "project_editor_tool",
+      "DescriptorPath": "Engine/Plugins/Experimental/PythonScriptPlugin/PythonScriptPlugin.uplugin",
+      "DescriptorSHA256": "bd796b32b69f8c4113e0b2547ee12e3620507c063f23090d5cc6042ad387b5cb",
+      "EditorOnly": false,
+      "Dependencies": [
+        {
+          "Name": "ContentBrowserFileDataSource",
+          "Enabled": true,
+          "ProgramAllowList": [
+            "LiveLinkHub"
+          ],
+          "TargetAllowList": [
+            "Editor",
+            "Program"
+          ]
+        }
+      ],
+      "Enabled": true,
+      "TargetAllowList": [
+        "Editor"
+      ]
+    },
+    {
+      "Name": "EditorScriptingUtilities",
+      "VersionName": "1.0",
+      "Version": 1,
+      "Scope": "project_editor_tool",
+      "DescriptorPath": "Engine/Plugins/Editor/EditorScriptingUtilities/EditorScriptingUtilities.uplugin",
+      "DescriptorSHA256": "5dc2406f1bb6150deccac3a4445d3a7be5f4037f9f0b4ae0dd1803b176e94c3f",
+      "EditorOnly": false,
+      "Dependencies": [],
+      "Enabled": true,
+      "TargetAllowList": [
+        "Editor"
+      ]
+    },
+    {
+      "Name": "EditorToolset",
+      "VersionName": "1.0",
+      "Version": 1,
+      "Scope": "project_editor_tool",
+      "DescriptorPath": "Engine/Plugins/Experimental/Toolsets/EditorToolset/EditorToolset.uplugin",
+      "DescriptorSHA256": "69b060160d9b8e57d8e10b611ecea7f572191ced9a7fc4788b447abc3fea9f98",
+      "EditorOnly": true,
+      "Dependencies": [
+        {
+          "Name": "ToolsetRegistry",
+          "Enabled": true
+        }
+      ],
+      "Enabled": true,
+      "TargetAllowList": [
+        "Editor"
+      ]
+    },
+    {
+      "Name": "ConfigSettingsToolset",
+      "VersionName": "1.0",
+      "Version": 1,
+      "Scope": "project_editor_tool",
+      "DescriptorPath": "Engine/Plugins/Experimental/Toolsets/ConfigSettingsToolset/ConfigSettingsToolset.uplugin",
+      "DescriptorSHA256": "a3cd3c6691bbfb73788af51e5baf335166dd2ebb3a054417116f8eccf8f7fc53",
+      "EditorOnly": true,
+      "Dependencies": [
+        {
+          "Name": "ToolsetRegistry",
+          "Enabled": true
+        }
+      ],
+      "Enabled": true,
+      "TargetAllowList": [
+        "Editor"
+      ]
+    },
+    {
+      "Name": "SlateInspectorToolset",
+      "VersionName": "1.0",
+      "Version": 1,
+      "Scope": "project_editor_tool",
+      "DescriptorPath": "Engine/Plugins/Experimental/Toolsets/SlateInspectorToolset/SlateInspectorToolset.uplugin",
+      "DescriptorSHA256": "d94307488b67f1e381b87f9841c4076fe62829c8bd2a7d2cc0debd0286ac6155",
+      "EditorOnly": true,
+      "Dependencies": [
+        {
+          "Name": "ToolsetRegistry",
+          "Enabled": true
+        }
+      ],
+      "Enabled": true,
+      "TargetAllowList": [
+        "Editor"
+      ]
+    },
+    {
+      "Name": "PluginToolset",
+      "VersionName": "1.0",
+      "Version": 1,
+      "Scope": "project_editor_tool",
+      "DescriptorPath": "Engine/Plugins/Experimental/Toolsets/PluginToolset/PluginToolset.uplugin",
+      "DescriptorSHA256": "abf48602ce5b32cc25f394602ef676a19ef02c8156ac61c42c38a43a7203d938",
+      "EditorOnly": true,
+      "Dependencies": [
+        {
+          "Name": "ToolsetRegistry",
+          "Enabled": true
+        },
+        {
+          "Name": "PluginUtils",
+          "Enabled": true
+        }
+      ],
+      "Enabled": true,
+      "TargetAllowList": [
+        "Editor"
+      ]
     }
-  ]
+  ],
+  "ProjectTransitivePluginVersions": [
+    {
+      "Name": "ContentBrowserFileDataSource",
+      "VersionName": "1.0",
+      "Version": 1,
+      "Scope": "enabled_descriptor_dependency_of_explicit_plugins",
+      "DescriptorPath": "Engine/Plugins/Editor/ContentBrowser/ContentBrowserFileDataSource/ContentBrowserFileDataSource.uplugin",
+      "DescriptorSHA256": "18abd531ee9283f01c9cbd6034dad8eaf4c1e409addb4e0a64955b5c66445a28",
+      "EditorOnly": false,
+      "Dependencies": []
+    },
+    {
+      "Name": "EngineAssetDefinitions",
+      "VersionName": "1.0",
+      "Version": 1,
+      "Scope": "enabled_descriptor_dependency_of_explicit_plugins",
+      "DescriptorPath": "Engine/Plugins/Editor/EngineAssetDefinitions/EngineAssetDefinitions.uplugin",
+      "DescriptorSHA256": "aaeb5b57fbac2af2f4d72ca5c0a73cad9913d680999da741b2117336d28bc687",
+      "EditorOnly": false,
+      "Dependencies": []
+    },
+    {
+      "Name": "FileSandbox",
+      "VersionName": "0.1",
+      "Version": 1,
+      "Scope": "enabled_descriptor_dependency_of_explicit_plugins",
+      "DescriptorPath": "Engine/Plugins/Developer/Sandbox/FileSandbox/FileSandbox.uplugin",
+      "DescriptorSHA256": "1c69107e987bfeef6a897814d9b140e449718727884f4ce1758c51a3bb7054b0",
+      "EditorOnly": false,
+      "Dependencies": []
+    },
+    {
+      "Name": "GeometryCache",
+      "VersionName": "1.0",
+      "Version": 1,
+      "Scope": "enabled_descriptor_dependency_of_explicit_plugins",
+      "DescriptorPath": "Engine/Plugins/Runtime/GeometryCache/GeometryCache.uplugin",
+      "DescriptorSHA256": "89f18cf79ec4442c71f80ae48b0dacd98921c06d8f30427479f32e7f7c977292",
+      "EditorOnly": false,
+      "Dependencies": [
+        {
+          "Name": "Niagara",
+          "Enabled": true
+        }
+      ]
+    },
+    {
+      "Name": "GeometryFlow",
+      "VersionName": "0.1",
+      "Version": 1,
+      "Scope": "enabled_descriptor_dependency_of_explicit_plugins",
+      "DescriptorPath": "Engine/Plugins/Experimental/GeometryFlow/GeometryFlow.uplugin",
+      "DescriptorSHA256": "e4d8ea6597e20a0dd9d963d71a8ae072dab11e16ae39f31e1fd71778bb523208",
+      "EditorOnly": false,
+      "Dependencies": [
+        {
+          "Name": "GeometryProcessing",
+          "Enabled": true
+        },
+        {
+          "Name": "MeshModelingToolsetExp",
+          "Enabled": true
+        }
+      ]
+    },
+    {
+      "Name": "GeometryProcessing",
+      "VersionName": "0.1",
+      "Version": 1,
+      "Scope": "enabled_descriptor_dependency_of_explicit_plugins",
+      "DescriptorPath": "Engine/Plugins/Runtime/GeometryProcessing/GeometryProcessing.uplugin",
+      "DescriptorSHA256": "2c0ddb8dc21c9560844c0d3bd4d1531a6988acee84b8c7c59c34cac2f1c6bbb1",
+      "EditorOnly": false,
+      "Dependencies": []
+    },
+    {
+      "Name": "MeshLODToolset",
+      "VersionName": "0.1",
+      "Version": 1,
+      "Scope": "enabled_descriptor_dependency_of_explicit_plugins",
+      "DescriptorPath": "Engine/Plugins/Editor/MeshLODToolset/MeshLODToolset.uplugin",
+      "DescriptorSHA256": "5b427eea767dce4ca468b17206f26d945297f2de3f699b007bb3e792e3b9be06",
+      "EditorOnly": false,
+      "Dependencies": [
+        {
+          "Name": "GeometryProcessing",
+          "Enabled": true
+        },
+        {
+          "Name": "GeometryFlow",
+          "Enabled": true
+        },
+        {
+          "Name": "MeshModelingToolsetExp",
+          "Enabled": true,
+          "TargetAllowList": [
+            "Editor"
+          ]
+        },
+        {
+          "Name": "EditorScriptingUtilities",
+          "Enabled": true
+        }
+      ]
+    },
+    {
+      "Name": "MeshModelingToolset",
+      "VersionName": "0.1",
+      "Version": 1,
+      "Scope": "enabled_descriptor_dependency_of_explicit_plugins",
+      "DescriptorPath": "Engine/Plugins/Runtime/MeshModelingToolset/MeshModelingToolset.uplugin",
+      "DescriptorSHA256": "3af0bcd77a7995ae1872dbf174b553e737fe53b3d6e2ef36ed10f3d2ef5436b7",
+      "EditorOnly": false,
+      "Dependencies": [
+        {
+          "Name": "GeometryProcessing",
+          "Enabled": true
+        },
+        {
+          "Name": "ProxyLODPlugin",
+          "Enabled": true
+        },
+        {
+          "Name": "PlanarCut",
+          "Enabled": true
+        },
+        {
+          "Name": "GeometryCache",
+          "Enabled": true
+        }
+      ]
+    },
+    {
+      "Name": "MeshModelingToolsetExp",
+      "VersionName": "0.1",
+      "Version": 1,
+      "Scope": "enabled_descriptor_dependency_of_explicit_plugins",
+      "DescriptorPath": "Engine/Plugins/Experimental/MeshModelingToolsetExp/MeshModelingToolsetExp.uplugin",
+      "DescriptorSHA256": "f7c896ebee0eda10c5aed7a9dc35f4dd1ec97b590eb0d2bae65d988556a6477c",
+      "EditorOnly": false,
+      "Dependencies": [
+        {
+          "Name": "MeshModelingToolset",
+          "Enabled": true
+        },
+        {
+          "Name": "GeometryProcessing",
+          "Enabled": true
+        },
+        {
+          "Name": "ProxyLODPlugin",
+          "Enabled": true
+        }
+      ]
+    },
+    {
+      "Name": "Niagara",
+      "VersionName": "1.0",
+      "Version": 1,
+      "Scope": "enabled_descriptor_dependency_of_explicit_plugins",
+      "DescriptorPath": "Engine/Plugins/FX/Niagara/Niagara.uplugin",
+      "DescriptorSHA256": "c719837e3542eab8ff412bbe5ce45b94615cae634720186b93d1775f846a0350",
+      "EditorOnly": false,
+      "Dependencies": [
+        {
+          "Name": "PythonScriptPlugin",
+          "Enabled": true
+        }
+      ]
+    },
+    {
+      "Name": "PlanarCut",
+      "VersionName": "0.1",
+      "Version": 1,
+      "Scope": "enabled_descriptor_dependency_of_explicit_plugins",
+      "DescriptorPath": "Engine/Plugins/Experimental/PlanarCutPlugin/PlanarCut.uplugin",
+      "DescriptorSHA256": "1a86684bb69f30c37dc7c86ced2b2b630fe2a6b465609da714ec2444a3f6fdc4",
+      "EditorOnly": false,
+      "Dependencies": [
+        {
+          "Name": "GeometryProcessing",
+          "Enabled": true
+        }
+      ]
+    },
+    {
+      "Name": "PluginUtils",
+      "VersionName": "1.0",
+      "Version": 1,
+      "Scope": "enabled_descriptor_dependency_of_explicit_plugins",
+      "DescriptorPath": "Engine/Plugins/Developer/PluginUtils/PluginUtils.uplugin",
+      "DescriptorSHA256": "c611bd3116e9bdf6185071054b28f5d36c472410f026539759ed5c6be80c40f4",
+      "EditorOnly": false,
+      "Dependencies": [
+        {
+          "Name": "EditorScriptingUtilities",
+          "Enabled": true
+        }
+      ]
+    },
+    {
+      "Name": "ProxyLODPlugin",
+      "VersionName": "0.1",
+      "Version": 1,
+      "Scope": "enabled_descriptor_dependency_of_explicit_plugins",
+      "DescriptorPath": "Engine/Plugins/Editor/ProxyLODPlugin/ProxyLODPlugin.uplugin",
+      "DescriptorSHA256": "dcccabf06824b449b6b9c6ff2c4d513a441582c567a6a4552afb8105b44898f4",
+      "EditorOnly": false,
+      "Dependencies": []
+    },
+    {
+      "Name": "StylusInput",
+      "VersionName": "2.0",
+      "Version": 2,
+      "Scope": "enabled_descriptor_dependency_of_explicit_plugins",
+      "DescriptorPath": "Engine/Plugins/Editor/StylusInput/StylusInput.uplugin",
+      "DescriptorSHA256": "ca45d994ebf63adf7d3c170e9ff17ec7e92b5088f13bcb1634d29eafe8381624",
+      "EditorOnly": false,
+      "Dependencies": []
+    },
+    {
+      "Name": "ToolPresets",
+      "VersionName": "0.1",
+      "Version": 1,
+      "Scope": "enabled_descriptor_dependency_of_explicit_plugins",
+      "DescriptorPath": "Engine/Plugins/Experimental/ToolPresets/ToolPresets.uplugin",
+      "DescriptorSHA256": "499777615723e85f641aa1cff9cdc48fcb727834d1cb5cb2c38158bc91ef001f",
+      "EditorOnly": false,
+      "Dependencies": []
+    },
+    {
+      "Name": "ToolsetRegistry",
+      "VersionName": "1.0",
+      "Version": 1,
+      "Scope": "enabled_descriptor_dependency_of_explicit_plugins",
+      "DescriptorPath": "Engine/Plugins/Experimental/ToolsetRegistry/ToolsetRegistry.uplugin",
+      "DescriptorSHA256": "2dfc01159b54daea67c62966a48b78254d1d848d84e8df48c708c7a69d3f2062",
+      "EditorOnly": true,
+      "Dependencies": [
+        {
+          "Name": "PythonScriptPlugin",
+          "Enabled": true
+        },
+        {
+          "Name": "EditorScriptingUtilities",
+          "Enabled": true
+        },
+        {
+          "Name": "FileSandbox",
+          "Enabled": true
+        }
+      ]
+    }
+  ],
+  "StarterPreset": {
+    "Map": "/Game/JGD2026/Maps/L_2D_Sandbox",
+    "DefaultGameMode": "/Game/JGD2026/Core/BP_2DGameMode.BP_2DGameMode_C",
+    "ViewPawn": "/Game/JGD2026/Core/View/BP_2DViewPawn",
+    "ProjectionMode": "Orthographic",
+    "OrthoWidth": 2200,
+    "CameraRelativeLocation": [
+      1200,
+      1200,
+      1200
+    ],
+    "CameraRelativeRotation": {
+      "Pitch": -35.2644,
+      "Yaw": -135,
+      "Roll": 0
+    },
+    "PlayerStart": [
+      0,
+      0,
+      100
+    ],
+    "EditorToolSelection": "Explicit official toolsets; AllToolsets omitted because its GameFeatures dependency caused cook errors in this Blank project."
+  }
 }

@@ -30,6 +30,7 @@ DerivedDataCache/
 /Artifacts/
 /Backup/
 /UpgradeLog.htm
+/Build/**/FileOpenOrder/
 
 # OS and local credentials.
 .DS_Store
