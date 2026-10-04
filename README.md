@@ -15,8 +15,8 @@ UE 工程位于 `E:/Code_from_class/Games/JGD2026`，它也是 Git 仓库根目�
 
 `.gitignore`、`.gitattributes` 和 `.github/PULL_REQUEST_TEMPLATE.md` 已在仓库根目录。项目使用 `main` 分支，`origin` 指向目标 GitHub 仓库。
 
-打开 `JGD2026.uproject` 后默认进入 `/Game/JGD2026/Maps/L_2D_Sandbox`。点击运行即可查看灰盒地面与三个彩色占位 Sprite；通用骨架由 `BP_2DGameMode`、`BP_2DPlayerController` 和 `BP_2DViewPawn` 组成。
+打开 `JGD2026.uproject` 后默认进入 `/Game/JGD2026/Maps/L_2D_Sandbox`。当前关卡保留平面测试地面，已移除的占位 Sprite 保持删除状态；通用骨架由 `BP_2DGameMode`、`BP_2DPlayerController` 和 `BP_2DViewPawn` 组成。首次创建脚本的示例 Sprite 统一摆在同一二维平面。
 
-相机从 +X、+Y、+Z 方向看向场景，使用正交投影。调整视角时打开 `/Game/JGD2026/Core/View/BP_2DViewPawn`，选择 `ViewCamera`；初始宽度 2200，相对位置 (1200,1200,1200)，旋转 Pitch -35.2644 / Yaw -135 / Roll 0。视图 Pawn 是固定镜头骨架，角色和输入可在后续玩法模块中加入。
+画面使用 XZ 二维平面（X 为左右、Z 为上下）。主摄像机 `Camera_MainView` 位于测试关卡中，垂直正对游戏平面，并在 PIE 时自动成为玩家视角。想调镜头时，在 World Outliner 选择 `Camera_MainView`：移动或旋转 Actor 来调整取景方向；在 Details 的 Camera Component 中修改 `Ortho Width` 来调整画面范围。初始宽度为 2200，位置为 (0,1200,100)，旋转 Pitch 0 / Yaw -90 / Roll 0。`BP_2DViewPawn` 只负责玩家生成位置。
 
 `Scripts/Editor/create_2d_starter.py` 使用 Epic 官方编辑器 API；在 UE 的“工具 → 执行 Python 脚本”中运行。已有完整预设时只验证资源；遇到同名外部资源或半成品时停止，保留团队修改。首次创建要求先保存当前编辑器工作。设计文档与实施计划仅保存在本地，通过 `.git/info/exclude` 排除。

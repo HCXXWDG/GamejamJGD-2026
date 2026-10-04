@@ -312,7 +312,11 @@
     "SmokeCookExitCode": 0,
     "SmokeCookSummary": "Success - 0 error(s), 0 warning(s)",
     "StarterAuthoringScriptFirstCreationTested": true,
-    "StarterAuthoringScriptExistingAssetsTested": true
+    "StarterAuthoringScriptExistingAssetsTested": true,
+    "Flat2DCorrectionPIETested": true,
+    "Flat2DCorrectionCookTested": true,
+    "Flat2DCorrectionCookSummary": "Success - 0 error(s), 0 warning(s); Saved/Automation/Cook_Flat2D.log",
+    "MainCameraAddedForPlayerAdjustment": true
   },
   "ProjectTemplate": "Games > Blank > C++",
   "RequiredEnginePlugins": [
@@ -794,13 +798,13 @@
     "ProjectionMode": "Orthographic",
     "OrthoWidth": 2200,
     "CameraRelativeLocation": [
+      0,
       1200,
-      1200,
-      1200
+      0
     ],
     "CameraRelativeRotation": {
-      "Pitch": -35.2644,
-      "Yaw": -135,
+      "Pitch": 0,
+      "Yaw": -90,
       "Roll": 0
     },
     "PlayerStart": [
@@ -808,6 +812,13 @@
       0,
       100
     ],
-    "EditorToolSelection": "Explicit official toolsets; AllToolsets omitted because its GameFeatures dependency caused cook errors in this Blank project."
+    "EditorToolSelection": "Explicit official toolsets; AllToolsets omitted because its GameFeatures dependency caused cook errors in this Blank project.",
+    "GamePlane": "XZ; camera perpendicular to plane along -Y; sprite facing is expressed in 2D art",
+    "SceneNote": "Existing user removal of the three placeholder sprites preserved; ground is a flat plane.",
+    "MainCameraActor": "/Game/JGD2026/Maps/L_2D_Sandbox:PersistentLevel.CameraActor_0",
+    "MainCameraLabel": "Camera_MainView",
+    "MainCameraAutoActivation": "Player0",
+    "MainCameraComponent": "Standalone orthographic CameraActor; editable directly in the level",
+    "ViewPawnRole": "Spawn anchor; no camera component"
   }
 }

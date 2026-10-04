@@ -45,13 +45,10 @@ def validate():
     assets = {key: AssetTools.load_asset(path) for key, path in PATHS.items()}
     for key in ("pawn", "controller", "mode"):
         BlueprintTools.compile_blueprint(assets[key], warnings_as_errors=True)
-    cameras = ActorTools.get_components(
-        BlueprintTools.get_default_object(assets["pawn"]), unreal.CameraComponent.static_class())
+    cameras = SceneTools.find_actors(
+        name="Camera_MainView", actor_type=unreal.CameraActor.static_class(), tag="", collision_channels=[])
     if len(cameras) != 1:
-        raise RuntimeError("The view Pawn must have exactly one CameraComponent")
-    camera = json.loads(ObjectTools.get_properties(cameras[0], ["projectionMode", "orthoWidth"]))
-    if camera["projectionMode"] != "Orthographic" or camera["orthoWidth"] <= 0:
-        raise RuntimeError("The view Pawn needs a valid orthographic camera")
+        raise RuntimeError("Load L_2D_Sandbox and keep exactly one Camera_MainView in the level")
     unreal.log("2D starter validated. Existing assets and map were preserved.")
 
 
@@ -114,12 +111,6 @@ def main():
                         ("mode", unreal.GameModeBase)):
         folder, name = PATHS[key].rsplit("/", 1)
         assets[key] = BlueprintTools.create(folder, name, parent.static_class())
-    camera = ActorTools.add_component(assets["pawn"], unreal.CameraComponent.static_class(), "ViewCamera")
-    set_properties(camera, projectionMode="Orthographic", orthoWidth=2200,
-                   relativeLocation={"x": 1200, "y": 1200, "z": 1200},
-                   relativeRotation={"pitch": -35.2644, "yaw": -135, "roll": 0},
-                   bUsePawnControlRotation=False, bAutoActivate=True,
-                   bConstrainAspectRatio=False)
     for key in ("pawn", "controller"):
         BlueprintTools.compile_blueprint(assets[key], warnings_as_errors=True)
     set_properties(assets["mode"], defaultPawnClass=ref(assets["pawn"].generated_class()),
@@ -147,15 +138,23 @@ def main():
     if not level_editor.new_level(PATHS["map"]):
         raise RuntimeError("Could not create the sandbox map")
     spawn(unreal.PlayerStart, "PlayerStart_ViewOrigin", (0, 0, 100))
-    ground = spawn(unreal.StaticMeshActor, "Prototype_Ground", (0, 0, -25), (16, 12, 0.5))
+    main_camera = spawn(unreal.CameraActor, "Camera_MainView", (0, 1200, 100), yaw=-90)
+    ActorTools.set_label(main_camera, "Camera_MainView")
+    set_properties(main_camera, autoActivateForPlayer="Player0")
+    camera = ActorTools.get_components(main_camera, unreal.CameraComponent.static_class())[0]
+    set_properties(camera, projectionMode="Orthographic", orthoWidth=2200,
+                   bUsePawnControlRotation=False, bAutoActivate=True,
+                   bConstrainAspectRatio=False)
+    ground = spawn(unreal.StaticMeshActor, "Prototype_Ground", (0, 0, -25), (16, 0.5, 1))
+    ground.set_actor_rotation(unreal.Rotator(0, 0, 90), False)
     set_properties(ground.static_mesh_component,
-                   staticMesh={"refPath": "/Engine/BasicShapes/Cube.Cube"},
+                   staticMesh={"refPath": "/Engine/BasicShapes/Plane.Plane"},
                    overrideMaterials=[ref(assets["material"])], castShadow=False)
     for label, location, tint in (
-            ("Sprite_Left_Orange", (-350, -200, 0), (1, 0.30, 0.06)),
-            ("Sprite_Front_Green", (280, -260, 0), (0.16, 0.85, 0.35)),
-            ("Sprite_Back_Blue", (50, 360, 0), (0.18, 0.48, 1))):
-        actor = spawn(unreal.PaperSpriteActor, label, location, yaw=-45)
+            ("Sprite_Left_Orange", (-450, 0, 0), (1, 0.30, 0.06)),
+            ("Sprite_Center_Green", (0, 0, 0), (0.16, 0.85, 0.35)),
+            ("Sprite_Right_Blue", (450, 0, 0), (0.18, 0.48, 1))):
+        actor = spawn(unreal.PaperSpriteActor, label, location)
         component = ActorTools.get_components(actor, unreal.PaperSpriteComponent.static_class())[0]
         set_properties(component, sourceSprite=ref(assets["sprite"]),
                        spriteColor=dict(zip("rgba", (*tint, 1))), castShadow=False)

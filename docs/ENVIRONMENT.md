@@ -76,3 +76,5 @@ JGD2026 保留 `ModelingToolsEditorMode`（VersionName 0.1、Beta、Editor-only�
 5. 两台电脑确认工程可打开；首轮目标平台打包并运行后，更新 JSON 的对应 `Verification` 字段。
 
 2026-10-04 已完成 UE 5.8.3 打开、默认地图重载、蓝图编译与 PIE。官方 MCP 验证了真实生成的 GameMode / PlayerController / ViewPawn 和正交相机参数；编辑器截图确认占位 Sprite 可见。生成脚本还通过临时命名空间的首次创建与重载检查，测试资源已清理。Win64 单地图 Cook 返回成功（0 错误、0 警告），日志在本地 `Saved/Automation/Cook_2DStarter_Minimal.log`。首轮 AllToolsets 引入 GameFeatures 导致的错误已通过只启用所需官方工具集解决。完整 C++ 重编译、安装包生成和独立启动仍待后续集成验收。
+
+2026-10-04 平面侧视修正：根据用户澄清，游戏平面为 XZ，主视角沿 Y 轴垂直取景并使用正交投影。用户在场景中移除的三个占位 Sprite 保持删除；地图重载和 PIE 参数/画面检查通过。重新 Cook 成功，0 错误、0 警告，日志为本地 `Saved/Automation/Cook_Flat2D.log`。
