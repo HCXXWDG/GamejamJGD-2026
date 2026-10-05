@@ -209,13 +209,15 @@ C++ 按 UE 命名与反射规范开发；提交 `.h/.cpp`、模块构建与目�
 
 ## 8. 插件与项目配置变更
 
-内置插件随 **UE 5.8.3 / CL 58210709** 统一，不因许多描述文件都写 `1.0` 就认为跨引擎版本兼容。当前 `.uproject` 显式启用 Paper2D 与 Editor-only 的 ModelingToolsEditorMode；新增、移除或改插件必须同步更新版本锁，并检查默认启用项和传递依赖。
+内置插件随 **UE 5.8.3 / CL 58210709** 统一，不因许多描述文件都写 `1.0` 就认为跨引擎版本兼容。当前 `.uproject` 显式启用 Paper2D、Editor-only 的 ModelingToolsEditorMode，以及下述官方作者工具；新增、移除或改插件必须同步更新版本锁，并检查默认启用项和传递依赖。
+
+2D 预设的作者工具固定为 **ModelContextProtocol、PythonScriptPlugin、EditorScriptingUtilities、EditorToolset、ConfigSettingsToolset、SlateInspectorToolset、PluginToolset，均为 1.0 / Version 1**，`.uproject` 中统一 `TargetAllowList=["Editor"]`。这些插件来自同一 UE 5.8.3 安装，不需要另装第三方 MCP 插件；MCP 自动启动、会话与端口配置留在个人 `Saved/Config`，本机服务监听 `127.0.0.1`。`AllToolsets` 聚合插件未启用，因为其 GameFeatures 依赖会让此 Blank 工程的 Cook 要求额外资产管理配置；需要新能力时选择对应工具集并单独验证。
 
 引入新插件时单独开 PR，写清：插件名称、来源、`VersionName` / `Version`、Git commit 或发行包 SHA-256、适配引擎、运行时/编辑器用途、依赖、安装路径、许可与全员取得方式。能合法入库的第三方插件优先放 `Plugins/`，避免只装在某人的 Engine 目录。
 
 插件获准进入 `main` 前，至少由另一台成员电脑打开工程、编译，并由集成人员验证目标平台打包。仅有描述文件 `EngineVersion` 匹配不是兼容性证明。只有编辑器用途的插件限制为 Editor，不让游戏运行时依赖个人 AI/MCP 服务。
 
-发起人其他工程的 **UnrealMCPToolkit 1.1 / Version 2 / EngineVersion 5.8.0** 已被检测到，但本项目初始不要求它。ModelContextProtocol、AllToolsets、AIAssistant 等工具也不因发起人曾启用就自动加入本项目。
+发起人其他工程的 **UnrealMCPToolkit 1.1 / Version 2 / EngineVersion 5.8.0** 已被检测到，本项目不要求它。AIAssistant 和 AllToolsets 未加入本项目；实际显式插件及描述文件中的启用依赖以 `docs/versions-lock.json` 为准。
 
 Input、Collision、GameplayTags、Maps & Modes、Packaging 等 `Default*.ini` 属于团队共享设置；提交前检查差异，并注明影响。API Key、个人绝对路径和本地服务凭据不进入共享配置。
 

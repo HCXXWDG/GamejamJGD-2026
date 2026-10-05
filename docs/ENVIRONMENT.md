@@ -1,6 +1,6 @@
 # 环境与插件版本记录
 
-检测日期：2026-10-03。UE Launcher 安装清单和 `Engine/Build/Build.version` 均确认本机引擎为 UE 5.8.3 / CL 58210709。项目最近一次已知日志仍来自升级前的 UE 5.8.2 / CL 56702186，因此本次尚未验证项目能否在 5.8.3 下打开、编译或打包。仓库属性将 145 个 UE 资产配置为 Git LFS。
+更新日期：2026-10-04。UE Launcher 安装清单和 `Engine/Build/Build.version` 确认本机引擎为 UE 5.8.3 / CL 58210709。工程已在此版本打开；2D 预设的三个蓝图编译、地图保存与重载、官方 MCP 连接和 PIE 均已验证，Win64 单地图 Cook 成功（0 错误、0 警告）。完整 C++ 重编译、独立安装包生成与运行尚未验证。UE 资产由 `.gitattributes` 配置为 Git LFS。
 
 ## 1. 检测结果与团队约束
 
@@ -16,8 +16,8 @@
 | MSVC | `cl.exe` ProductVersion **14.50.35729.0**；FileVersion **19.50.35729.0** | C++ 基线为 UBT 工具链 **14.50.35729** |
 | Windows SDK | 安装有 **10.0.22621.0** 和 **10.0.26100.0** | C++ 基线固定 **10.0.22621.0** |
 | 历史 UBT 日志 | 选择过 MSVC **14.50.35729**、SDK **10.0.22621.0** | 这是其他编译记录，不能代替新工程编译验收 |
-| UE 项目 | `JGD2026.uproject`；C++ 模块 `JGD2026`；`EngineAssociation` 为 `5.8`；最近一次日志是升级前的 UE **5.8.2 / CL 56702186** | 全员使用 UE 5.8.3 / CL 58210709；用新日志完成打开验证 |
-| Paper2D | `.uproject` 显式启用 Paper2D；旧版 `JGD2026.log` 曾显示其 Runtime 与 Editor 模块加载 | 插件为 1.0 / Version 1；在 UE 5.8.3 下重新打开后再更新运行验证状态 |
+| UE 项目 | `JGD2026.uproject`；C++ 模块 `JGD2026`；`EngineAssociation` 为 `5.8`；已在 UE **5.8.3 / CL 58210709** 打开并进入 PIE | 全员使用相同补丁版本与 CL；完整 C++ 重编译另行验收 |
+| Paper2D | `.uproject` 显式启用；三个 PaperSpriteActor 已在 UE 5.8.3 的 PIE 中显示 | 插件为 1.0 / Version 1，随引擎构建锁定 |
 | 工作目录 | 工程与 Git 根目录：`Games/JGD2026`；规范副本已置于仓库内 | 原 `Games/JGDgamejam` 文件夹保留作本地备份 |
 | Git | Git **2.50.0**、LFS **3.6.1**；`main` 已初始化，`origin` 和 LFS 锁校验已配置 | UE 二进制资源由 LFS 管理，生成文件由 `.gitignore` 排除 |
 | GitHub | 目标仓库公开、默认分支名 `main` | 由 `origin` 远端关联 |
@@ -43,15 +43,16 @@ MSVC 的安装目录名是 **14.50.35717**，实际编译器产品版本是 **14
 | Landmass | **1.0** | **1** | 引擎内置，Beta；其他本机工程显式启用 | 按需求引入，不列为初始必需 |
 | EditorScriptingUtilities | **1.0** | **1** | 引擎内置，Beta | 编辑器工具按需使用 |
 | PythonScriptPlugin | **1.0** | **1** | 引擎内置，Beta | 编辑器用途；某些插件会间接依赖它 |
-| ModelContextProtocol | **1.0** | **1** | 引擎内置，Experimental | 个人工具不自动加入项目依赖 |
-| AllToolsets | **1.0** | **1** | 引擎内置，Experimental，有多个插件依赖 | 个人工具不自动加入项目依赖 |
+| ModelContextProtocol | **1.0** | **1** | 引擎内置，Experimental | 已显式启用，Editor-only，本机 MCP 服务 |
+| AllToolsets | **1.0** | **1** | 引擎内置，Experimental，有多个插件依赖 | 本项目未启用；使用下面的明确工具集 |
+| EditorToolset / ConfigSettingsToolset / SlateInspectorToolset / PluginToolset | **1.0** | **1** | 引擎内置，Experimental | 已显式启用，Editor-only，用于资产、设置、PIE 与界面操作 |
 | AIAssistant | **1.0** | **1** | 引擎内置，Experimental | 个人工具不自动加入项目依赖 |
 | InEditorDocumentation | **1.0** | **1** | 引擎内置，Experimental | 按需使用，不列为初始必需 |
 | UnrealMCPToolkit | **1.1** | **2** | 其他本机工程的项目级插件；声明 EngineVersion **5.8.0**，模块为 Editor | **未引入本次工程；不要求队友安装** |
 
 UnrealMCPToolkit 的观察来自 `RowenAndSiye_Fuke/Plugins/UnrealMCPToolkit/UnrealMCPToolkit.uplugin`；其描述依赖 ModelContextProtocol 和 PythonScriptPlugin。读取到了版本声明，不代表已验证它在本次工程中的编译、授权或兼容性。
 
-JGD2026 当前还启用了 `ModelingToolsEditorMode`（VersionName 0.1、Beta、Editor-only）；这是项目文件中的实际条目。项目团队若不需要它，可在后续检查依赖后移除。
+JGD2026 保留 `ModelingToolsEditorMode`（VersionName 0.1、Beta、Editor-only），并为此次预设显式启用 `PythonScriptPlugin`、`EditorScriptingUtilities`（均为 1.0、Editor-only）和上述官方 MCP 工具。版本锁记录 9 个显式插件与 16 个描述文件启用依赖；这是显式依赖图，不等于引擎所有默认启用插件的完整运行时清单。
 
 引擎内置插件的 `VersionName` 经常长期保持 `1.0`；应同时固定 **UE 的实际构建版本**。新引入第三方插件还需要记录 commit / 发行包哈希，不把描述文件的版本声明当作唯一锁定依据。
 
@@ -74,4 +75,6 @@ JGD2026 当前还启用了 `ModelingToolsEditorMode`（VersionName 0.1、Beta、
 4. 从新工程完整编译日志确认 MSVC 与 SDK；纯蓝图工程注明 C++ 编译检查不适用，仍验证打包。
 5. 两台电脑确认工程可打开；首轮目标平台打包并运行后，更新 JSON 的对应 `Verification` 字段。
 
-本次已核实 UE 5.8.3 安装构建信息，并将规则和版本锁文件更新到该基线。项目最新可用日志仍是升级前的 UE 5.8.2；请首次用 5.8.3 打开工程、检查 Paper2D 与 ModelingToolsEditorMode 加载，再更新 JSON 中的打开验证状态。5.8.3 下的 C++ 编译、PIE 和目标平台打包仍待团队实测。
+2026-10-04 已完成 UE 5.8.3 打开、默认地图重载、蓝图编译与 PIE。官方 MCP 验证了真实生成的 GameMode / PlayerController / ViewPawn 和正交相机参数；编辑器截图确认占位 Sprite 可见。生成脚本还通过临时命名空间的首次创建与重载检查，测试资源已清理。Win64 单地图 Cook 返回成功（0 错误、0 警告），日志在本地 `Saved/Automation/Cook_2DStarter_Minimal.log`。首轮 AllToolsets 引入 GameFeatures 导致的错误已通过只启用所需官方工具集解决。完整 C++ 重编译、安装包生成和独立启动仍待后续集成验收。
+
+2026-10-04 平面侧视修正：根据用户澄清，游戏平面为 XZ，主视角沿 Y 轴垂直取景并使用正交投影。用户在场景中移除的三个占位 Sprite 保持删除；地图重载和 PIE 参数/画面检查通过。重新 Cook 成功，0 错误、0 警告，日志为本地 `Saved/Automation/Cook_Flat2D.log`。
