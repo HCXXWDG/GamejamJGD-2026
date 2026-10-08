@@ -48,6 +48,8 @@ Event.Game.PhaseChanged
 
 节点 `Get JGD Message Subsystem`，`World Context Object` 传 `self` 即可。
 
+这是个**纯函数节点**（没有执行引脚），可以插在任意数据流里，也能直接连到别的节点的输入引脚上。
+
 ### 3.2 发送
 
 ```
