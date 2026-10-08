@@ -36,7 +36,7 @@ Event.Game.PhaseChanged
 
 负载是一个 `FInstancedStruct`，可以装**任意 USTRUCT**（C++ 结构体或蓝图结构体都行）。
 
-- 不需要负载时传一个空的 InstancedStruct，当作纯通知。
+- **负载不是必须的**。只表示「这件事发生了」时，`Broadcast Message` 的 `Message` 引脚留空不连即可，接收端拿到的 `Message` 是空的（`Is Valid` 为 false）。
 - 一个频道不强制绑定某一种结构体类型，但**建议一个频道固定一种负载结构体**，否则接收端解包会拿到空值。
 - 负载**只在本机内存中传递，不支持网络复制**。
 
@@ -58,6 +58,18 @@ Get JGD Message Subsystem
 ```
 
 `Make Instanced Struct` 的输入引脚可以接任意结构体，包括蓝图结构体变量或 `Make <你的结构体>` 节点的输出。
+
+**`Message` 引脚可以不连。** 只表示「这件事发生了」、不需要携带数据时，把 `Message` 空着就行：
+
+```
+Get JGD Message Subsystem
+  └─ Broadcast Message
+       ├─ Channel : Event.Grid.BlockMoved
+       └─ Message : （不连）
+```
+
+留空时就是一条不带负载的纯通知，接收端收到的回调完全一样，只是 `Message` 是空的。
+接收端可以用 `Is Valid` 节点（`Is Instanced Struct Valid`）判断这条消息有没有负载。
 
 ### 3.3 监听
 
@@ -142,6 +154,17 @@ if (UJGDMessageSubsystem* Bus = UJGDMessageSubsystem::Get(this))
 
 `FInstancedStruct::Make(...)` 也可以直接传构造参数：`FInstancedStruct::Make<FBlockMovedMessage>(X, Y)`。
 
+不需要负载时**直接把第二个参数省掉**，`Message` 有默认值：
+
+```cpp
+if (UJGDMessageSubsystem* Bus = UJGDMessageSubsystem::Get(this))
+{
+    Bus->BroadcastMessage(FGameplayTag::RequestGameplayTag(TEXT("Event.Game.PhaseChanged")));
+}
+```
+
+等价于显式传一个空的 `FInstancedStruct()`，接收端拿到的 `Message` 是空的。
+
 ### 4.2 监听
 
 因为用的是**动态委托**（为了蓝图能绑），C++ 侧的回调**必须是 `UFUNCTION()`，不能用 lambda**。
@@ -211,8 +234,8 @@ void UMyComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 // 取总线（WorldContextObject 传 this 或任意有 World 的对象）
 static UJGDMessageSubsystem* UJGDMessageSubsystem::Get(const UObject* WorldContextObject);
 
-// 发送
-void BroadcastMessage(FGameplayTag Channel, const FInstancedStruct& Message);
+// 发送。Message 可省略，省略即不带负载的纯通知。
+void BroadcastMessage(FGameplayTag Channel, const FInstancedStruct& Message = FInstancedStruct());
 
 // 订阅，返回句柄
 FJGDMessageListenerHandle RegisterListener(FGameplayTag Channel, const FJGDMessageReceived& Delegate);
@@ -256,6 +279,8 @@ static const FGameplayTag Channel_BlockMoved =
 **监听对象销毁后自动失效。** 动态委托内部是弱引用，监听对象被 GC 后 `IsBound()` 自动变 `false`，总线会在下次广播时清掉它。所以漏掉退订不会导致对象无法回收。
 
 **C++ 回调必须是 `UFUNCTION()`。** 用 lambda 绑不上——这是为了让蓝图能绑同一个委托而做的取舍。
+
+**别删掉 `BroadcastMessage` 上的 `AutoCreateRefTerm` 元数据。** `Message` 是 `const FInstancedStruct&`（引用传递），蓝图默认不允许引用引脚留空；正是 `meta = (AutoCreateRefTerm = "Message")` 让蓝图编译器在引脚未连接时自动补一个默认值。去掉它，`Message` 就会变成必连引脚，蓝图会报错。
 
 **无效频道会打 Warning。** 传了一个没有注册过的 Tag 给 `BroadcastMessage`，或者 `RegisterListener` 时回调没绑定，日志里会有 `LogJGDMessageBus` 的警告。
 

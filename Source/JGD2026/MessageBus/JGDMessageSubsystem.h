@@ -35,9 +35,13 @@ public:
 	/**
 	 * 往频道广播一条消息。
 	 * 广播瞬间订阅该频道的监听会被同步调用，顺序 = 注册顺序。
+	 *
+	 * Message 可以留空：蓝图里不连这个引脚、C++ 里不传这个参数都行。
+	 * 留空时就是一条不带负载的纯通知，接收端拿到的 Message 是空的
+	 * （IsValid() 为 false）。
 	 */
-	UFUNCTION(BlueprintCallable, Category = "JGD|MessageBus")
-	void BroadcastMessage(FGameplayTag Channel, const FInstancedStruct& Message);
+	UFUNCTION(BlueprintCallable, Category = "JGD|MessageBus", meta = (AutoCreateRefTerm = "Message"))
+	void BroadcastMessage(FGameplayTag Channel, const FInstancedStruct& Message = FInstancedStruct());
 
 	/**
 	 * 订阅频道。返回的句柄存进变量，退出时（比如 EndPlay）用 UnregisterListener 退订。
