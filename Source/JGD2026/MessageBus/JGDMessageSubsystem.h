@@ -27,8 +27,8 @@ public:
 	/** C++ 侧取总线：UJGDMessageSubsystem::Get(this) */
 	static UJGDMessageSubsystem* Get(const UObject* WorldContextObject);
 
-	/** 蓝图侧取总线（等价于 Get Game Instance Subsystem 节点） */
-	UFUNCTION(BlueprintCallable, Category = "JGD|MessageBus",
+	/** 蓝图侧取总线（纯函数，没有执行引脚） */
+	UFUNCTION(BlueprintPure, Category = "JGD|MessageBus",
 		meta = (WorldContext = "WorldContextObject", DisplayName = "Get JGD Message Subsystem"))
 	static UJGDMessageSubsystem* GetMessageSubsystem(const UObject* WorldContextObject);
 
