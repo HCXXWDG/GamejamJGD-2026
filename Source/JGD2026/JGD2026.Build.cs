@@ -7,8 +7,19 @@ public class JGD2026 : ModuleRules
 	public JGD2026(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+		PublicIncludePaths.Add(ModuleDirectory);
 
-		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "GameplayTags", "Paper2D" });
+		PublicDependencyModuleNames.AddRange(new string[]
+		{
+			"Core",
+			"CoreUObject",
+			"Engine",
+			"InputCore",
+			"EnhancedInput",
+			"Paper2D",
+			"DeveloperSettings",
+			"GameplayTags"
+		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {  });
 
