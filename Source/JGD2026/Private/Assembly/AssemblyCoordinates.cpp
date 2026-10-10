@@ -16,6 +16,14 @@ namespace
 	}
 }
 
+bool UAssemblyComponent::IsPointOnBoneDefinition(const FAssemblyBoneDefinition& Definition, FVector2D LocalPoint) const
+{
+	return AssemblyFreeRules::IsPointOnBone(Definition.BoneParameters, LocalPoint)
+		&& (RoundPlacementMode == EAssemblyPlacementMode::Free
+			|| (RoundPlacementMode == EAssemblyPlacementMode::Grid
+				&& AssemblyRules::IsPointOnBone(Definition.Footprint, RoundGrid.CellSize, LocalPoint)));
+}
+
 void UAssemblyComponent::SetGridFrame(USceneComponent* Frame)
 {
 	FText Reason;
@@ -192,9 +200,7 @@ bool UAssemblyComponent::GetEndpointWorldPosition(const FAssemblyMuscleEndpoint&
 	const FAssemblyBoneInstance* Bone = FindBone(Endpoint.BoneId);
 	const FAssemblyBoneDefinition* Definition = Bone ? FindBoneDefinition(Bone->TypeId) : nullptr;
 	FTransform BoneTransform;
-	const bool bOnBone = Definition && (RoundPlacementMode == EAssemblyPlacementMode::Free
-		? AssemblyFreeRules::IsPointOnBone(Definition->BoneParameters, Endpoint.BoneLocalPoint)
-		: AssemblyRules::IsPointOnBone(Definition->Footprint, RoundGrid.CellSize, Endpoint.BoneLocalPoint));
+	const bool bOnBone = Definition && IsPointOnBoneDefinition(*Definition, Endpoint.BoneLocalPoint);
 	if (!bOnBone
 		|| !GetBoneWorldTransform(Endpoint.BoneId, BoneTransform))
 	{
@@ -222,9 +228,7 @@ bool UAssemblyComponent::FindBoneAtWorldPosition(FVector WorldPosition, FAssembl
 		}
 		const FVector Local = Transform.InverseTransformPosition(WorldPosition);
 		const FVector2D Point(Local.X, Local.Z);
-		const bool bOnBone = RoundPlacementMode == EAssemblyPlacementMode::Free
-			? AssemblyFreeRules::IsPointOnBone(Definition->BoneParameters, Point)
-			: AssemblyRules::IsPointOnBone(Definition->Footprint, RoundGrid.CellSize, Point);
+		const bool bOnBone = IsPointOnBoneDefinition(*Definition, Point);
 		if (bOnBone)
 		{
 			OutEndpoint.BoneId = Bone.InstanceId;

@@ -235,6 +235,8 @@ private:
 
 	bool CanEdit(FText& OutReason) const;
 	bool CanMutate(FText& OutReason) const;
+	// Actual body bounds in both modes, plus occupied footprint cells in Grid mode.
+	bool IsPointOnBoneDefinition(const FAssemblyBoneDefinition& Definition, FVector2D LocalPoint) const;
 	bool ValidateMuscleEndpoints(const FAssemblyMuscleEndpoint& A, const FAssemblyMuscleEndpoint& B,
 		EAssemblyMuscleKey Key, FText& OutReason) const;
 	const FAssemblyBoneDefinition* FindBoneDefinition(FName TypeId) const;

@@ -374,9 +374,7 @@ bool UAssemblyComponent::ValidateMuscleEndpoints(const FAssemblyMuscleEndpoint& 
 			OutReason = LOCTEXT("MissingEndpointBone", "肌肉两端必须连接已安装的骨头；核心不能作为连接点。");
 			return false;
 		}
-		const bool bOnBone = RoundPlacementMode == EAssemblyPlacementMode::Free
-			? AssemblyFreeRules::IsPointOnBone(Definition->BoneParameters, Endpoint->BoneLocalPoint)
-			: AssemblyRules::IsPointOnBone(Definition->Footprint, RoundGrid.CellSize, Endpoint->BoneLocalPoint);
+		const bool bOnBone = IsPointOnBoneDefinition(*Definition, Endpoint->BoneLocalPoint);
 		if (!bOnBone)
 		{
 			OutReason = LOCTEXT("PointOutsideBone", "肌肉连接点必须位于对应骨头的实际轮廓内。");
