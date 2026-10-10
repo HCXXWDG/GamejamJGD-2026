@@ -41,6 +41,6 @@ class JGD2026_API IJGDPhysicsInterface
 
 public:
 	/** Returns the momentum of this object. Takes no input. */
-	UFUNCTION(BlueprintNativeEvent, Category = "JGD|Physics")
+	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "JGD|Physics")
 	float GetMomentum() const;
 };
