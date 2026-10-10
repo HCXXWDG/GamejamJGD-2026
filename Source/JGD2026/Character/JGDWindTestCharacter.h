@@ -4,10 +4,13 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
+#include "MessageBus/JGDMessageBusTypes.h"
 #include "JGDWindTestCharacter.generated.h"
 
 class UCameraComponent;
 class UJGD2DPhysicsParticipantComponent;
+class UJGDCharacterPhysicsProfile;
+class UJGDMessageSubsystem;
 class USpringArmComponent;
 class UStaticMeshComponent;
 
@@ -28,6 +31,11 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
+	/** Bootstrapped once at BeginPlay, then updated only by this character's bus notifications. */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Transient, Category = "JGD|Test")
+	TObjectPtr<UJGDCharacterPhysicsProfile> DisplayedPhysicsProfile;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "JGD|Test")
 	TObjectPtr<UJGD2DPhysicsParticipantComponent> PhysicsParticipant;
@@ -54,6 +62,12 @@ private:
 	void StopJump();
 	void ResetTestCharacter();
 	void DrawDebugInfo() const;
+
+	UFUNCTION()
+	void HandlePhysicsProfileChanged(FGameplayTag Channel, const FInstancedStruct& Message);
+
+	TWeakObjectPtr<UJGDMessageSubsystem> MessageSubsystem;
+	FJGDMessageListenerHandle ProfileChangedListener;
 
 	bool bMoveLeft = false;
 	bool bMoveRight = false;

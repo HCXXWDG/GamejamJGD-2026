@@ -21,6 +21,11 @@ public class JGD2026 : ModuleRules
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {  });
+		if (Target.bBuildEditor)
+		{
+			// Native PIE regression tests; never linked into the game target.
+			PrivateDependencyModuleNames.Add("UnrealEd");
+		}
 
 		// Uncomment if you are using Slate UI
 		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });

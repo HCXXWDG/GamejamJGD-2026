@@ -10,7 +10,9 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "InputCoreTypes.h"
+#include "MessageBus/JGDMessageSubsystem.h"
 #include "Physics/JGD2DPhysicsParticipantComponent.h"
+#include "Physics/JGDPhysicsMessages.h"
 #include "Physics/JGDPhysicsProfiles.h"
 #include "Physics/JGDPhysicsWorldSubsystem.h"
 #include "UObject/ConstructorHelpers.h"
@@ -58,6 +60,41 @@ void AJGDWindTestCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 	InitialTransform = GetActorTransform();
+
+	if (UJGDMessageSubsystem* Bus = UJGDMessageSubsystem::Get(this))
+	{
+		MessageSubsystem = Bus;
+		FJGDMessageReceived Delegate;
+		Delegate.BindDynamic(this, &ThisClass::HandlePhysicsProfileChanged);
+		ProfileChangedListener = Bus->RegisterListener(JGDPhysicsMessageTags::CharacterProfileChanged(), Delegate);
+	}
+	// Super::BeginPlay already starts the Participant, so its first notification may precede ours.
+	if (const UJGDPhysicsWorldSubsystem* Physics = GetWorld()->GetSubsystem<UJGDPhysicsWorldSubsystem>())
+	{
+		DisplayedPhysicsProfile = Physics->GetResolvedCharacterProfile(this);
+	}
+}
+
+void AJGDWindTestCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (UJGDMessageSubsystem* Bus = MessageSubsystem.Get())
+	{
+		Bus->UnregisterListener(ProfileChangedListener);
+	}
+	ProfileChangedListener.Invalidate();
+	MessageSubsystem.Reset();
+	DisplayedPhysicsProfile = nullptr;
+	Super::EndPlay(EndPlayReason);
+}
+
+void AJGDWindTestCharacter::HandlePhysicsProfileChanged(FGameplayTag Channel, const FInstancedStruct& Message)
+{
+	const auto* Notification = Message.GetPtr<FJGDCharacterPhysicsProfileChangedMessage>();
+	if (ProfileChangedListener.IsValid() && Channel == JGDPhysicsMessageTags::CharacterProfileChanged()
+		&& Notification && Notification->World == GetWorld() && Notification->Character == this)
+	{
+		DisplayedPhysicsProfile = Notification->NewProfile;
+	}
 }
 
 void AJGDWindTestCharacter::Tick(float DeltaSeconds)
@@ -142,15 +179,6 @@ void AJGDWindTestCharacter::DrawDebugInfo() const
 		return;
 	}
 
-	const UJGDCharacterPhysicsProfile* ResolvedProfile = nullptr;
-	if (const UWorld* World = GetWorld())
-	{
-		if (const UJGDPhysicsWorldSubsystem* Subsystem = World->GetSubsystem<UJGDPhysicsWorldSubsystem>())
-		{
-			ResolvedProfile = Subsystem->GetResolvedCharacterProfile(const_cast<AJGDWindTestCharacter*>(this));
-		}
-	}
-
 	const FVector Location = GetActorLocation();
 	const FVector Velocity = GetVelocity();
 	const FString Message = FString::Printf(
@@ -159,7 +187,7 @@ void AJGDWindTestCharacter::DrawDebugInfo() const
 		Location.Z,
 		Velocity.X,
 		Velocity.Z,
-		*GetNameSafe(ResolvedProfile));
+		*GetNameSafe(DisplayedPhysicsProfile.Get()));
 
 	GEngine->AddOnScreenDebugMessage(static_cast<uint64>(GetUniqueID()), 0.0f, FColor::Cyan, Message);
 }
