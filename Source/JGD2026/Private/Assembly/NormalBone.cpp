@@ -164,9 +164,9 @@ void ANormalBone::OnConstruction(const FTransform& Transform)
 bool ANormalBone::CanApplyPose(UAssemblyComponent* Assembly, FGuid InstanceId, FText& OutReason) const
 {
 	OutReason = FText::GetEmpty();
-	if (!IsValid(Assembly) || !Assembly->IsInitialized())
+	if (!IsValid(Assembly) || !Assembly->IsInitialized() || Assembly->GetWorld() != GetWorld())
 	{
-		OutReason = LOCTEXT("MissingAssembly", "请提供已初始化的 AssemblyComponent。");
+		OutReason = LOCTEXT("MissingAssembly", "请提供同一游戏世界中已初始化的 AssemblyComponent。");
 		return false;
 	}
 	if (Assembly->GetPhase() != EAssemblyPhase::Assembly || BoneBody->IsSimulatingPhysics())
@@ -188,7 +188,7 @@ bool ANormalBone::ReadAssemblyData(UAssemblyComponent* Assembly, FGuid InstanceI
 {
 	if (!Assembly->GetBone(InstanceId, OutBone))
 	{
-		OutReason = LOCTEXT("MissingBone", "找不到已安装的骨头实例，请先成功调用 TryInstallBone。");
+		OutReason = LOCTEXT("MissingBone", "找不到已安装的骨头实例，请先成功调用安装骨头接口。");
 		return false;
 	}
 	const TArray<FAssemblyBoneDefinition> Definitions = Assembly->GetBoneDefinitions();
@@ -208,9 +208,11 @@ bool ANormalBone::ReadAssemblyData(UAssemblyComponent* Assembly, FGuid InstanceI
 	{
 		return false;
 	}
-	if (!IsUsableTransform(OutPose) || !HasValidGeometry(Stats) || !FitsFootprintBounds(OutFootprint, OutCellSize, Stats))
+	const bool bFitsPlacement = Assembly->GetPlacementMode() == EAssemblyPlacementMode::Free
+		|| FitsFootprintBounds(OutFootprint, OutCellSize, Stats);
+	if (!IsUsableTransform(OutPose) || !HasValidGeometry(Stats) || !bFitsPlacement)
 	{
-		OutReason = LOCTEXT("InvalidGeometry", "骨头 Sprite、网格变换或尺寸无效；实际长度和粗细必须放得进配置占格。");
+		OutReason = LOCTEXT("InvalidGeometry", "骨头 Sprite、组装变换或尺寸无效；网格模式的实际尺寸必须放得进配置占格。");
 		return false;
 	}
 	return true;
@@ -285,6 +287,24 @@ FVector2D ANormalBone::GetEndLocalPosition(EBoneEnd End) const
 
 bool ANormalBone::GetEndWorldPosition(EBoneEnd End, FVector& OutWorldPosition) const
 {
+	OutWorldPosition = FVector::ZeroVector;
+	if (static_cast<uint8>(End) > static_cast<uint8>(EBoneEnd::End))
+	{
+		return false;
+	}
+	// An uninstalled preview still has meaningful physical end positions.
+	if (!IsBoneInitialized())
+	{
+		const FNormalBonePhysicalStats Stats = GetPhysicalStats();
+		const FTransform Pose = BoneBody->GetComponentTransform();
+		if (!Stats.bValid || !IsUsableTransform(Pose))
+		{
+			return false;
+		}
+		const FVector2D Local = GetEndLocalPosition(End);
+		OutWorldPosition = Pose.TransformPosition(FVector(Local.X, 0.0, Local.Y));
+		return !OutWorldPosition.ContainsNaN();
+	}
 	return GetConnectionWorldPosition(GetEndLocalPosition(End), OutWorldPosition);
 }
 
@@ -297,7 +317,8 @@ bool ANormalBone::TryMakeMuscleEndpoint(FVector2D LocalPoint, FAssemblyMuscleEnd
 		|| !FMath::IsFinite(LocalPoint.X) || !FMath::IsFinite(LocalPoint.Y)
 		|| FMath::Abs(LocalPoint.X) > Stats.Length * 0.5 + UE_KINDA_SMALL_NUMBER
 		|| FMath::Abs(LocalPoint.Y) > Stats.Thickness * 0.5 + UE_KINDA_SMALL_NUMBER
-		|| !AssemblyRules::IsPointOnBone(Footprint, CellSize, LocalPoint))
+		|| (BoundAssembly->GetPlacementMode() == EAssemblyPlacementMode::Grid
+			&& !AssemblyRules::IsPointOnBone(Footprint, CellSize, LocalPoint)))
 	{
 		return false;
 	}

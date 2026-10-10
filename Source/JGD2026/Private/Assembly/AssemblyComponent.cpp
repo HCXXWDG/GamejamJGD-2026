@@ -1,5 +1,6 @@
 #include "Assembly/AssemblyComponent.h"
 #include "AssemblyRules.h"
+#include "AssemblyFreeRules.h"
 
 #define LOCTEXT_NAMESPACE "AssemblyComponent"
 
@@ -17,6 +18,7 @@ UAssemblyComponent::UAssemblyComponent()
 void UAssemblyComponent::BeginPlay()
 {
 	Super::BeginPlay();
+	bEndingPlay = false;
 	if (bAutoEnterAssembly && !bInitialized)
 	{
 		FText Reason;
@@ -30,12 +32,30 @@ void UAssemblyComponent::BeginPlay()
 void UAssemblyComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	ClearInputState();
+	bEndingPlay = true;
+	InstalledBones.Reset();
+	InstalledMuscles.Reset();
+	InstalledJoints.Reset();
+	BonePoseSources.Reset();
+	RemainingQuantities.Reset();
+	SelectedKey = EAssemblyMuscleKey::None;
+	Phase = EAssemblyPhase::Assembly;
+	{
+		TGuardValue<bool> Guard(bNotifying, true);
+		OnAssemblyReset.Broadcast();
+	}
+	bInitialized = false;
 	Super::EndPlay(EndPlayReason);
 }
 
 bool UAssemblyComponent::CanMutate(FText& OutReason) const
 {
 	OutReason = FText::GetEmpty();
+	if (bEndingPlay)
+	{
+		OutReason = LOCTEXT("EndedAssembly", "组装组件已结束生命周期。");
+		return false;
+	}
 	if (bNotifying)
 	{
 		OutReason = LOCTEXT("ReentrantEdit", "不能在组装通知回调中再次修改规则数据；请在回调结束后发起操作。");
@@ -69,6 +89,22 @@ bool UAssemblyComponent::ConfigureAssembly(const FAssemblyGridSettings& Grid,
 	}
 	ClearInputState();
 	RoundGrid = Grid;
+	RoundPlacementMode = EAssemblyPlacementMode::Grid;
+	RoundBoneDefinitions = Bones;
+	RoundMuscleDefinitions = Muscles;
+	bInitialized = true;
+	ResetRound();
+	return true;
+}
+
+bool UAssemblyComponent::ConfigureFreeAssembly(const FAssemblyFreeSettings& Settings,
+	const TArray<FAssemblyBoneDefinition>& Bones, const TArray<FAssemblyMuscleDefinition>& Muscles, FText& OutReason)
+{
+	if (!CanMutate(OutReason) || !AssemblyFreeRules::ValidateConfiguration(Settings, Bones, Muscles, OutReason)) { return false; }
+	ClearInputState();
+	RoundGrid = DefaultGrid;
+	RoundFreeSettings = Settings;
+	RoundPlacementMode = EAssemblyPlacementMode::Free;
 	RoundBoneDefinitions = Bones;
 	RoundMuscleDefinitions = Muscles;
 	bInitialized = true;
@@ -84,6 +120,10 @@ bool UAssemblyComponent::EnterAssembly(FText& OutReason)
 	}
 	if (!bInitialized)
 	{
+		if (DefaultPlacementMode == EAssemblyPlacementMode::Free)
+		{
+			return ConfigureFreeAssembly(DefaultFreeSettings, DefaultBones, DefaultMuscles, OutReason);
+		}
 		return ConfigureAssembly(DefaultGrid, DefaultBones, DefaultMuscles, OutReason);
 	}
 	ResetRound();
@@ -100,6 +140,7 @@ void UAssemblyComponent::ResetRound()
 	ClearInputState();
 	InstalledBones.Reset();
 	InstalledMuscles.Reset();
+	InstalledJoints.Reset();
 	BonePoseSources.Reset();
 	RemainingQuantities.Reset();
 	for (const FAssemblyBoneDefinition& Bone : RoundBoneDefinitions)
@@ -220,6 +261,11 @@ FAssemblyPlacementResult UAssemblyComponent::ValidateBonePlacement(FName TypeId,
 	int32 QuarterTurns, FGuid IgnoreId) const
 {
 	FAssemblyPlacementResult Result;
+	if (GetPlacementMode() != EAssemblyPlacementMode::Grid)
+	{
+		Result.Reason = LOCTEXT("UseFreePlacement", "自由组装请使用 Validate/Try Install Free Bone，位置和角度不经过格坐标。");
+		return Result;
+	}
 	if (!CanEdit(Result.Reason))
 	{
 		return Result;
@@ -328,9 +374,12 @@ bool UAssemblyComponent::ValidateMuscleEndpoints(const FAssemblyMuscleEndpoint& 
 			OutReason = LOCTEXT("MissingEndpointBone", "肌肉两端必须连接已安装的骨头；核心不能作为连接点。");
 			return false;
 		}
-		if (!AssemblyRules::IsPointOnBone(Definition->Footprint, RoundGrid.CellSize, Endpoint->BoneLocalPoint))
+		const bool bOnBone = RoundPlacementMode == EAssemblyPlacementMode::Free
+			? AssemblyFreeRules::IsPointOnBone(Definition->BoneParameters, Endpoint->BoneLocalPoint)
+			: AssemblyRules::IsPointOnBone(Definition->Footprint, RoundGrid.CellSize, Endpoint->BoneLocalPoint);
+		if (!bOnBone)
 		{
-			OutReason = LOCTEXT("PointOutsideBone", "肌肉连接点必须位于对应骨头的占格轮廓内。");
+			OutReason = LOCTEXT("PointOutsideBone", "肌肉连接点必须位于对应骨头的实际轮廓内。");
 			return false;
 		}
 	}
@@ -459,6 +508,16 @@ bool UAssemblyComponent::TryRemoveInstance(FGuid InstanceId, FText& OutReason)
 	const int32 MuscleIndex = InstalledMuscles.IndexOfByPredicate([InstanceId](const FAssemblyMuscleInstance& M) { return M.InstanceId == InstanceId; });
 	if (MuscleIndex != INDEX_NONE)
 	{
+		if (RoundPlacementMode == EAssemblyPlacementMode::Free && RoundFreeSettings.bRejectDisconnectingRemoval)
+		{
+			TArray<FAssemblyMuscleInstance> Remaining = InstalledMuscles;
+			Remaining.RemoveAt(MuscleIndex);
+			if (!PreservesFreeCoreConnections(InstalledBones, Remaining, InstalledJoints))
+			{
+				OutReason = LOCTEXT("DisconnectingMuscle", "拆下这条肌肉会使其他骨头与核心断开。");
+				return false;
+			}
+		}
 		++RemainingQuantities.FindChecked(InstalledMuscles[MuscleIndex].TypeId);
 		InstalledMuscles.RemoveAt(MuscleIndex);
 		NotifyChanged();
@@ -476,13 +535,27 @@ bool UAssemblyComponent::TryRemoveInstance(FGuid InstanceId, FText& OutReason)
 		OutReason = LOCTEXT("BoneHasMuscles", "请先拆下连接在这块骨头上的肌肉。");
 		return false;
 	}
-	if (!AssemblyRules::ValidateLayout(RoundGrid, InstalledBones, nullptr, InstanceId, OutReason))
+	if (RoundPlacementMode == EAssemblyPlacementMode::Grid
+		&& !AssemblyRules::ValidateLayout(RoundGrid, InstalledBones, nullptr, InstanceId, OutReason))
 	{
 		return false;
+	}
+	if (RoundPlacementMode == EAssemblyPlacementMode::Free && RoundFreeSettings.bRejectDisconnectingRemoval)
+	{
+		TArray<FAssemblyBoneInstance> RemainingBones = InstalledBones;
+		RemainingBones.RemoveAt(BoneIndex);
+		TArray<FAssemblyJointInstance> RemainingJoints = InstalledJoints;
+		RemainingJoints.RemoveAll([InstanceId](const FAssemblyJointInstance& J) { return J.BoneA == InstanceId || J.BoneB == InstanceId; });
+		if (!PreservesFreeCoreConnections(RemainingBones, InstalledMuscles, RemainingJoints, InstanceId))
+		{
+			OutReason = LOCTEXT("DisconnectingBone", "拆下这块骨头会使其他骨头与核心断开。");
+			return false;
+		}
 	}
 	++RemainingQuantities.FindChecked(InstalledBones[BoneIndex].TypeId);
 	InstalledBones.RemoveAt(BoneIndex);
 	BonePoseSources.Remove(InstanceId);
+	if (RoundPlacementMode == EAssemblyPlacementMode::Free) { RebuildFreeJoints(); }
 	NotifyChanged();
 	return true;
 }
@@ -495,8 +568,11 @@ FAssemblyValidationResult UAssemblyComponent::ValidateAssembly() const
 		Result.Reason = LOCTEXT("NotInitialized", "请先初始化组装组件。");
 		return Result;
 	}
-	if (!AssemblyRules::ValidateConfiguration(RoundGrid, RoundBoneDefinitions, RoundMuscleDefinitions, Result.Reason)
-		|| !AssemblyRules::ValidateLayout(RoundGrid, InstalledBones, nullptr, FGuid(), Result.Reason))
+	const bool bConfigValid = RoundPlacementMode == EAssemblyPlacementMode::Free
+		? AssemblyFreeRules::ValidateConfiguration(RoundFreeSettings, RoundBoneDefinitions, RoundMuscleDefinitions, Result.Reason)
+		: AssemblyRules::ValidateConfiguration(RoundGrid, RoundBoneDefinitions, RoundMuscleDefinitions, Result.Reason);
+	if (!bConfigValid || (RoundPlacementMode == EAssemblyPlacementMode::Grid
+		&& !AssemblyRules::ValidateLayout(RoundGrid, InstalledBones, nullptr, FGuid(), Result.Reason)))
 	{
 		return Result;
 	}
@@ -510,11 +586,19 @@ FAssemblyValidationResult UAssemblyComponent::ValidateAssembly() const
 			Result.Reason = LOCTEXT("InvalidInstance", "安装实例标识或类型无效。");
 			return Result;
 		}
-		const FAssemblyPlacementResult Expected = AssemblyRules::MakePlacement(RoundGrid, Definition->Footprint, Bone.AnchorCell, Bone.QuarterTurns);
-		if (!Expected.Reason.IsEmpty() || Expected.QuarterTurns != Bone.QuarterTurns || Expected.OccupiedCells != Bone.OccupiedCells
+		const FAssemblyPlacementResult Expected = RoundPlacementMode == EAssemblyPlacementMode::Free
+			? AssemblyFreeRules::MakePlacement(Bone.LocalPosition, Bone.RotationDegrees)
+			: AssemblyRules::MakePlacement(RoundGrid, Definition->Footprint, Bone.AnchorCell, Bone.QuarterTurns);
+		if (!Expected.Reason.IsEmpty() || (RoundPlacementMode == EAssemblyPlacementMode::Grid
+			&& (Expected.QuarterTurns != Bone.QuarterTurns || Expected.OccupiedCells != Bone.OccupiedCells))
 			|| !Expected.LocalVisualTransform.Equals(Bone.LocalVisualTransform))
 		{
 			Result.Reason = LOCTEXT("InconsistentGeometry", "骨头旋转、占格和显示变换不一致。");
+			return Result;
+		}
+		if (RoundPlacementMode == EAssemblyPlacementMode::Free
+			&& !AssemblyFreeRules::ValidateGeometry(RoundFreeSettings, RoundBoneDefinitions, InstalledBones, Bone.TypeId, Expected, Bone.InstanceId, Result.Reason))
+		{
 			return Result;
 		}
 		Ids.Add(Bone.InstanceId);
@@ -539,6 +623,25 @@ FAssemblyValidationResult UAssemblyComponent::ValidateAssembly() const
 		Ids.Add(Muscle.InstanceId);
 		++Used.FindOrAdd(Muscle.TypeId);
 	}
+	for (const FAssemblyJointInstance& Joint : InstalledJoints)
+	{
+		const FAssemblyBoneInstance* B = FindBone(Joint.BoneB);
+		const FAssemblyBoneInstance* A = Joint.BoneA.IsValid() ? FindBone(Joint.BoneA) : nullptr;
+		const FAssemblyBoneDefinition* DB = B ? FindBoneDefinition(B->TypeId) : nullptr;
+		const FAssemblyBoneDefinition* DA = A ? FindBoneDefinition(A->TypeId) : nullptr;
+		if (!Joint.InstanceId.IsValid() || Ids.Contains(Joint.InstanceId) || !DB || (Joint.BoneA.IsValid() && !DA)
+			|| Joint.BoneA == Joint.BoneB || !AssemblyFreeRules::IsJointKindValid(Joint.Kind)
+			|| !AssemblyFreeRules::ValidateJointLimits(Joint.MinAngleDegrees, Joint.MaxAngleDegrees)
+			|| !AssemblyFreeRules::IsPointOnBone(DB->BoneParameters, Joint.LocalAnchorB)
+			|| (DA && !AssemblyFreeRules::IsPointOnBone(DA->BoneParameters, Joint.LocalAnchorA))
+			|| (!DA && (!FMath::IsFinite(Joint.LocalAnchorA.X) || !FMath::IsFinite(Joint.LocalAnchorA.Y)
+				|| !FMath::IsNearlyEqual(Joint.LocalAnchorA.Size(), static_cast<double>(RoundFreeSettings.CoreRadius), 0.001))))
+		{
+			Result.Reason = LOCTEXT("InvalidJoint", "关节标识、连接点、种类或限角无效。");
+			return Result;
+		}
+		Ids.Add(Joint.InstanceId);
+	}
 	auto CheckQuantity = [this, &Used](FName TypeId, int32 Initial)
 	{
 		const int32* Remaining = RemainingQuantities.Find(TypeId);
@@ -549,6 +652,11 @@ FAssemblyValidationResult UAssemblyComponent::ValidateAssembly() const
 		|| RoundMuscleDefinitions.ContainsByPredicate([&CheckQuantity](const FAssemblyMuscleDefinition& D) { return !CheckQuantity(D.TypeId, D.InitialQuantity); }))
 	{
 		Result.Reason = LOCTEXT("InvalidInventory", "库存不一致：剩余数量加安装数量必须等于初始数量。");
+		return Result;
+	}
+	if (RoundPlacementMode == EAssemblyPlacementMode::Free && Phase == EAssemblyPhase::Assembly && !IsStructureConnected())
+	{
+		Result.Reason = LOCTEXT("DisconnectedStructure", "开始操控前，每块骨头必须通过关节或肌肉连接到核心。");
 		return Result;
 	}
 	Result.bValid = true;

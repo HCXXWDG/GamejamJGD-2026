@@ -9,7 +9,7 @@ class UAssemblyComponent;
 class UBoxComponent;
 class UPaperSpriteComponent;
 
-/** One installed bone's view and body. AssemblyComponent owns its inventory and grid rules. */
+/** One bone's view and body. AssemblyComponent owns inventory and placement rules. */
 UCLASS(BlueprintType, Blueprintable)
 class JGD2026_API ANormalBone : public AActor
 {
@@ -66,7 +66,7 @@ public:
 	bool GetEndWorldPosition(EBoneEnd End, FVector& OutWorldPosition) const;
 
 	// Continuous bone-local coordinates: X = local X, Y = local Z, measured in Unreal units.
-	// Filters both the physical rectangle and the model footprint; final collision geometry belongs to physics.
+	// Free placement uses the physical rectangle; legacy Grid placement also filters the footprint.
 	UFUNCTION(BlueprintPure, Category = "Bone|Muscle")
 	bool TryMakeMuscleEndpoint(FVector2D LocalPoint, FAssemblyMuscleEndpoint& OutEndpoint) const;
 	UFUNCTION(BlueprintPure, Category = "Bone|Muscle")

@@ -13,6 +13,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FAssemblyMuscleDriveEvent, FGuid, M
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAssemblyCoreRotationEvent, bool, bHeld);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FAssemblyMuscleDriveNativeEvent, FGuid, bool);
 DECLARE_MULTICAST_DELEGATE_OneParam(FAssemblyCoreRotationNativeEvent, bool);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAssemblyJointBreakEvent, FGuid, JointId);
 
 /** Authoritative assembly model. Does not spawn actors, create UI, bind input or simulate physics. */
 UCLASS(BlueprintType, Blueprintable, ClassGroup = (Assembly), meta = (BlueprintSpawnableComponent))
@@ -22,6 +23,10 @@ class JGD2026_API UAssemblyComponent : public UActorComponent
 
 public:
 	UAssemblyComponent();
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|Config")
+	EAssemblyPlacementMode DefaultPlacementMode = EAssemblyPlacementMode::Free;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|Config")
+	FAssemblyFreeSettings DefaultFreeSettings;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|Config")
 	FAssemblyGridSettings DefaultGrid;
@@ -46,6 +51,8 @@ public:
 	// The physics adapter owns angular velocity, torque and constraint propagation.
 	UPROPERTY(BlueprintAssignable, Category = "Assembly|Physics")
 	FAssemblyCoreRotationEvent OnCoreRotationRequested;
+	UPROPERTY(BlueprintAssignable, Category = "Assembly|Physics")
+	FAssemblyJointBreakEvent OnJointBreakRequested;
 
 	FAssemblyMuscleDriveNativeEvent OnMuscleDriveRequestedNative;
 	FAssemblyCoreRotationNativeEvent OnCoreRotationRequestedNative;
@@ -54,6 +61,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Flow")
 	bool ConfigureAssembly(const FAssemblyGridSettings& Grid, const TArray<FAssemblyBoneDefinition>& Bones,
 		const TArray<FAssemblyMuscleDefinition>& Muscles, FText& OutReason);
+	UFUNCTION(BlueprintCallable, Category = "Assembly|Flow")
+	bool ConfigureFreeAssembly(const FAssemblyFreeSettings& Settings, const TArray<FAssemblyBoneDefinition>& Bones,
+		const TArray<FAssemblyMuscleDefinition>& Muscles, FText& OutReason);
+	UFUNCTION(BlueprintPure, Category = "Assembly|Flow")
+	EAssemblyPlacementMode GetPlacementMode() const { return bInitialized ? RoundPlacementMode : DefaultPlacementMode; }
+	UFUNCTION(BlueprintPure, Category = "Assembly|Data")
+	FAssemblyFreeSettings GetFreeSettings() const { return bInitialized ? RoundFreeSettings : DefaultFreeSettings; }
+	UFUNCTION(BlueprintPure, Category = "Assembly|Data")
+	TArray<FAssemblyJointInstance> GetJoints() const { return InstalledJoints; }
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Flow")
 	bool EnterAssembly(FText& OutReason);
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Flow")
@@ -96,6 +112,23 @@ public:
 	bool TryInstallBone(FName TypeId, FIntPoint AnchorCell, int32 QuarterTurns, FGuid& OutInstanceId, FText& OutReason);
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Bones")
 	bool TryMoveBone(FGuid InstanceId, FIntPoint AnchorCell, int32 QuarterTurns, FText& OutReason);
+	UFUNCTION(BlueprintPure, Category = "Assembly|Bones")
+	FAssemblyPlacementResult ValidateFreeBonePlacement(FName TypeId, FVector2D LocalPosition, float RotationDegrees, FGuid IgnoreId) const;
+	UFUNCTION(BlueprintCallable, Category = "Assembly|Bones")
+	bool TryInstallFreeBone(FName TypeId, FVector2D LocalPosition, float RotationDegrees, FGuid& OutInstanceId, FText& OutReason);
+	UFUNCTION(BlueprintCallable, Category = "Assembly|Bones")
+	bool TryMoveFreeBone(FGuid InstanceId, FVector2D LocalPosition, float RotationDegrees, FText& OutReason);
+	UFUNCTION(BlueprintCallable, Category = "Assembly|Joints")
+	bool TrySetJointKind(FGuid JointId, EAssemblyJointKind Kind, FText& OutReason);
+	UFUNCTION(BlueprintCallable, Category = "Assembly|Joints")
+	bool TrySetJointLimits(FGuid JointId, float MinAngleDegrees, float MaxAngleDegrees, FText& OutReason);
+	// Sends intent only; the physics module confirms the break via the bridge.
+	UFUNCTION(BlueprintCallable, Category = "Assembly|Physics")
+	bool RequestJointBreak(FGuid JointId, FText& OutReason);
+	UFUNCTION(BlueprintCallable, Category = "Assembly|Physics")
+	bool ConfirmJointBroken(FGuid JointId, FText& OutReason);
+	UFUNCTION(BlueprintPure, Category = "Assembly|Joints")
+	bool IsStructureConnected() const;
 
 	UFUNCTION(BlueprintPure, Category = "Assembly|Muscles")
 	FAssemblyValidationResult ValidateMusclePlacement(FName TypeId, const FAssemblyMuscleEndpoint& EndpointA,
@@ -128,6 +161,8 @@ public:
 	// Set to the core's real body/scene component; otherwise use the owning actor's transform.
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Coordinates")
 	void SetGridFrame(USceneComponent* Frame);
+	UFUNCTION(BlueprintCallable, Category = "Assembly|Coordinates")
+	bool TrySetAssemblyFrame(USceneComponent* Frame, FText& OutReason);
 	UFUNCTION(BlueprintPure, Category = "Assembly|Coordinates")
 	FTransform GetGridFrameTransform() const;
 	UFUNCTION(BlueprintPure, Category = "Assembly|Coordinates")
@@ -143,6 +178,9 @@ public:
 	// Feed PlayerController deprojection's world ray; no UMG/DPI conversion occurs here.
 	UFUNCTION(BlueprintPure, Category = "Assembly|Coordinates")
 	bool RayToGrid(FVector RayOrigin, FVector RayDirection, FVector& OutLocalPosition, FIntPoint& OutCell) const;
+	// Continuous coordinates, no grid bounds or quantization. Same local XZ game plane.
+	UFUNCTION(BlueprintPure, Category = "Assembly|Coordinates")
+	bool RayToAssemblyPlane(FVector RayOrigin, FVector RayDirection, FVector2D& OutLocalPosition) const;
 
 	// Endpoints follow the actual physical pose; no forced attachment or transformation.
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Physics")
@@ -165,6 +203,12 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 private:
+	friend class UAssemblyInteractionComponent;
+	UPROPERTY(Transient)
+	FAssemblyFreeSettings RoundFreeSettings;
+	EAssemblyPlacementMode RoundPlacementMode = EAssemblyPlacementMode::Free;
+	UPROPERTY(Transient)
+	TArray<FAssemblyJointInstance> InstalledJoints;
 	UPROPERTY(Transient)
 	FAssemblyGridSettings RoundGrid;
 	UPROPERTY(Transient)
@@ -187,6 +231,7 @@ private:
 	bool bInitialized = false;
 	bool bCoreRotationHeld = false;
 	bool bNotifying = false;
+	bool bEndingPlay = false;
 
 	bool CanEdit(FText& OutReason) const;
 	bool CanMutate(FText& OutReason) const;
@@ -201,4 +246,13 @@ private:
 	void NotifyPhase();
 	void RequestMuscleDrive(FGuid Id, bool bContracting);
 	void RequestCoreRotation(bool bHeld);
+	void RebuildFreeJoints();
+	bool IsFreeConnected(const TArray<FAssemblyBoneInstance>& Bones, const TArray<FAssemblyMuscleInstance>& Muscles,
+		const TArray<FAssemblyJointInstance>& Joints) const;
+	TSet<FGuid> GetFreeCoreReachable(const TArray<FAssemblyBoneInstance>& Bones, const TArray<FAssemblyMuscleInstance>& Muscles,
+		const TArray<FAssemblyJointInstance>& Joints) const;
+	bool PreservesFreeCoreConnections(const TArray<FAssemblyBoneInstance>& Bones, const TArray<FAssemblyMuscleInstance>& Muscles,
+		const TArray<FAssemblyJointInstance>& Joints, FGuid RemovedBone = FGuid()) const;
+	// View creation rollback bypasses user removal policy; callable only by the presenter.
+	void RollbackNewInstance(FGuid InstanceId);
 };

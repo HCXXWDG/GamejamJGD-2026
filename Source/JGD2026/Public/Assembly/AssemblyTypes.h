@@ -7,6 +7,33 @@
 UENUM(BlueprintType)
 enum class EAssemblyPhase : uint8 { Assembly, Playing };
 
+UENUM(BlueprintType)
+enum class EAssemblyPlacementMode : uint8 { Free, Grid };
+
+UENUM(BlueprintType)
+enum class EAssemblyJointKind : uint8 { Hinge, Fixed, BreakableHinge, BreakableFixed };
+
+/** Physical connection policy. The reference grid never limits free placement. */
+USTRUCT(BlueprintType)
+struct JGD2026_API FAssemblyFreeSettings
+{
+	GENERATED_BODY()
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly")
+	FVector2D CoreLocalPosition = FVector2D::ZeroVector;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly", meta = (ClampMin = "0.01"))
+	float CoreRadius = 32.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly", meta = (ClampMin = "0"))
+	float ConnectionDistance = 16.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly")
+	bool bAllowBoneOverlap = false;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly")
+	bool bRejectDisconnectingRemoval = true;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly")
+	float DefaultJointMinAngle = -60.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly")
+	float DefaultJointMaxAngle = 60.0f;
+};
+
 // Only muscles have a key binding. Space is a separate core rotation intent.
 UENUM(BlueprintType)
 enum class EAssemblyMuscleKey : uint8 { None, W, A, S, D };
@@ -70,6 +97,11 @@ struct JGD2026_API FAssemblyBoneInstance
 	FGuid InstanceId;
 	UPROPERTY(BlueprintReadOnly, Category = "Assembly")
 	FName TypeId;
+	// Local X/Z center and angle about local +Y; positive rotation is clockwise.
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly")
+	FVector2D LocalPosition = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly")
+	float RotationDegrees = 0.0f;
 	UPROPERTY(BlueprintReadOnly, Category = "Assembly")
 	FIntPoint AnchorCell = FIntPoint::ZeroValue;
 	UPROPERTY(BlueprintReadOnly, Category = "Assembly")
@@ -113,6 +145,29 @@ struct JGD2026_API FAssemblyMuscleInstance
 	bool bContracting = false;
 };
 
+/** An invalid BoneId denotes the spherical core; muscles never use this convention. */
+USTRUCT(BlueprintType)
+struct JGD2026_API FAssemblyJointInstance
+{
+	GENERATED_BODY()
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly")
+	FGuid InstanceId;
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly")
+	FGuid BoneA;
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly")
+	FGuid BoneB;
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly")
+	FVector2D LocalAnchorA = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly")
+	FVector2D LocalAnchorB = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly")
+	EAssemblyJointKind Kind = EAssemblyJointKind::Hinge;
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly")
+	float MinAngleDegrees = -60.0f;
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly")
+	float MaxAngleDegrees = 60.0f;
+};
+
 USTRUCT(BlueprintType)
 struct JGD2026_API FAssemblyPlacementResult
 {
@@ -122,6 +177,10 @@ struct JGD2026_API FAssemblyPlacementResult
 	bool bValid = false;
 	UPROPERTY(BlueprintReadOnly, Category = "Assembly")
 	FText Reason;
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly")
+	FVector2D LocalPosition = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly")
+	float RotationDegrees = 0.0f;
 	UPROPERTY(BlueprintReadOnly, Category = "Assembly")
 	FIntPoint AnchorCell = FIntPoint::ZeroValue;
 	UPROPERTY(BlueprintReadOnly, Category = "Assembly")
