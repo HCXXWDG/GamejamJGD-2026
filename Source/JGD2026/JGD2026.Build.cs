@@ -16,6 +16,7 @@ public class JGD2026 : ModuleRules
 			"Engine",
 			"InputCore",
 			"EnhancedInput",
+			"Paper2D",
 			"DeveloperSettings",
 			"GameplayTags"
 		});
