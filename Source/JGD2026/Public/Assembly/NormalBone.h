@@ -24,6 +24,10 @@ public:
 	FNormalBoneParameters PreviewParameters;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Bone|Body", meta = (ClampMin = "0.01"))
 	float BodyHalfThickness = 4.0f;
+	// Artwork is authored for Medium thickness. Thin/Thick apply 0.5/1.5 to its visual width.
+	// This changes only the sprite; physical dimensions and bone-local anchors retain their definitions.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Bone|Visual")
+	bool bUseArtworkProportions = false;
 
 	// Call only after TryInstallBone succeeds. This never consumes inventory or creates a model instance.
 	UFUNCTION(BlueprintCallable, Category = "Bone|Assembly")

@@ -26,6 +26,9 @@ public:
 	// Replaceable presentation assets. No grid, inventory or drive rules live here.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Muscle|Visual")
 	TObjectPtr<UPaperSprite> CurveSprite;
+	// Ordered A-to-B slices of one complete muscle image. Empty keeps the repeated CurveSprite view.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Muscle|Visual")
+	TArray<TObjectPtr<UPaperSprite>> CurveSliceSprites;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Muscle|Visual")
 	TObjectPtr<UMaterialInterface> CurveMaterial;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Muscle|Visual", meta = (ClampMin = "4", ClampMax = "64"))

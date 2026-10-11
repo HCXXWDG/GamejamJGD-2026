@@ -14,6 +14,9 @@ class USphereComponent;
 class UStaticMeshComponent;
 class UStaticMesh;
 class UAssemblyPhysicsBridgeComponent;
+class UAssemblyAppearanceData;
+class UPaperSprite;
+class UPaperSpriteComponent;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FAssemblyInteractionChanged);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAssemblyInteractionMessage, FText, Message);
@@ -32,6 +35,9 @@ public:
 	TSubclassOf<ANormalBone> BoneActorClass;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|Visual")
 	TSubclassOf<AAssemblyMuscle> MuscleActorClass;
+	// Missing artwork keeps the previous core placeholder and joint debug feedback available.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Visual")
+	TSoftObjectPtr<UAssemblyAppearanceData> AppearanceData;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|Visual")
 	FLinearColor ValidPreviewColor = FLinearColor(0.15f, 0.85f, 0.3f, 0.65f);
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|Visual")
@@ -68,6 +74,9 @@ public:
 	bool UpdateBoneDragFromMouse(APlayerController* PlayerController, FText& OutReason);
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Drag")
 	bool UpdateBoneDragAtLocalPosition(FVector2D LocalPosition, FText& OutReason);
+	// Failed viewport projection must clear the last usable position before any drop can commit.
+	UFUNCTION(BlueprintCallable, Category = "Assembly|Drag")
+	void InvalidateBoneDragPreview(FText Reason);
 	// Any finite angle is allowed. A Blueprint R event may supply 90, or a free-rotation control 15, etc.
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Drag")
 	bool RotateBoneDrag(float DeltaDegrees, FText& OutReason);
@@ -88,10 +97,26 @@ public:
 	UPrimitiveComponent* GetCoreBody() const;
 	UFUNCTION(BlueprintPure, Category = "Assembly|Physics")
 	UAssemblyPhysicsBridgeComponent* GetPhysicsBridge() const;
+	// Both picking and rendering use the actual physical bone/core poses through this shared entry.
+	UFUNCTION(BlueprintPure, Category = "Assembly|Visual")
+	bool GetJointWorldAnchors(const FAssemblyJointInstance& Joint, FVector& OutA, FVector& OutB) const;
+	UFUNCTION(BlueprintPure, Category = "Assembly|Visual")
+	bool HasJointArt(FGuid InstanceId) const;
+	UFUNCTION(BlueprintPure, Category = "Assembly|Visual")
+	UPaperSprite* GetCoreArtSprite() const;
+	UFUNCTION(BlueprintPure, Category = "Assembly|Visual")
+	UPaperSprite* GetJointArtSprite(FGuid InstanceId) const;
+	// Explicitly reload a changed configuration; artwork is never resolved every frame.
+	UFUNCTION(BlueprintCallable, Category = "Assembly|Visual")
+	void RefreshAppearance();
 
 	// Two clicks on world bone surfaces. Only muscles require the model's selected W/A/S/D key.
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Muscles")
 	bool InstallMuscleAtWorldPoints(FName TypeId, FVector WorldA, FVector WorldB, FGuid& OutInstanceId, FText& OutReason);
+	// Preserve the chosen bone identities when bones move or overlap between endpoint clicks.
+	UFUNCTION(BlueprintCallable, Category = "Assembly|Muscles")
+	bool InstallMuscleAtEndpoints(FName TypeId, const FAssemblyMuscleEndpoint& EndpointA,
+		const FAssemblyMuscleEndpoint& EndpointB, FGuid& OutInstanceId, FText& OutReason);
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Muscles")
 	bool MoveMuscleAtWorldPoints(FGuid InstanceId, FVector WorldA, FVector WorldB, FText& OutReason);
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Interaction")
@@ -118,6 +143,14 @@ private:
 	TObjectPtr<USphereComponent> CreatedCoreBody;
 	UPROPERTY(Transient)
 	TObjectPtr<UStaticMeshComponent> CreatedCoreVisual;
+	UPROPERTY(Transient)
+	TObjectPtr<UAssemblyAppearanceData> LoadedAppearanceData;
+	UPROPERTY(Transient)
+	TObjectPtr<UPaperSpriteComponent> CoreArtView;
+	UPROPERTY(Transient)
+	TMap<FGuid, TObjectPtr<UPaperSpriteComponent>> JointArtViews;
+	UPROPERTY(Transient)
+	TMap<FGuid, TObjectPtr<UPaperSpriteComponent>> BreakableMarkerViews;
 	UPROPERTY()
 	TObjectPtr<UStaticMesh> CorePlaceholderMesh;
 	UPROPERTY(Transient)
@@ -137,6 +170,10 @@ private:
 	bool CanEdit(FText& OutReason) const;
 	bool CreateCore(FText& OutReason);
 	void UpdateCorePlaceholder();
+	void ResolveAppearanceData();
+	void SynchronizeAppearanceViews();
+	void UpdateAppearanceTransforms();
+	void DestroyAppearanceViews();
 	ANormalBone* SpawnBoneView(FGuid InstanceId, FText& OutReason);
 	AAssemblyMuscle* SpawnMuscleView(FGuid InstanceId, FText& OutReason);
 	void ApplyPreview();

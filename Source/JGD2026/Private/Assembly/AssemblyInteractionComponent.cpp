@@ -1,5 +1,6 @@
 #include "Assembly/AssemblyInteractionComponent.h"
 #include "Assembly/AssemblyComponent.h"
+#include "Assembly/AssemblyAppearanceData.h"
 #include "Assembly/AssemblyMuscle.h"
 #include "Assembly/AssemblyPhysicsBridgeComponent.h"
 #include "Assembly/NormalBone.h"
@@ -17,6 +18,9 @@
 UAssemblyInteractionComponent::UAssemblyInteractionComponent()
 {
 	PrimaryComponentTick.bCanEverTick = true;
+	PrimaryComponentTick.TickGroup = TG_PostPhysics;
+	AppearanceData = TSoftObjectPtr<UAssemblyAppearanceData>(FSoftObjectPath(
+		TEXT("/Game/Character/Assembly/DA_AssemblyAppearance_Default.DA_AssemblyAppearance_Default")));
 	BoneActorClass = ANormalBone::StaticClass();
 	MuscleActorClass = AAssemblyMuscle::StaticClass();
 	PhysicsBridgeClass = UAssemblyPhysicsBridgeComponent::StaticClass();
@@ -62,6 +66,7 @@ void UAssemblyInteractionComponent::TickComponent(float DeltaTime, ELevelTick Ti
 		}
 	}
 	UpdateCorePlaceholder();
+	UpdateAppearanceTransforms();
 	// Re-evaluate when Space/physics moves the assembly frame; do not quantize the cursor to cells.
 	if (bDragging && bHasPointerPosition && BoundAssembly.IsValid())
 	{
@@ -139,6 +144,7 @@ bool UAssemblyInteractionComponent::InitializeInteraction(UAssemblyComponent* As
 	BoundAssembly = Assembly;
 	SpawnOwnerTransform = GetOwner()->GetActorTransform();
 	if (!CreateCore(OutReason)) { ClearInteraction(); return false; }
+	ResolveAppearanceData();
 	Assembly->OnAssemblyChanged.AddUniqueDynamic(this, &UAssemblyInteractionComponent::HandleAssemblyChanged);
 	Assembly->OnAssemblyReset.AddUniqueDynamic(this, &UAssemblyInteractionComponent::HandleAssemblyReset);
 	Assembly->OnPhaseChanged.AddUniqueDynamic(this, &UAssemblyInteractionComponent::HandlePhaseChanged);
@@ -270,6 +276,7 @@ bool UAssemblyInteractionComponent::SynchronizeViews(FText& OutReason)
 		if (!BoundAssembly->GetBone(DragExistingId, Instance)) { CancelBoneDrag(); }
 	}
 	UpdateCorePlaceholder();
+	SynchronizeAppearanceViews();
 	RequestPhysicsSnapshot();
 	OnViewsChanged.Broadcast();
 	return bSuccess;
@@ -341,11 +348,22 @@ bool UAssemblyInteractionComponent::UpdateBoneDragFromMouse(APlayerController* P
 		|| !BoundAssembly->RayToAssemblyPlane(Origin, Direction, LocalPosition))
 	{
 		OutReason = LOCTEXT("MouseOffPlane", "鼠标无法投射到当前组装平面。");
-		bHasPointerPosition = false;
-		if (bDragging) { DragPreview.bValid = false; DragPreview.Reason = OutReason; ApplyPreview(); OnBoneDragPreviewChanged.Broadcast(); }
+		InvalidateBoneDragPreview(OutReason);
 		return false;
 	}
 	return UpdateBoneDragAtLocalPosition(LocalPosition, OutReason);
+}
+
+void UAssemblyInteractionComponent::InvalidateBoneDragPreview(FText Reason)
+{
+	bHasPointerPosition = false;
+	if (bDragging)
+	{
+		DragPreview.bValid = false;
+		DragPreview.Reason = Reason;
+		ApplyPreview();
+		OnBoneDragPreviewChanged.Broadcast();
+	}
 }
 
 bool UAssemblyInteractionComponent::UpdateBoneDragAtLocalPosition(FVector2D LocalPosition, FText& OutReason)
@@ -427,6 +445,14 @@ bool UAssemblyInteractionComponent::InstallMuscleAtWorldPoints(FName TypeId, FVe
 		OutReason = LOCTEXT("MuscleOffBone", "肌肉的两端都必须落在骨头上，圆球核心不能作为肌肉连接点。");
 		return false;
 	}
+	return InstallMuscleAtEndpoints(TypeId, EndpointA, EndpointB, OutInstanceId, OutReason);
+}
+
+bool UAssemblyInteractionComponent::InstallMuscleAtEndpoints(FName TypeId, const FAssemblyMuscleEndpoint& EndpointA,
+	const FAssemblyMuscleEndpoint& EndpointB, FGuid& OutInstanceId, FText& OutReason)
+{
+	OutInstanceId.Invalidate();
+	if (!CanEdit(OutReason)) { return false; }
 	{
 		TGuardValue<bool> Guard(bSuppressSynchronization, true);
 		if (!BoundAssembly->TryInstallMuscle(TypeId, EndpointA, EndpointB, OutInstanceId, OutReason)) { return false; }
@@ -474,6 +500,7 @@ void UAssemblyInteractionComponent::HandleAssemblyChanged()
 
 void UAssemblyInteractionComponent::DestroyViews()
 {
+	DestroyAppearanceViews();
 	for (const auto& Item : MuscleViews) { if (IsValid(Item.Value)) { Item.Value->ClearAssemblyBinding(); Item.Value->Destroy(); } }
 	MuscleViews.Reset();
 	for (const auto& Item : BoneViews) { if (IsValid(Item.Value)) { Item.Value->ClearAssemblyBinding(); Item.Value->Destroy(); } }
@@ -493,6 +520,7 @@ void UAssemblyInteractionComponent::HandleAssemblyReset()
 		}
 	}
 	UpdateCorePlaceholder();
+	SynchronizeAppearanceViews();
 	RequestPhysicsSnapshot();
 	OnViewsChanged.Broadcast();
 }
@@ -526,6 +554,7 @@ void UAssemblyInteractionComponent::ClearInteraction()
 	CreatedCoreVisual = nullptr;
 	if (IsValid(CreatedCoreBody)) { CreatedCoreBody->DestroyComponent(); }
 	CreatedCoreBody = nullptr;
+	LoadedAppearanceData = nullptr;
 	BoundAssembly.Reset();
 }
 

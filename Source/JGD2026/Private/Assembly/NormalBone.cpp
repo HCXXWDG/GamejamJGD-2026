@@ -145,7 +145,10 @@ void ANormalBone::UpdateGeometry(const FNormalBonePhysicalStats& Stats)
 	const FVector HalfSize(Stats.Length * 0.5, BodyHalfThickness, Stats.Thickness * 0.5);
 	BoneBody->SetBoxExtent(HalfSize, false);
 	// Sprite fitting does not scale the bone-local coordinate system used by muscles and physics.
-	const FVector VisualScale(HalfSize.X / Bounds.BoxExtent.X, 1.0, HalfSize.Z / Bounds.BoxExtent.Z);
+	const double LengthScale = HalfSize.X / Bounds.BoxExtent.X;
+	const double ArtworkThicknessFactor = (static_cast<uint8>(GetBoneParameters().Thickness) + 1) * 0.5;
+	const FVector VisualScale(LengthScale, 1.0, bUseArtworkProportions
+		? LengthScale * ArtworkThicknessFactor : HalfSize.Z / Bounds.BoxExtent.Z);
 	BoneSprite->SetRelativeScale3D(VisualScale);
 	BoneSprite->SetRelativeLocation(FVector(-Bounds.Origin.X * VisualScale.X, 0.0, -Bounds.Origin.Z * VisualScale.Z));
 	BoneSprite->SetRelativeRotation(FRotator::ZeroRotator);

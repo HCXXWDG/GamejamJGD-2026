@@ -12,6 +12,18 @@
 
 namespace
 {
+	bool HasUsableSprite(UPaperSprite* Sprite)
+	{
+		if (!IsValid(Sprite))
+		{
+			return false;
+		}
+		const FBoxSphereBounds Bounds = Sprite->GetRenderBounds();
+		return !Bounds.Origin.ContainsNaN() && !Bounds.BoxExtent.ContainsNaN()
+			&& FMath::IsFinite(Bounds.BoxExtent.X) && FMath::IsFinite(Bounds.BoxExtent.Z)
+			&& Bounds.BoxExtent.X > UE_SMALL_NUMBER && Bounds.BoxExtent.Z > UE_SMALL_NUMBER;
+	}
+
 	bool HasUsableEndpoints(const FVector& A, const FVector& B)
 	{
 		return !A.ContainsNaN() && !B.ContainsNaN()
@@ -49,19 +61,33 @@ UAssemblyComponent* AAssemblyMuscle::GetAssemblyComponent() const
 
 bool AAssemblyMuscle::HasUsablePresentation() const
 {
-	if (!IsValid(CurveSprite) || !FMath::IsFinite(LineWidth) || LineWidth <= UE_SMALL_NUMBER
+	if (!FMath::IsFinite(LineWidth) || LineWidth <= UE_SMALL_NUMBER
 		|| !FMath::IsFinite(BendRatio))
 	{
 		return false;
 	}
-	const FBoxSphereBounds Bounds = CurveSprite->GetRenderBounds();
-	return !Bounds.Origin.ContainsNaN() && !Bounds.BoxExtent.ContainsNaN()
-		&& Bounds.BoxExtent.X > UE_SMALL_NUMBER && Bounds.BoxExtent.Z > UE_SMALL_NUMBER;
+	if (!CurveSliceSprites.IsEmpty())
+	{
+		if (CurveSliceSprites.Num() < 4 || CurveSliceSprites.Num() > 64)
+		{
+			return false;
+		}
+		for (UPaperSprite* Slice : CurveSliceSprites)
+		{
+			if (!HasUsableSprite(Slice))
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+	return HasUsableSprite(CurveSprite);
 }
 
 void AAssemblyMuscle::EnsureSegmentSprites()
 {
-	const int32 Count = FMath::Clamp(CurveSegments, 4, 64);
+	const int32 Count = CurveSliceSprites.IsEmpty()
+		? FMath::Clamp(CurveSegments, 4, 64) : CurveSliceSprites.Num();
 	while (SegmentSprites.Num() > Count)
 	{
 		if (UPaperSpriteComponent* Segment = SegmentSprites.Pop())
@@ -143,12 +169,14 @@ void AAssemblyMuscle::RefreshCurve()
 	}
 	CurveSpline->UpdateSpline();
 	const float SplineLength = CurveSpline->GetSplineLength();
-	const FBoxSphereBounds Bounds = CurveSprite->GetRenderBounds();
 	const FLinearColor Color = GetFeedbackColor();
 	const int32 Count = SegmentSprites.Num();
+	const bool bUseSlices = !CurveSliceSprites.IsEmpty();
 	for (int32 Index = 0; Index < Count; ++Index)
 	{
 		UPaperSpriteComponent* Segment = SegmentSprites[Index];
+		UPaperSprite* Sprite = bUseSlices ? CurveSliceSprites[Index].Get() : CurveSprite.Get();
+		const FBoxSphereBounds Bounds = Sprite->GetRenderBounds();
 		const FVector Start = CurveSpline->GetLocationAtDistanceAlongSpline(
 			SplineLength * Index / Count, ESplineCoordinateSpace::World);
 		const FVector End = CurveSpline->GetLocationAtDistanceAlongSpline(
@@ -159,15 +187,17 @@ void AAssemblyMuscle::RefreshCurve()
 			Segment->SetVisibility(false);
 			continue;
 		}
-		Segment->SetSprite(CurveSprite);
-		Segment->SetMaterial(0, CurveMaterial ? CurveMaterial.Get() : CurveSprite->GetDefaultMaterial());
+		Segment->SetSprite(Sprite);
+		Segment->SetMaterial(0, CurveMaterial ? CurveMaterial.Get() : Sprite->GetDefaultMaterial());
 		Segment->SetSpriteColor(Color);
 		Segment->SetTranslucentSortPriority(TranslucencySortPriority);
 		const FQuat Rotation = FRotationMatrix::MakeFromXY(Delta, FVector(0.0, 1.0, 0.0)).ToQuat();
-		// Overlap internal seams only; the first and last visible ends remain at their anchors.
+		// Repeated placeholders overlap internal seams. Complete-image slices meet without repeated UVs.
+		// The first and last visible ends remain at their exact anchors in either mode.
 		const FVector Direction = Delta.GetSafeNormal();
-		const FVector DrawStart = Start - Direction * (Index > 0 ? LineWidth * 0.1 : 0.0);
-		const FVector DrawEnd = End + Direction * (Index + 1 < Count ? LineWidth * 0.1 : 0.0);
+		const double SeamOverlap = bUseSlices ? 0.0 : LineWidth * 0.1;
+		const FVector DrawStart = Start - Direction * (Index > 0 ? SeamOverlap : 0.0);
+		const FVector DrawEnd = End + Direction * (Index + 1 < Count ? SeamOverlap : 0.0);
 		const FVector Scale(FVector::Distance(DrawStart, DrawEnd) / (Bounds.BoxExtent.X * 2.0),
 			1.0, LineWidth / (Bounds.BoxExtent.Z * 2.0));
 		const FVector Location = (DrawStart + DrawEnd) * 0.5 - Rotation.RotateVector(Bounds.Origin * Scale);
@@ -195,7 +225,8 @@ bool AAssemblyMuscle::InitializeMuscle(UAssemblyComponent* Assembly, FGuid Insta
 	if (!HasUsablePresentation() || !Assembly->GetEndpointWorldPosition(Data.EndpointA, A)
 		|| !Assembly->GetEndpointWorldPosition(Data.EndpointB, B) || !HasUsableEndpoints(A, B))
 	{
-		OutReason = LOCTEXT("InvalidCurve", "肌肉端点或曲线 Sprite、线宽、弯曲参数无效。");
+		HideCurve();
+		OutReason = LOCTEXT("InvalidCurve", "肌肉端点、曲线 Sprite、线宽或弯曲参数无效；切片数组必须为空或包含 4–64 张有效 Sprite。");
 		return false;
 	}
 	BoundAssembly = Assembly;
