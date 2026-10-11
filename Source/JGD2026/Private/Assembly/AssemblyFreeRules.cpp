@@ -4,7 +4,7 @@
 
 namespace
 {
-	constexpr double Tolerance = 0.001;
+	constexpr double FreeAssemblyGeometryTolerance = 0.001;
 	bool IsFinite(FVector2D P) { return FMath::IsFinite(P.X) && FMath::IsFinite(P.Y); }
 	const FAssemblyBoneDefinition* FindDefinition(const TArray<FAssemblyBoneDefinition>& Definitions, FName Id)
 	{
@@ -31,7 +31,7 @@ namespace
 		const FVector2D Offset = B.Center - A.Center;
 		for (FVector2D Axis : { A.XAxis, A.ZAxis, B.XAxis, B.ZAxis })
 		{
-			if (FMath::Abs(FVector2D::DotProduct(Offset, Axis)) >= RadiusOn(A, Axis) + RadiusOn(B, Axis) - Tolerance)
+			if (FMath::Abs(FVector2D::DotProduct(Offset, Axis)) >= RadiusOn(A, Axis) + RadiusOn(B, Axis) - FreeAssemblyGeometryTolerance)
 			{
 				return false;
 			}
@@ -45,7 +45,7 @@ namespace
 		const double Z = FVector2D::DotProduct(Delta, Bone.ZAxis);
 		const double DX = X - FMath::Clamp(X, -Bone.HalfSize.X, Bone.HalfSize.X);
 		const double DZ = Z - FMath::Clamp(Z, -Bone.HalfSize.Y, Bone.HalfSize.Y);
-		return DX * DX + DZ * DZ < FMath::Square(FMath::Max(0.0, Radius - Tolerance));
+		return DX * DX + DZ * DZ < FMath::Square(FMath::Max(0.0, Radius - FreeAssemblyGeometryTolerance));
 	}
 	FVector2D TransformPoint(const FTransform& Pose, FVector2D P)
 	{
@@ -123,8 +123,8 @@ bool AssemblyFreeRules::IsPointOnBone(const FNormalBoneParameters& P, FVector2D 
 	FNormalBonePhysicalStats Stats;
 	FText Reason;
 	return IsFinite(LocalPoint) && NormalBoneMetrics::Evaluate(P, Stats, Reason)
-		&& FMath::Abs(LocalPoint.X) <= Stats.Length * 0.5 + Tolerance
-		&& FMath::Abs(LocalPoint.Y) <= Stats.Thickness * 0.5 + Tolerance;
+		&& FMath::Abs(LocalPoint.X) <= Stats.Length * 0.5 + FreeAssemblyGeometryTolerance
+		&& FMath::Abs(LocalPoint.Y) <= Stats.Thickness * 0.5 + FreeAssemblyGeometryTolerance;
 }
 
 bool AssemblyFreeRules::ValidateGeometry(const FAssemblyFreeSettings& Settings,
@@ -172,8 +172,8 @@ TArray<FAssemblyJointInstance> AssemblyFreeRules::BuildJoints(const FAssemblyFre
 		const FAssemblyJointInstance* Old = Previous.FindByPredicate([&](const FAssemblyJointInstance& J)
 		{
 			// The core contact can slide around its circumference without changing joint identity.
-			return J.BoneA == A && J.BoneB == B && (!A.IsValid() || J.LocalAnchorA.Equals(AnchorA, Tolerance))
-				&& J.LocalAnchorB.Equals(AnchorB, Tolerance);
+			return J.BoneA == A && J.BoneB == B && (!A.IsValid() || J.LocalAnchorA.Equals(AnchorA, FreeAssemblyGeometryTolerance))
+				&& J.LocalAnchorB.Equals(AnchorB, FreeAssemblyGeometryTolerance);
 		});
 		if (Old) { Joint = *Old; }
 		else
@@ -185,7 +185,7 @@ TArray<FAssemblyJointInstance> AssemblyFreeRules::BuildJoints(const FAssemblyFre
 		Joint.BoneA = A; Joint.BoneB = B; Joint.LocalAnchorA = AnchorA; Joint.LocalAnchorB = AnchorB;
 		Result.Add(Joint);
 	};
-	const double Threshold = S.ConnectionDistance + Tolerance;
+	const double Threshold = S.ConnectionDistance + FreeAssemblyGeometryTolerance;
 	for (int32 I = 0; I < Bones.Num(); ++I)
 	{
 		const FAssemblyBoneInstance& A = Bones[I];
@@ -201,7 +201,7 @@ TArray<FAssemblyJointInstance> AssemblyFreeRules::BuildJoints(const FAssemblyFre
 			const double Distance = CoreDelta.Size();
 			if (FMath::IsFinite(Distance) && FMath::Abs(Distance - S.CoreRadius) <= Threshold)
 			{
-				const FVector2D Direction = Distance > Tolerance ? CoreDelta / Distance : FVector2D(1.0, 0.0);
+				const FVector2D Direction = Distance > FreeAssemblyGeometryTolerance ? CoreDelta / Distance : FVector2D(1.0, 0.0);
 				Add(FGuid(), A.InstanceId, Direction * S.CoreRadius, AnchorA);
 			}
 			for (int32 K = I + 1; K < Bones.Num(); ++K)

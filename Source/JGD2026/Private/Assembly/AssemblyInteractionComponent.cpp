@@ -149,16 +149,18 @@ bool UAssemblyInteractionComponent::InitializeInteraction(UAssemblyComponent* As
 		{
 			Bridge = NewObject<UAssemblyPhysicsBridgeComponent>(GetOwner(), PhysicsBridgeClass);
 			GetOwner()->AddInstanceComponent(Bridge);
-			Bridge->RegisterComponent();
+			// Registration can run BeginPlay; retain ownership for any failure cleanup.
+			BoundBridge = Bridge;
 			bOwnsBridge = true;
+			Bridge->RegisterComponent();
 		}
-		BoundBridge = Bridge;
 		if (Bridge && Bridge->IsBridgeInitialized() && Bridge->GetPhysicsContext().Assembly != Assembly)
 		{
 			OutReason = LOCTEXT("BridgeDifferentModel", "已有物理桥绑定其他组装模型，请使用独立角色组件。");
 			ClearInteraction();
 			return false;
 		}
+		BoundBridge = Bridge;
 		if (Bridge && !Bridge->InitializeBridge(Assembly, GetCoreBody(), OutReason))
 		{
 			ClearInteraction();
@@ -511,7 +513,9 @@ void UAssemblyInteractionComponent::ClearInteraction()
 	}
 	DestroyViews();
 	if (bOwnsBridge && BoundBridge.IsValid()) { BoundBridge->ClearBridge(); BoundBridge->DestroyComponent(); }
-	else if (BoundBridge.IsValid())
+	// A synchronous message callback may have rebound a reused bridge to another model.
+	else if (BoundBridge.IsValid() && BoundAssembly.IsValid()
+		&& BoundBridge->GetPhysicsContext().Assembly == BoundAssembly.Get())
 	{
 		if (CreatedCoreBody) { BoundBridge->SetCoreBody(IsValid(ExistingCoreBody) ? ExistingCoreBody.Get() : nullptr); }
 		BoundBridge->RequestPhysicsRebuild();
