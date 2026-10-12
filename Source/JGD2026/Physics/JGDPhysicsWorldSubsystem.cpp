@@ -406,23 +406,12 @@ void UJGDPhysicsWorldSubsystem::RebuildActiveVolumes(
 {
 	Registration.ActiveVolumes.Reset();
 
-	TArray<AActor*> OverlappingActors;
-	Character.GetOverlappingActors(OverlappingActors, AJGDPhysicsProfileVolume::StaticClass());
-	for (AActor* Actor : OverlappingActors)
-	{
-		AJGDPhysicsProfileVolume* Volume = Cast<AJGDPhysicsProfileVolume>(Actor);
-		if (IsValid(Volume) && Volume->GetWorld() == GetWorld())
-		{
-			Registration.ActiveVolumes.AddUnique(Volume);
-		}
-	}
-
-	// Overlap caches can lag a PhysicsVolume update by a frame. Keep the engine-selected
-	// volume as a fallback and place it last so it wins an otherwise ambiguous priority tie.
+	// ActorEnteredVolume/ActorLeavingVolume report transitions for the PhysicsVolume selected
+	// by the engine, not every overlapping brush. Re-registration must restore the same state
+	// so an unselected overlap cannot remain after the character later leaves all volumes.
 	if (AJGDPhysicsProfileVolume* CurrentVolume = Cast<AJGDPhysicsProfileVolume>(Character.GetPhysicsVolume());
 		IsValid(CurrentVolume) && CurrentVolume->GetWorld() == GetWorld())
 	{
-		Registration.ActiveVolumes.Remove(CurrentVolume);
 		Registration.ActiveVolumes.Add(CurrentVolume);
 	}
 }

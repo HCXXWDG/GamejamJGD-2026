@@ -18,12 +18,13 @@
   其他世界的请求静默忽略；结构体类型不符、目标失效、非空但已失效的 Profile 会警告并拒绝。
 - `WorldProfile = None`：恢复该世界首次应用配置前的重力，取消世界默认角色 Profile。
   没有区域或角色 Base 覆盖的角色使用内置 `FJGDCharacterPhysicsSettings` 默认值。
-- `BaseProfile = None`：清除角色专属配置，仍按 **最高优先级 Volume → Base → World 默认 → 内置默认** 解析。
-  同优先级区域取后进入的区域。有 Participant 时会同步其保存值；无组件时自动注册角色。
+- `BaseProfile = None`：清除角色专属配置，仍按 **UE 当前选中的 PhysicsVolume → Base → World 默认 → 内置默认** 解析。
+  重叠 PhysicsVolume 的选择与优先级由 UE 负责。有 Participant 时会同步其保存值；无组件时自动注册角色。
 - 仅在世界 `OnWorldBeginPlay` 后、`OnWorldEndPlay` 前处理请求；开始前的请求不缓存、不重放。
   此总线是本地同步调用，不提供网络复制、可靠网络传输或历史状态回放。
-- 角色从 Subsystem 注销后若仍位于 `AJGDPhysicsProfileVolume` 内，再次注册会从当前 Overlap
-  和引擎选中的 PhysicsVolume 重建区域列表，不要求角色先离开再进入。
+- 角色从 Subsystem 注销后若仍位于 `AJGDPhysicsProfileVolume` 内，再次注册会恢复引擎当前选中的
+  PhysicsVolume，不要求角色先离开再进入。普通几何 Overlap 不单独加入区域列表，以保持重建和
+  `ActorEnteredVolume` / `ActorLeavingVolume` 的原生通知语义一致。
 
 ## 通知时机
 
@@ -136,7 +137,7 @@ PhysicsBus.Reset();
 
 ## 兼容与验证入口
 
-已有 DataAsset、角色注册组件、Volume 优先级、风场 Tick/AddForce 公式及直接调用 API 不变。
+已有 DataAsset、角色注册组件、UE PhysicsVolume 优先级、风场 Tick/AddForce 公式及直接调用 API 不变。
 GameplayTag 仅负责模块间请求/通知，不接管每帧风力，也不要求箱子注册为 Character。
 
 `BP_WindVolume_Test` 以世界空间 `WindDirection` 的 XZ 投影作为角色和刚体的唯一风向；箭头只做
@@ -144,9 +145,9 @@ GameplayTag 仅负责模块间请求/通知，不接管每帧风力，也不要�
 角色风力不受这个刚体专用开关影响。
 
 关闭编辑器完整构建 `JGD2026Editor Win64 Development` 后，运行 `JGD2026.Physics` 自动化测试。
-其中 `Messages` 覆盖路由、回退、去重、退订及回调重入；`PIE.WindBlueprints` 会创建空白临时关卡，
-为风场生成真实 Brush，并验证进出区域、区域内重注册、Profile 显示、统一风向及运行时关闭刚体风力，
-不保存任何地图或资产。
+其中 `Messages` 覆盖路由、回退、去重、退订及回调重入；PIE 用例会创建空白临时关卡，
+为区域生成真实 Brush，并验证风场进出、区域内重注册、Profile 显示、统一风向、运行时关闭刚体风力，
+以及高低优先级区域交叠时重注册并依次退出后恢复 Base Profile；不保存任何地图或资产。
 PIE 测试会切换当前关卡，请在单独编辑器进程运行；检测到未保存地图或正在 PIE 时会拒绝执行。
 
 ```powershell

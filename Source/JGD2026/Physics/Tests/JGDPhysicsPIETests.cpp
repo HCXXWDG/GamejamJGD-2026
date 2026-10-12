@@ -16,6 +16,7 @@
 #include "GameFramework/WorldSettings.h"
 #include "Physics/JGD2DPhysicsParticipantComponent.h"
 #include "Physics/JGDPhysicsProfileVolume.h"
+#include "Physics/JGDPhysicsProfiles.h"
 #include "Physics/JGDPhysicsWorldSubsystem.h"
 #include "Tests/AutomationEditorCommon.h"
 #include "Tests/AutomationCommon.h"
@@ -26,6 +27,31 @@ namespace JGDPhysicsPIETests
 	const FName CharacterTag(TEXT("PhysicsAutomationCharacter"));
 	const FName BoxTag(TEXT("PhysicsAutomationBox"));
 	const FName WindTag(TEXT("PhysicsAutomationWind"));
+	const FName MultiVolumeCharacterTag(TEXT("PhysicsAutomationMultiVolumeCharacter"));
+	const FName LowVolumeTag(TEXT("PhysicsAutomationLowVolume"));
+	const FName HighVolumeTag(TEXT("PhysicsAutomationHighVolume"));
+	TWeakObjectPtr<UWorld> AutomationOwnedEditorWorld;
+
+	UWorld* CreateTransientPIETestMap(FAutomationTestBase& Test)
+	{
+		if (GEditor->PlayWorld)
+		{
+			Test.AddError(TEXT("Run the PIE regression while the editor is not already playing."));
+			return nullptr;
+		}
+
+		UWorld* CurrentWorld = GEditor->GetEditorWorldContext().World();
+		if (CurrentWorld && CurrentWorld->GetOutermost()->IsDirty()
+			&& CurrentWorld != AutomationOwnedEditorWorld.Get())
+		{
+			Test.AddError(TEXT("Run the PIE regression in a separate editor process or with a saved, idle editor. No unsaved map will be discarded."));
+			return nullptr;
+		}
+
+		UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
+		AutomationOwnedEditorWorld = World;
+		return World;
+	}
 
 	class FCheckWindPIE : public IAutomationLatentCommand
 	{
@@ -209,6 +235,145 @@ namespace JGDPhysicsPIETests
 		float StageStartedAt = 0.0f;
 		int32 Stage = 0;
 	};
+
+	class FCheckMultiVolumeReregisterPIE : public IAutomationLatentCommand
+	{
+	public:
+		explicit FCheckMultiVolumeReregisterPIE(FAutomationTestBase* InTest) : Test(InTest) {}
+
+		virtual bool Update() override
+		{
+			if (FPlatformTime::Seconds() - StartedAt > 30.0)
+			{
+				Test->AddError(TEXT("Timed out waiting for multi-volume re-registration PIE validation."));
+				return true;
+			}
+			UWorld* World = GEditor->PlayWorld;
+			if (!World || !World->HasBegunPlay())
+			{
+				return false;
+			}
+			if (Stage == 0)
+			{
+				for (TActorIterator<AActor> It(World); It; ++It)
+				{
+					if (It->ActorHasTag(MultiVolumeCharacterTag)) Character = Cast<AJGDWindTestCharacter>(*It);
+					if (It->ActorHasTag(LowVolumeTag)) LowVolume = Cast<AJGDPhysicsProfileVolume>(*It);
+					if (It->ActorHasTag(HighVolumeTag)) HighVolume = Cast<AJGDPhysicsProfileVolume>(*It);
+				}
+				if (!Test->TestNotNull(TEXT("Multi-volume character spawned in PIE"), Character.Get())
+					|| !Test->TestNotNull(TEXT("Low-priority brush volume spawned in PIE"), LowVolume.Get())
+					|| !Test->TestNotNull(TEXT("High-priority brush volume spawned in PIE"), HighVolume.Get()))
+				{
+					return true;
+				}
+				Physics = World->GetSubsystem<UJGDPhysicsWorldSubsystem>();
+				UJGD2DPhysicsParticipantComponent* Participant =
+					Character->FindComponentByClass<UJGD2DPhysicsParticipantComponent>();
+				if (!Test->TestNotNull(TEXT("Physics subsystem exists in multi-volume PIE"), Physics)
+					|| !Test->TestNotNull(TEXT("Multi-volume character exposes its physics participant"), Participant))
+				{
+					return true;
+				}
+
+				BaseProfile = NewObject<UJGDCharacterPhysicsProfile>(Character.Get());
+				LowProfile = NewObject<UJGDCharacterPhysicsProfile>(LowVolume.Get());
+				HighProfile = NewObject<UJGDCharacterPhysicsProfile>(HighVolume.Get());
+				BaseProfile->Settings.MaxWalkSpeed = 900.0f;
+				LowProfile->Settings.MaxWalkSpeed = 111.0f;
+				HighProfile->Settings.MaxWalkSpeed = 222.0f;
+				BaseProfile->Settings.bSnapToPlaneWhenApplied = false;
+				LowProfile->Settings.bSnapToPlaneWhenApplied = false;
+				HighProfile->Settings.bSnapToPlaneWhenApplied = false;
+				LowVolume->CharacterProfile = LowProfile.Get();
+				HighVolume->CharacterProfile = HighProfile.Get();
+				Participant->SetBaseProfile(BaseProfile.Get());
+
+				Character->GetCharacterMovement()->SetMovementMode(MOVE_Flying);
+				Character->GetCharacterMovement()->StopMovementImmediately();
+				Character->SetActorLocation(FVector(150.0, 0.0, 600.0), false, nullptr, ETeleportType::TeleportPhysics);
+				Stage = 1;
+				StageStartedAt = World->GetTimeSeconds();
+				return false;
+			}
+			if (!Character.IsValid() || !LowVolume.IsValid() || !HighVolume.IsValid()
+				|| !BaseProfile.IsValid() || !LowProfile.IsValid() || !HighProfile.IsValid())
+			{
+				Test->AddError(TEXT("A multi-volume PIE object was unexpectedly destroyed."));
+				return true;
+			}
+			if (World->GetTimeSeconds() - StageStartedAt < 0.35f)
+			{
+				return false;
+			}
+			if (Stage == 1)
+			{
+				Test->TestTrue(TEXT("Character overlaps the low-priority brush"), Character->IsOverlappingActor(LowVolume.Get()));
+				Test->TestTrue(TEXT("Character overlaps the high-priority brush"), Character->IsOverlappingActor(HighVolume.Get()));
+				Test->TestEqual(TEXT("UE selects the high-priority PhysicsVolume in the overlap"),
+					Character->GetPhysicsVolume(), static_cast<APhysicsVolume*>(HighVolume.Get()));
+				Test->TestEqual(TEXT("High-priority profile applies before re-registration"),
+					Physics->GetResolvedCharacterProfile(Character.Get()), HighProfile.Get());
+
+				Physics->UnregisterCharacter(Character.Get());
+				Physics->RegisterCharacter(Character.Get(), BaseProfile.Get());
+				Test->TestEqual(TEXT("Re-registration restores only the engine-selected high profile"),
+					Physics->GetResolvedCharacterProfile(Character.Get()), HighProfile.Get());
+				Test->TestEqual(TEXT("Re-registration reapplies the high profile speed"),
+					Character->GetCharacterMovement()->MaxWalkSpeed, 222.0f);
+
+				Character->SetActorLocation(FVector(500.0, 0.0, 600.0), false, nullptr, ETeleportType::TeleportPhysics);
+				Stage = 2;
+				StageStartedAt = World->GetTimeSeconds();
+				return false;
+			}
+			if (Stage == 2)
+			{
+				Test->TestFalse(TEXT("Character has left the unselected low-priority brush"),
+					Character->IsOverlappingActor(LowVolume.Get()));
+				Test->TestTrue(TEXT("Character remains inside the high-priority brush"),
+					Character->IsOverlappingActor(HighVolume.Get()));
+				Test->TestEqual(TEXT("High profile remains active after leaving only the low brush"),
+					Physics->GetResolvedCharacterProfile(Character.Get()), HighProfile.Get());
+
+				Character->SetActorLocation(FVector(1100.0, 0.0, 600.0), false, nullptr, ETeleportType::TeleportPhysics);
+				Stage = 3;
+				StageStartedAt = World->GetTimeSeconds();
+				return false;
+			}
+
+			Test->TestFalse(TEXT("Character has left the low-priority brush"), Character->IsOverlappingActor(LowVolume.Get()));
+			Test->TestFalse(TEXT("Character has left the high-priority brush"), Character->IsOverlappingActor(HighVolume.Get()));
+			Test->TestNotNull(TEXT("UE restores the default PhysicsVolume"), Character->GetPhysicsVolume());
+			Test->TestTrue(TEXT("Neither profile volume remains selected"),
+				Character->GetPhysicsVolume() != LowVolume.Get() && Character->GetPhysicsVolume() != HighVolume.Get());
+			Test->TestEqual(TEXT("Leaving every brush restores the base profile"),
+				Physics->GetResolvedCharacterProfile(Character.Get()), BaseProfile.Get());
+			Test->TestEqual(TEXT("Leaving every brush restores the base profile speed"),
+				Character->GetCharacterMovement()->MaxWalkSpeed, 900.0f);
+			CheckDisplayedProfile(BaseProfile.Get(), TEXT("Final base profile reaches the cached display via bus"));
+			return true;
+		}
+
+	private:
+		void CheckDisplayedProfile(UJGDCharacterPhysicsProfile* Expected, const TCHAR* What)
+		{
+			const auto* Property = FindFProperty<FObjectPropertyBase>(AJGDWindTestCharacter::StaticClass(), TEXT("DisplayedPhysicsProfile"));
+			Test->TestEqual(What, Property->GetObjectPropertyValue_InContainer(Character.Get()), static_cast<UObject*>(Expected));
+		}
+
+		FAutomationTestBase* Test;
+		TWeakObjectPtr<AJGDWindTestCharacter> Character;
+		TWeakObjectPtr<AJGDPhysicsProfileVolume> LowVolume;
+		TWeakObjectPtr<AJGDPhysicsProfileVolume> HighVolume;
+		TWeakObjectPtr<UJGDCharacterPhysicsProfile> BaseProfile;
+		TWeakObjectPtr<UJGDCharacterPhysicsProfile> LowProfile;
+		TWeakObjectPtr<UJGDCharacterPhysicsProfile> HighProfile;
+		UJGDPhysicsWorldSubsystem* Physics = nullptr;
+		double StartedAt = FPlatformTime::Seconds();
+		float StageStartedAt = 0.0f;
+		int32 Stage = 0;
+	};
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FJGDPhysicsWindPIETest, "JGD2026.Physics.PIE.WindBlueprints",
@@ -217,12 +382,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FJGDPhysicsWindPIETest, "JGD2026.Physics.PIE.Wi
 bool FJGDPhysicsWindPIETest::RunTest(const FString& Parameters)
 {
 	using namespace JGDPhysicsPIETests;
-	if (GEditor->PlayWorld || GEditor->GetEditorWorldContext().World()->GetOutermost()->IsDirty())
+	UWorld* World = CreateTransientPIETestMap(*this);
+	if (!World)
 	{
-		AddError(TEXT("Run the PIE regression in a separate editor process or with a saved, idle editor. No unsaved map will be discarded."));
 		return false;
 	}
-	UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
 	World->GetWorldSettings()->DefaultGameMode = AGameModeBase::StaticClass();
 	UClass* CharacterClass = LoadClass<AJGDWindTestCharacter>(nullptr, TEXT("/Game/Physics/BP_Player_WindTest.BP_Player_WindTest_C"));
 	UClass* WindClass = LoadClass<AJGDPhysicsProfileVolume>(nullptr, TEXT("/Game/Physics/Volume/BP_WindVolume_Test.BP_WindVolume_Test_C"));
@@ -259,6 +423,56 @@ bool FJGDPhysicsWindPIETest::RunTest(const FString& Parameters)
 	World->SpawnActor<APlayerStart>(FVector(-1500, 0, 600), FRotator::ZeroRotator, Params);
 	ADD_LATENT_AUTOMATION_COMMAND(FStartPIECommand(false));
 	ADD_LATENT_AUTOMATION_COMMAND(FCheckWindPIE(this));
+	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(0.25f));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FJGDPhysicsMultiVolumeReregisterPIETest,
+	"JGD2026.Physics.PIE.MultiVolumeReregister",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FJGDPhysicsMultiVolumeReregisterPIETest::RunTest(const FString& Parameters)
+{
+	using namespace JGDPhysicsPIETests;
+	UWorld* World = CreateTransientPIETestMap(*this);
+	if (!World)
+	{
+		return false;
+	}
+	World->GetWorldSettings()->DefaultGameMode = AGameModeBase::StaticClass();
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	auto* Character = World->SpawnActor<AJGDWindTestCharacter>(
+		AJGDWindTestCharacter::StaticClass(), FVector(-1500.0, 0.0, 600.0), FRotator::ZeroRotator, Params);
+	Character->Tags.Add(MultiVolumeCharacterTag);
+
+	auto* LowVolume = World->SpawnActor<AJGDPhysicsProfileVolume>(
+		AJGDPhysicsProfileVolume::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator, Params);
+	LowVolume->Tags.Add(LowVolumeTag);
+	LowVolume->Priority = 10;
+	auto* Builder = NewObject<UCubeBuilder>();
+	Builder->X = 200.0f;
+	Builder->Y = 600.0f;
+	Builder->Z = 1000.0f;
+	UActorFactory::CreateBrushForVolumeActor(LowVolume, Builder);
+	LowVolume->SetActorLocation(FVector(100.0, 0.0, 600.0));
+
+	auto* HighVolume = World->SpawnActor<AJGDPhysicsProfileVolume>(
+		AJGDPhysicsProfileVolume::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator, Params);
+	HighVolume->Tags.Add(HighVolumeTag);
+	HighVolume->Priority = 20;
+	Builder = NewObject<UCubeBuilder>();
+	Builder->X = 900.0f;
+	Builder->Y = 600.0f;
+	Builder->Z = 1000.0f;
+	UActorFactory::CreateBrushForVolumeActor(HighVolume, Builder);
+	HighVolume->SetActorLocation(FVector(550.0, 0.0, 600.0));
+
+	World->SpawnActor<APlayerStart>(FVector(-1500.0, 0.0, 600.0), FRotator::ZeroRotator, Params);
+	ADD_LATENT_AUTOMATION_COMMAND(FStartPIECommand(false));
+	ADD_LATENT_AUTOMATION_COMMAND(FCheckMultiVolumeReregisterPIE(this));
 	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(0.25f));
 	return true;
