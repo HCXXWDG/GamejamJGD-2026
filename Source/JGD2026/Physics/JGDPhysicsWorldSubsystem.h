@@ -3,12 +3,15 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "MessageBus/JGDMessageBusTypes.h"
 #include "Physics/JGDPhysicsProfiles.h"
 #include "Subsystems/WorldSubsystem.h"
+#include "UObject/StrongObjectPtr.h"
 #include "JGDPhysicsWorldSubsystem.generated.h"
 
 class ACharacter;
 class AJGDPhysicsProfileVolume;
+class UJGDMessageSubsystem;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(
 	FJGDCharacterPhysicsProfileChanged,
@@ -18,9 +21,10 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(
 
 struct FJGDCharacterPhysicsRegistration
 {
-	TWeakObjectPtr<UJGDCharacterPhysicsProfile> BaseProfile;
+	// Retain profiles even when a one-shot message was their only external reference.
+	TStrongObjectPtr<UJGDCharacterPhysicsProfile> BaseProfile;
 	TArray<TWeakObjectPtr<AJGDPhysicsProfileVolume>> ActiveVolumes;
-	TWeakObjectPtr<UJGDCharacterPhysicsProfile> AppliedProfile;
+	TStrongObjectPtr<UJGDCharacterPhysicsProfile> AppliedProfile;
 	bool bHasAppliedProfile = false;
 };
 
@@ -67,12 +71,36 @@ protected:
 private:
 	UJGDCharacterPhysicsProfile* ResolveProfile(const FJGDCharacterPhysicsRegistration& Registration) const;
 	void ApplyResolvedProfile(ACharacter& Character, FJGDCharacterPhysicsRegistration& Registration);
+	void RebuildActiveVolumes(ACharacter& Character, FJGDCharacterPhysicsRegistration& Registration);
 	void RefreshAllCharacters();
+	void SubscribeToRequests();
+	void UnsubscribeFromRequests();
+	void ResetRuntimeState();
+	void FlushProfileNotifications();
+
+	UFUNCTION()
+	void HandleApplyWorldProfileRequest(FGameplayTag Channel, const FInstancedStruct& Message);
+
+	UFUNCTION()
+	void HandleSetCharacterBaseProfileRequest(FGameplayTag Channel, const FInstancedStruct& Message);
 
 	UPROPERTY(Transient)
 	TObjectPtr<UJGDPhysicsWorldProfile> CurrentWorldProfile;
 
 	TMap<TWeakObjectPtr<ACharacter>, FJGDCharacterPhysicsRegistration> RegisteredCharacters;
+	TWeakObjectPtr<UJGDMessageSubsystem> MessageSubsystem;
+	FJGDMessageListenerHandle ApplyWorldProfileListener;
+	FJGDMessageListenerHandle SetCharacterBaseProfileListener;
+
+	// Preserve transition order if a synchronous listener applies another profile.
+	UPROPERTY(Transient)
+	TArray<FInstancedStruct> PendingProfileNotifications;
+
+	int32 NotificationBatchDepth = 0;
+	bool bDispatchingProfileNotifications = false;
+	bool bAcceptMessageRequests = false;
+	bool bWorldEnded = false;
+	bool bHasAppliedWorldProfile = false;
 
 	bool bHasCapturedOriginalWorldGravity = false;
 	bool bOriginalGlobalGravitySet = false;
