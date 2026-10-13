@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "Engine/EngineBaseTypes.h"
+#include "Engine/EngineTypes.h"
 #include "Assembly/AssemblyTypes.h"
 #include "Assembly/AssemblyWorkbenchTypes.h"
 #include "AssemblySessionComponent.generated.h"
@@ -10,6 +11,7 @@
 class APlayerController;
 class UAssemblyComponent;
 class UAssemblyInteractionComponent;
+class UAssemblyPhysicsBridgeComponent;
 class UAssemblyWorkbenchComponent;
 class UAssemblyHUDWidget;
 class UEnhancedInputComponent;
@@ -17,6 +19,8 @@ class UEnhancedInputLocalPlayerSubsystem;
 class UInputMappingContext;
 class UInputAction;
 class UGameViewportClient;
+class UCharacterMovementComponent;
+class UCapsuleComponent;
 class SWidget;
 
 /** Local assembly lifecycle and input. Reuses the character's model, presentation and camera. */
@@ -30,6 +34,12 @@ public:
 	// Automatic initialization runs after the owning pawn's BeginPlay and local possession.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Session")
 	bool bAutoInitialize = true;
+	// Assembly movement belongs to the core/rigid bodies in both phases, never WASD locomotion.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Physics")
+	bool bSuspendCharacterMovement = true;
+	// Takes effect only with a registered physics lifecycle provider. Never disables a real body.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Physics")
+	bool bDisableCharacterCapsuleForPhysics = true;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|UI")
 	bool bCreateHUD = true;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|UI")
@@ -75,6 +85,8 @@ public:
 	UAssemblyWorkbenchComponent* GetWorkbench() const;
 	UFUNCTION(BlueprintPure, Category = "Assembly|Session")
 	UAssemblyComponent* GetAssemblyComponent() const;
+	// Native bridge gate: a cached model alone does not mean its character proxy is ready or owned.
+	bool CanOwnPhysicsLifecycle(const UAssemblyComponent* Model) const;
 	UFUNCTION(BlueprintPure, Category = "Assembly|Session")
 	APlayerController* GetPlayerController() const;
 	UFUNCTION(BlueprintPure, Category = "Assembly|UI")
@@ -99,6 +111,8 @@ private:
 	UPROPERTY(Transient)
 	TWeakObjectPtr<UAssemblyInteractionComponent> BoundInteraction;
 	UPROPERTY(Transient)
+	TWeakObjectPtr<UAssemblyPhysicsBridgeComponent> BoundPhysicsBridge;
+	UPROPERTY(Transient)
 	TWeakObjectPtr<UAssemblyWorkbenchComponent> BoundWorkbench;
 	UPROPERTY(Transient)
 	TWeakObjectPtr<APlayerController> BoundController;
@@ -112,6 +126,12 @@ private:
 	TObjectPtr<UAssemblyHUDWidget> HUD;
 	UPROPERTY(Transient)
 	TWeakObjectPtr<UGameViewportClient> SavedHUDViewport;
+	UPROPERTY(Transient)
+	TWeakObjectPtr<UCharacterMovementComponent> SuspendedCharacterMovement;
+	UPROPERTY(Transient)
+	TWeakObjectPtr<UCapsuleComponent> DisabledCharacterCapsule;
+	UPROPERTY(Transient)
+	TWeakObjectPtr<UAssemblyPhysicsBridgeComponent> PendingProxyShutdownBridge;
 	TArray<uint32> ActionBindingHandles;
 	TSet<EAssemblyMuscleKey> HeldMuscleKeys;
 	FDelegateHandle DeactivationHandle;
@@ -122,6 +142,7 @@ private:
 	bool bInitialized = false;
 	bool bInitializing = false;
 	bool bReleasing = false;
+	bool bTransitioning = false;
 	bool bAutoInitializationSuppressed = false;
 	bool bOwnedHUD = false;
 	bool bHUDAddedToViewport = false;
@@ -134,9 +155,20 @@ private:
 	bool bViewportWasFocused = false;
 	bool bModelRefreshPending = false;
 	bool bReplayHeldMusclesPending = false;
+	bool bCharacterMovementSuspended = false;
+	bool bCharacterCapsuleDisabled = false;
+	bool bHadPhysicsBridgeBinding = false;
+	bool bProxyRestorePending = false;
+	bool bEndingPlay = false;
+	bool bPreviousCharacterMovementTick = false;
+	uint8 PreviousCharacterMovementMode = 0;
+	uint8 PreviousCharacterCustomMovementMode = 0;
+	ECollisionEnabled::Type PreviousCharacterCapsuleCollision = ECollisionEnabled::NoCollision;
 	FText LastInitializationFailure;
 
 	bool CanUseSession(FText& OutReason) const;
+	bool IsCurrentSessionBinding(const UAssemblyComponent* Model, const UAssemblyInteractionComponent* Interaction,
+		const UAssemblyWorkbenchComponent* Workbench, const APlayerController* PC) const;
 	bool BindSessionInput(FText& OutReason);
 	void UnbindSessionInput();
 	bool EnsureHUD(FText& OutReason);
@@ -144,9 +176,14 @@ private:
 	void RestoreHUDInput();
 	void ReleaseSession();
 	void UpdateMovementGate();
-	void ApplyHeldMuscleInput();
+	void UpdateCharacterProxyState();
+	void SuspendCharacterMovement();
+	void RestoreCharacterMovement();
+	void RestoreCharacterCapsule();
+	bool TryRestoreCharacterProxy();
+	void ApplyHeldMuscleInput(bool bAllowTransition = false);
 	bool IsSessionViewportFocused() const;
-	bool CanAcceptInput() const;
+	bool CanAcceptInput(bool bAllowTransition = false) const;
 	void HandleApplicationDeactivated();
 	void HandleMusclePressed(EAssemblyMuscleKey Key);
 	void HandleMuscleReleased(EAssemblyMuscleKey Key);

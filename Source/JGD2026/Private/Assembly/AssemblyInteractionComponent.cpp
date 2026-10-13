@@ -3,6 +3,7 @@
 #include "Assembly/AssemblyAppearanceData.h"
 #include "Assembly/AssemblyMuscle.h"
 #include "Assembly/AssemblyPhysicsBridgeComponent.h"
+#include "Assembly/AssemblySessionComponent.h"
 #include "Assembly/NormalBone.h"
 #include "Components/BoxComponent.h"
 #include "Components/SphereComponent.h"
@@ -39,7 +40,9 @@ UPrimitiveComponent* UAssemblyInteractionComponent::GetCoreBody() const
 void UAssemblyInteractionComponent::BeginPlay()
 {
 	Super::BeginPlay();
-	if (bAutoInitialize && GetOwner())
+	// A session suspends the character proxy before it initializes the physical bridge.
+	// Standalone presentation keeps its automatic entry; explicit Blueprint calls still work.
+	if (bAutoInitialize && GetOwner() && !GetOwner()->FindComponentByClass<UAssemblySessionComponent>())
 	{
 		UAssemblyComponent* Assembly = GetOwner()->FindComponentByClass<UAssemblyComponent>();
 		if (IsValid(Assembly) && Assembly->IsInitialized())
@@ -54,8 +57,14 @@ void UAssemblyInteractionComponent::BeginPlay()
 void UAssemblyInteractionComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+	if (bClearInteractionPending && (!BoundBridge.IsValid() || !BoundBridge->IsPhysicsLifecycleBusy()))
+	{
+		ClearInteraction();
+		return;
+	}
 	// Component BeginPlay ordering is unspecified; wait for the model instead of resetting it here.
-	if (bAutoInitialize && !bAutoInitializeAttempted && !BoundAssembly.IsValid() && GetOwner())
+	if (bAutoInitialize && !bAutoInitializeAttempted && !BoundAssembly.IsValid() && GetOwner()
+		&& !GetOwner()->FindComponentByClass<UAssemblySessionComponent>())
 	{
 		UAssemblyComponent* Assembly = GetOwner()->FindComponentByClass<UAssemblyComponent>();
 		if (IsValid(Assembly) && Assembly->IsInitialized())
@@ -132,6 +141,11 @@ void UAssemblyInteractionComponent::UpdateCorePlaceholder()
 bool UAssemblyInteractionComponent::InitializeInteraction(UAssemblyComponent* Assembly, FText& OutReason)
 {
 	OutReason = FText::GetEmpty();
+	if (bClearingInteraction || bClearInteractionPending)
+	{
+		OutReason = LOCTEXT("InteractionClearing", "展示组件正在结束物理生命周期，请在回调结束后重新初始化。");
+		return false;
+	}
 	if (!IsValid(Assembly) || !Assembly->IsInitialized() || !GetWorld() || !GetOwner()
 		|| Assembly->GetWorld() != GetWorld()
 		|| (IsValid(ExistingCoreBody) && ExistingCoreBody->GetWorld() != GetWorld()))
@@ -139,8 +153,18 @@ bool UAssemblyInteractionComponent::InitializeInteraction(UAssemblyComponent* As
 		OutReason = LOCTEXT("InvalidModel", "请在有世界的角色组件上提供已初始化的 AssemblyComponent。");
 		return false;
 	}
-	if (BoundAssembly.Get() == Assembly) { return SynchronizeViews(OutReason); }
+	if (BoundAssembly.Get() == Assembly)
+	{
+		if (!SynchronizeViews(OutReason)) { return false; }
+		return !BoundBridge.IsValid() || BoundBridge->IsBridgeInitialized()
+			|| BoundBridge->InitializeBridge(Assembly, GetCoreBody(), OutReason);
+	}
 	ClearInteraction();
+	if (BoundAssembly.IsValid())
+	{
+		OutReason = LOCTEXT("InteractionBusy", "物理回调尚未结束，旧展示组件无法立即关闭。");
+		return false;
+	}
 	BoundAssembly = Assembly;
 	SpawnOwnerTransform = GetOwner()->GetActorTransform();
 	if (!CreateCore(OutReason)) { ClearInteraction(); return false; }
@@ -148,6 +172,12 @@ bool UAssemblyInteractionComponent::InitializeInteraction(UAssemblyComponent* As
 	Assembly->OnAssemblyChanged.AddUniqueDynamic(this, &UAssemblyInteractionComponent::HandleAssemblyChanged);
 	Assembly->OnAssemblyReset.AddUniqueDynamic(this, &UAssemblyInteractionComponent::HandleAssemblyReset);
 	Assembly->OnPhaseChanged.AddUniqueDynamic(this, &UAssemblyInteractionComponent::HandlePhaseChanged);
+	// The lifecycle provider must see registered view bodies even when binding during Playing.
+	if (!SynchronizeViews(OutReason))
+	{
+		ClearInteraction();
+		return false;
+	}
 	if (bAutoCreatePhysicsBridge)
 	{
 		UAssemblyPhysicsBridgeComponent* Bridge = GetOwner()->FindComponentByClass<UAssemblyPhysicsBridgeComponent>();
@@ -172,11 +202,6 @@ bool UAssemblyInteractionComponent::InitializeInteraction(UAssemblyComponent* As
 			ClearInteraction();
 			return false;
 		}
-	}
-	if (!SynchronizeViews(OutReason))
-	{
-		ClearInteraction();
-		return false;
 	}
 	return true;
 }
@@ -532,6 +557,15 @@ void UAssemblyInteractionComponent::HandlePhaseChanged(EAssemblyPhase Phase)
 
 void UAssemblyInteractionComponent::ClearInteraction()
 {
+	if (bClearingInteraction) { return; }
+	if (BoundBridge.IsValid() && BoundBridge->IsPhysicsLifecycleBusy())
+	{
+		// A provider must finish its synchronous work before its body endpoints disappear.
+		bClearInteractionPending = true;
+		return;
+	}
+	TGuardValue<bool> ClearingGuard(bClearingInteraction, true);
+	bClearInteractionPending = false;
 	CancelBoneDrag();
 	if (BoundAssembly.IsValid())
 	{
@@ -539,15 +573,15 @@ void UAssemblyInteractionComponent::ClearInteraction()
 		BoundAssembly->OnAssemblyReset.RemoveDynamic(this, &UAssemblyInteractionComponent::HandleAssemblyReset);
 		BoundAssembly->OnPhaseChanged.RemoveDynamic(this, &UAssemblyInteractionComponent::HandlePhaseChanged);
 	}
-	DestroyViews();
-	if (bOwnsBridge && BoundBridge.IsValid()) { BoundBridge->ClearBridge(); BoundBridge->DestroyComponent(); }
-	// A synchronous message callback may have rebound a reused bridge to another model.
-	else if (BoundBridge.IsValid() && BoundAssembly.IsValid()
-		&& BoundBridge->GetPhysicsContext().Assembly == BoundAssembly.Get())
+	// Both owned and reused bridges release this binding's constraints while endpoints still exist.
+	// Never clear a reused bridge which has already moved to another assembly.
+	if (BoundBridge.IsValid() && (bOwnsBridge || (BoundAssembly.IsValid()
+		&& BoundBridge->GetPhysicsContext().Assembly == BoundAssembly.Get())))
 	{
-		if (CreatedCoreBody) { BoundBridge->SetCoreBody(IsValid(ExistingCoreBody) ? ExistingCoreBody.Get() : nullptr); }
-		BoundBridge->RequestPhysicsRebuild();
+		BoundBridge->ClearBridge();
+		if (bOwnsBridge && BoundBridge.IsValid()) { BoundBridge->DestroyComponent(); }
 	}
+	DestroyViews();
 	BoundBridge.Reset();
 	bOwnsBridge = false;
 	if (IsValid(CreatedCoreVisual)) { CreatedCoreVisual->DestroyComponent(); }

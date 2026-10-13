@@ -14,6 +14,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAssemblyCoreRotationEvent, bool, bH
 DECLARE_MULTICAST_DELEGATE_TwoParams(FAssemblyMuscleDriveNativeEvent, FGuid, bool);
 DECLARE_MULTICAST_DELEGATE_OneParam(FAssemblyCoreRotationNativeEvent, bool);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAssemblyJointBreakEvent, FGuid, JointId);
+DECLARE_DELEGATE_RetVal_OneParam(bool, FAssemblyLifecycleCheck, FText&);
 
 /** Authoritative assembly model. Does not spawn actors, create UI, bind input or simulate physics. */
 UCLASS(BlueprintType, Blueprintable, ClassGroup = (Assembly), meta = (BlueprintSpawnableComponent))
@@ -56,6 +57,13 @@ public:
 
 	FAssemblyMuscleDriveNativeEvent OnMuscleDriveRequestedNative;
 	FAssemblyCoreRotationNativeEvent OnCoreRotationRequestedNative;
+
+	// One lifecycle owner protects every public start/reset entry, including direct Blueprint calls.
+	// Physics remains outside the model; pose-source registration is allowed during preparation.
+	bool RegisterLifecycleCallbacks(UObject* Owner, FAssemblyLifecycleCheck BeforePlaying,
+		FAssemblyLifecycleCheck BeforeReset, FSimpleDelegate AbortPlaying, FSimpleDelegate BeforeEndPlay, FText& OutReason);
+	void UnregisterLifecycleCallbacksIfMatches(const UObject* Owner);
+	bool IsEndingPlay() const { return bEndingPlay; }
 
 	// Validate before replacing the round. Failure leaves the previous round intact.
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Flow")
@@ -232,9 +240,16 @@ private:
 	bool bCoreRotationHeld = false;
 	bool bNotifying = false;
 	bool bEndingPlay = false;
+	bool bInLifecycleCallback = false;
+	TWeakObjectPtr<UObject> LifecycleOwner;
+	FAssemblyLifecycleCheck BeforePlayingCallback;
+	FAssemblyLifecycleCheck BeforeResetCallback;
+	FSimpleDelegate AbortPlayingCallback;
+	FSimpleDelegate BeforeEndPlayCallback;
 
 	bool CanEdit(FText& OutReason) const;
 	bool CanMutate(FText& OutReason) const;
+	bool RunLifecycleCheck(bool bBeforePlaying, FText& OutReason);
 	// Actual body bounds in both modes, plus occupied footprint cells in Grid mode.
 	bool IsPointOnBoneDefinition(const FAssemblyBoneDefinition& Definition, FVector2D LocalPoint) const;
 	bool ValidateMuscleEndpoints(const FAssemblyMuscleEndpoint& A, const FAssemblyMuscleEndpoint& B,

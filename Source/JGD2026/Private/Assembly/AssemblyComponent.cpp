@@ -32,6 +32,16 @@ void UAssemblyComponent::BeginPlay()
 void UAssemblyComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	ClearInputState();
+	{
+		TGuardValue<bool> Guard(bInLifecycleCallback, true);
+		const FSimpleDelegate Shutdown = BeforeEndPlayCallback;
+		Shutdown.ExecuteIfBound();
+	}
+	BeforePlayingCallback.Unbind();
+	BeforeResetCallback.Unbind();
+	AbortPlayingCallback.Unbind();
+	BeforeEndPlayCallback.Unbind();
+	LifecycleOwner.Reset();
 	bEndingPlay = true;
 	InstalledBones.Reset();
 	InstalledMuscles.Reset();
@@ -56,12 +66,70 @@ bool UAssemblyComponent::CanMutate(FText& OutReason) const
 		OutReason = LOCTEXT("EndedAssembly", "组装组件已结束生命周期。");
 		return false;
 	}
-	if (bNotifying)
+	if (bNotifying || bInLifecycleCallback)
 	{
-		OutReason = LOCTEXT("ReentrantEdit", "不能在组装通知回调中再次修改规则数据；请在回调结束后发起操作。");
+		OutReason = LOCTEXT("ReentrantEdit", "不能在组装通知或物理生命周期回调中再次修改规则数据；请在回调结束后发起操作。");
 		return false;
 	}
 	return true;
+}
+
+bool UAssemblyComponent::RegisterLifecycleCallbacks(UObject* Owner, FAssemblyLifecycleCheck BeforePlaying,
+	FAssemblyLifecycleCheck BeforeReset, FSimpleDelegate AbortPlaying, FSimpleDelegate BeforeEndPlay, FText& OutReason)
+{
+	if (!CanMutate(OutReason)) { return false; }
+	if (!IsValid(Owner) || !BeforePlaying.IsBound() || !BeforeReset.IsBound())
+	{
+		OutReason = LOCTEXT("InvalidLifecycle", "生命周期保护需要有效拥有者和开始、重置检查。");
+		return false;
+	}
+	if (LifecycleOwner.IsValid() && LifecycleOwner.Get() != Owner)
+	{
+		OutReason = LOCTEXT("DuplicateLifecycle", "组装模型已有生命周期保护，请使用同一个物理桥。");
+		return false;
+	}
+	LifecycleOwner = Owner;
+	BeforePlayingCallback = MoveTemp(BeforePlaying);
+	BeforeResetCallback = MoveTemp(BeforeReset);
+	AbortPlayingCallback = MoveTemp(AbortPlaying);
+	BeforeEndPlayCallback = MoveTemp(BeforeEndPlay);
+	OutReason = FText::GetEmpty();
+	return true;
+}
+
+void UAssemblyComponent::UnregisterLifecycleCallbacksIfMatches(const UObject* Owner)
+{
+	if (LifecycleOwner.Get() != Owner) { return; }
+	LifecycleOwner.Reset();
+	BeforePlayingCallback.Unbind();
+	BeforeResetCallback.Unbind();
+	AbortPlayingCallback.Unbind();
+	BeforeEndPlayCallback.Unbind();
+}
+
+bool UAssemblyComponent::RunLifecycleCheck(bool bBeforePlaying, FText& OutReason)
+{
+	if (!bBeforePlaying) { ClearInputState(); }
+	if (!IsValid(this) || bEndingPlay)
+	{
+		OutReason = LOCTEXT("LifecycleEnded", "组装生命周期已在回调中结束。");
+		return false;
+	}
+	const FAssemblyLifecycleCheck Check = bBeforePlaying ? BeforePlayingCallback : BeforeResetCallback;
+	if (!Check.IsBound()) { return true; }
+	const TWeakObjectPtr<UObject> Owner = LifecycleOwner;
+	TGuardValue<bool> Guard(bInLifecycleCallback, true);
+	const bool bAccepted = Check.Execute(OutReason);
+	if (!IsValid(this) || bEndingPlay || !Owner.IsValid() || LifecycleOwner != Owner)
+	{
+		OutReason = LOCTEXT("LifecycleChanged", "物理生命周期绑定在检查期间已结束或替换，请重新初始化。");
+		return false;
+	}
+	if (!bAccepted && OutReason.IsEmpty())
+	{
+		OutReason = LOCTEXT("LifecycleRejected", "物理组件拒绝本次阶段切换。");
+	}
+	return bAccepted;
 }
 
 bool UAssemblyComponent::CanEdit(FText& OutReason) const
@@ -87,6 +155,7 @@ bool UAssemblyComponent::ConfigureAssembly(const FAssemblyGridSettings& Grid,
 	{
 		return false;
 	}
+	if (!RunLifecycleCheck(false, OutReason)) { return false; }
 	ClearInputState();
 	RoundGrid = Grid;
 	RoundPlacementMode = EAssemblyPlacementMode::Grid;
@@ -101,6 +170,7 @@ bool UAssemblyComponent::ConfigureFreeAssembly(const FAssemblyFreeSettings& Sett
 	const TArray<FAssemblyBoneDefinition>& Bones, const TArray<FAssemblyMuscleDefinition>& Muscles, FText& OutReason)
 {
 	if (!CanMutate(OutReason) || !AssemblyFreeRules::ValidateConfiguration(Settings, Bones, Muscles, OutReason)) { return false; }
+	if (!RunLifecycleCheck(false, OutReason)) { return false; }
 	ClearInputState();
 	RoundGrid = DefaultGrid;
 	RoundFreeSettings = Settings;
@@ -126,6 +196,7 @@ bool UAssemblyComponent::EnterAssembly(FText& OutReason)
 		}
 		return ConfigureAssembly(DefaultGrid, DefaultBones, DefaultMuscles, OutReason);
 	}
+	if (!RunLifecycleCheck(false, OutReason)) { return false; }
 	ResetRound();
 	return true;
 }
@@ -176,6 +247,17 @@ bool UAssemblyComponent::TryStartPlaying(FText& OutReason)
 	if (Phase == EAssemblyPhase::Playing)
 	{
 		return true;
+	}
+	if (!RunLifecycleCheck(true, OutReason)) { return false; }
+	// Preparation may register physical pose sources. Check those poses before committing the phase.
+	const FAssemblyValidationResult PreparedValidation = ValidateAssembly();
+	if (!PreparedValidation.bValid)
+	{
+		OutReason = PreparedValidation.Reason;
+		const FSimpleDelegate Abort = AbortPlayingCallback;
+		TGuardValue<bool> Guard(bInLifecycleCallback, true);
+		Abort.ExecuteIfBound();
+		return false;
 	}
 	// Space may stay held across this transition; only muscle input becomes available.
 	Phase = EAssemblyPhase::Playing;
@@ -663,7 +745,7 @@ FAssemblyValidationResult UAssemblyComponent::ValidateAssembly() const
 
 bool UAssemblyComponent::SetMuscleInput(EAssemblyMuscleKey Key, bool bPressed)
 {
-	if (bNotifying || !CanControlMuscles() || !AssemblyRules::IsValidKey(Key))
+	if (bNotifying || bInLifecycleCallback || bEndingPlay || !CanControlMuscles() || !AssemblyRules::IsValidKey(Key))
 	{
 		return false;
 	}
@@ -685,7 +767,7 @@ bool UAssemblyComponent::SetMuscleInput(EAssemblyMuscleKey Key, bool bPressed)
 
 bool UAssemblyComponent::SetCoreRotationInput(bool bHeld)
 {
-	if (bNotifying || !bInitialized)
+	if (bNotifying || bInLifecycleCallback || bEndingPlay || !bInitialized)
 	{
 		return false;
 	}

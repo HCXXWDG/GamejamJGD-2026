@@ -101,6 +101,8 @@ struct JGD2026_API FAssemblyPhysicsMuscleDriveMessage
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Physics")
 	FAssemblyPhysicsContext Context;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Physics")
+	EAssemblyPhase Phase = EAssemblyPhase::Assembly;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Physics")
 	FAssemblyMuscleInstance Muscle;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Physics")
 	bool bContracting = false;
@@ -125,6 +127,9 @@ struct JGD2026_API FAssemblyPhysicsCoreRotationMessage
 	GENERATED_BODY()
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Physics")
 	FAssemblyPhysicsContext Context;
+	// Space is available in both phases; the adapter chooses the appropriate physical mode.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Physics")
+	EAssemblyPhase Phase = EAssemblyPhase::Assembly;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Physics")
 	bool bHeld = false;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Physics")

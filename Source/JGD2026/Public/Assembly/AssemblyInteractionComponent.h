@@ -156,6 +156,8 @@ private:
 	UPROPERTY(Transient)
 	TWeakObjectPtr<UAssemblyPhysicsBridgeComponent> BoundBridge;
 	bool bOwnsBridge = false;
+	bool bClearingInteraction = false;
+	bool bClearInteractionPending = false;
 	bool bDragging = false;
 	bool bSyncing = false;
 	bool bSuppressSynchronization = false;

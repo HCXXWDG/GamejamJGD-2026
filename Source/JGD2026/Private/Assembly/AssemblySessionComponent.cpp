@@ -4,6 +4,7 @@
 #include "Assembly/AssemblyInteractionComponent.h"
 #include "Assembly/AssemblyPhysicsBridgeComponent.h"
 #include "Assembly/AssemblyWorkbenchComponent.h"
+#include "Components/CapsuleComponent.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
@@ -11,6 +12,8 @@
 #include "EnhancedInputSubsystems.h"
 #include "Framework/Application/SlateApplication.h"
 #include "GameFramework/Pawn.h"
+#include "GameFramework/Character.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "InputAction.h"
 #include "InputMappingContext.h"
@@ -108,6 +111,25 @@ UAssemblySessionComponent::UAssemblySessionComponent()
 
 UAssemblyWorkbenchComponent* UAssemblySessionComponent::GetWorkbench() const { return BoundWorkbench.Get(); }
 UAssemblyComponent* UAssemblySessionComponent::GetAssemblyComponent() const { return BoundAssembly.Get(); }
+bool UAssemblySessionComponent::CanOwnPhysicsLifecycle(const UAssemblyComponent* Model) const
+{
+	const APawn* Pawn = Cast<APawn>(GetOwner());
+	const APlayerController* PC = BoundController.Get();
+	if ((!bInitialized && !bInitializing) || bReleasing || bEndingPlay || bAutoInitializationSuppressed
+		|| bProxyRestorePending || !IsValid(Model) || BoundAssembly.Get() != Model || Model->GetWorld() != GetWorld()
+		|| !IsValid(Pawn) || Pawn->IsActorBeingDestroyed() || !IsValid(PC) || !PC->IsLocalController()
+		|| PC->GetPawn() != Pawn || Pawn->GetController() != PC)
+	{
+		return false;
+	}
+	if (const ACharacter* Character = Cast<ACharacter>(Pawn); Character && bSuspendCharacterMovement)
+	{
+		const UCharacterMovementComponent* Movement = Character->GetCharacterMovement();
+		return bCharacterMovementSuspended && IsValid(Movement) && SuspendedCharacterMovement.Get() == Movement
+			&& Movement->MovementMode == MOVE_None && Movement->CustomMovementMode == 0 && !Movement->IsComponentTickEnabled();
+	}
+	return true;
+}
 APlayerController* UAssemblySessionComponent::GetPlayerController() const { return BoundController.Get(); }
 UAssemblyHUDWidget* UAssemblySessionComponent::GetHUD() const { return IsValid(HUD) ? HUD.Get() : nullptr; }
 
@@ -121,9 +143,14 @@ bool UAssemblySessionComponent::InitializeSession(APlayerController* PC, FText& 
 {
 	OutReason = FText::GetEmpty();
 	APawn* Pawn = Cast<APawn>(GetOwner());
-	if (bInitializing || bReleasing)
+	if (bInitializing || bReleasing || bTransitioning || bEndingPlay)
 	{
 		OutReason = LOCTEXT("SessionBusy", "组装会话正在初始化或关闭，请稍后重试。");
+		return false;
+	}
+	if (!TryRestoreCharacterProxy())
+	{
+		OutReason = LOCTEXT("PreviousPhysicsStopping", "上一组装会话的物理执行器仍在回调或运行，请完成物理关闭后再初始化。");
 		return false;
 	}
 	if (!GetWorld() || !GetWorld()->IsGameWorld() || !IsValid(Pawn) || !Pawn->HasActorBegunPlay()
@@ -140,7 +167,8 @@ bool UAssemblySessionComponent::InitializeSession(APlayerController* PC, FText& 
 		return false;
 	}
 	if (bInitialized && BoundController.Get() == PC && BoundAssembly.Get() == Model
-		&& BoundInteraction.Get() == Interaction && BoundWorkbench.IsValid() && IsValid(SessionInput))
+		&& BoundInteraction.Get() == Interaction && BoundWorkbench.IsValid() && IsValid(SessionInput)
+		&& IsCurrentSessionBinding(Model, Interaction, BoundWorkbench.Get(), PC))
 	{
 		bAutoInitializationSuppressed = false;
 		return EnsureHUD(OutReason);
@@ -149,28 +177,97 @@ bool UAssemblySessionComponent::InitializeSession(APlayerController* PC, FText& 
 	Pawn->GetComponents(Sessions);
 	for (const UAssemblySessionComponent* Other : Sessions)
 	{
-		if (IsValid(Other) && Other != this && (Other->bInitialized || Other->bInitializing))
+		if (IsValid(Other) && Other != this && (Other->bInitialized || Other->bInitializing || Other->bProxyRestorePending))
 		{
 			OutReason = LOCTEXT("DuplicateSession", "同一角色已有活动的组装会话，请只保留一个 Session 组件。");
 			return false;
 		}
 	}
 	ReleaseSession();
+	if (!TryRestoreCharacterProxy())
+	{
+		OutReason = LOCTEXT("ReleasedPhysicsStopping", "旧物理执行器尚未关闭，角色代理保持冻结，请在同步回调结束后重试。");
+		return false;
+	}
 	TGuardValue<bool> InitializingGuard(bInitializing, true);
 	bAutoInitializationSuppressed = false;
+	// Keep cleanup targets before callbacks can cancel initialization. No input or HUD is active yet.
+	BoundAssembly = Model;
+	BoundInteraction = Interaction;
+	BoundController = PC;
+	auto CapturePhysicsBridge = [this, Model, Interaction]()
+	{
+		if (!IsValid(Model) || !IsValid(Interaction)) { return; }
+		UAssemblyPhysicsBridgeComponent* Bridge = Interaction->GetPhysicsBridge();
+		if (IsValid(Bridge) && (!Bridge->IsBridgeInitialized() || Bridge->GetPhysicsContext().Assembly == Model))
+		{
+			BoundPhysicsBridge = Bridge;
+			bHadPhysicsBridgeBinding = true;
+		}
+	};
+	CapturePhysicsBridge();
+	auto InitializationStillValid = [this, Pawn, PC, Model, Interaction]()
+	{
+		return bInitializing && !bEndingPlay && !bAutoInitializationSuppressed && !bReleasing
+			&& IsValid(Pawn) && !Pawn->IsActorBeingDestroyed() && IsValid(PC) && PC->GetPawn() == Pawn
+			&& Pawn->GetController() == PC && IsValid(Model) && IsValid(Interaction)
+			&& BoundAssembly.Get() == Model && BoundInteraction.Get() == Interaction && BoundController.Get() == PC;
+	};
+	// Bridge initialization can immediately Prepare/Apply even for a model already in Playing.
+	// Suspend locomotion first; capsule ownership waits until the bridge supplies its actual snapshot.
+	SuspendCharacterMovement();
+	if (!InitializationStillValid())
+	{
+		OutReason = LOCTEXT("EarlyProxyInitializationCanceled", "组装会话在冻结角色移动时已被关闭或更换。");
+		ReleaseSession();
+		return false;
+	}
 	// An already configured round survives controller changes and repeated initialization.
-	if (!Model->IsInitialized() && !Model->EnterAssembly(OutReason)) { return false; }
-	if (!Interaction->InitializeInteraction(Model, OutReason)) { return false; }
+	if (!Model->IsInitialized() && !Model->EnterAssembly(OutReason)) { ReleaseSession(); return false; }
+	if (!InitializationStillValid())
+	{
+		OutReason = LOCTEXT("ModelInitializationCanceled", "组装会话在模型初始化期间已被关闭或更换。");
+		ReleaseSession();
+		return false;
+	}
+	const bool bInteractionInitialized = Interaction->InitializeInteraction(Model, OutReason);
+	// A provider can create the bridge and cancel this session within the same synchronous call.
+	CapturePhysicsBridge();
+	if (!bInteractionInitialized) { ReleaseSession(); return false; }
+	if (!InitializationStillValid())
+	{
+		OutReason = LOCTEXT("InteractionInitializationCanceled", "组装会话在展示初始化期间已被关闭或更换。");
+		ReleaseSession();
+		return false;
+	}
 	UAssemblyWorkbenchComponent* Workbench = Pawn->FindComponentByClass<UAssemblyWorkbenchComponent>();
 	if (!Workbench)
 	{
 		Workbench = NewObject<UAssemblyWorkbenchComponent>(Pawn, NAME_None, RF_Transient);
 		Pawn->AddInstanceComponent(Workbench);
+		BoundWorkbench = Workbench;
 		Workbench->RegisterComponent();
 	}
-	if (!Workbench->InitializeWorkbench(Model, Interaction, PC, OutReason)) { return false; }
+	if (!InitializationStillValid() || !IsValid(Workbench))
+	{
+		OutReason = LOCTEXT("WorkbenchRegistrationCanceled", "组装会话在工作台注册期间已被关闭或更换。");
+		ReleaseSession();
+		return false;
+	}
+	BoundWorkbench = Workbench;
+	const bool bWorkbenchInitialized = Workbench->InitializeWorkbench(Model, Interaction, PC, OutReason);
+	if (IsValid(Workbench)) { BoundWorkbench = Workbench; }
+	if (!bWorkbenchInitialized) { ReleaseSession(); return false; }
+	if (!InitializationStillValid() || !IsValid(Workbench))
+	{
+		OutReason = LOCTEXT("WorkbenchInitializationCanceled", "组装会话在工作台初始化期间已被关闭或更换。");
+		ReleaseSession();
+		return false;
+	}
 	BoundAssembly = Model;
 	BoundInteraction = Interaction;
+	BoundPhysicsBridge = Interaction->GetPhysicsBridge();
+	bHadPhysicsBridgeBinding = BoundPhysicsBridge.IsValid();
 	BoundWorkbench = Workbench;
 	BoundController = PC;
 	Model->OnAssemblyChanged.AddUniqueDynamic(this, &UAssemblySessionComponent::HandleModelChanged);
@@ -180,13 +277,37 @@ bool UAssemblySessionComponent::InitializeSession(APlayerController* PC, FText& 
 	Workbench->OnMessage.AddUniqueDynamic(this, &UAssemblySessionComponent::HandleWorkbenchMessage);
 	if (!BindSessionInput(OutReason)) { ReleaseSession(); return false; }
 	bInitialized = true;
-	UpdateMovementGate();
 	DeactivationHandle = FCoreDelegates::ApplicationWillDeactivateDelegate.AddUObject(this, &UAssemblySessionComponent::HandleApplicationDeactivated);
 	BackgroundHandle = FCoreDelegates::ApplicationWillEnterBackgroundDelegate.AddUObject(this, &UAssemblySessionComponent::HandleApplicationDeactivated);
 	if (!EnsureHUD(OutReason)) { ReleaseSession(); return false; }
-	if (!bInitialized || bAutoInitializationSuppressed || BoundController.Get() != PC)
+	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
 	{
 		OutReason = LOCTEXT("InitializationCanceled", "组装会话在初始化期间已被关闭。");
+		ReleaseSession();
+		return false;
+	}
+	// The character proxy must be suspended before an adapter enables real assembly simulation.
+	UpdateMovementGate();
+	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
+	{
+		OutReason = LOCTEXT("ProxyInitializationCanceled", "组装会话在角色代理初始化期间已被关闭。");
+		ReleaseSession();
+		return false;
+	}
+	if (UAssemblyPhysicsBridgeComponent* Bridge = BoundPhysicsBridge.Get())
+	{
+		if (!Bridge->RefreshPhysicsLifecycle(OutReason)) { ReleaseSession(); return false; }
+	}
+	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
+	{
+		OutReason = LOCTEXT("PhysicsInitializationCanceled", "组装会话在物理阶段初始化期间已被关闭。");
+		ReleaseSession();
+		return false;
+	}
+	UpdateMovementGate();
+	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
+	{
+		OutReason = LOCTEXT("PhysicsProxyInitializationCanceled", "组装会话在物理代理初始化期间已被关闭。");
 		ReleaseSession();
 		return false;
 	}
@@ -194,6 +315,12 @@ bool UAssemblySessionComponent::InitializeSession(APlayerController* PC, FText& 
 	bModelRefreshPending = false;
 	LastInitializationFailure = FText::GetEmpty();
 	OnSessionChanged.Broadcast();
+	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
+	{
+		OutReason = LOCTEXT("InitializationNotificationCanceled", "组装会话在初始化通知期间已被关闭或更换。");
+		ReleaseSession();
+		return false;
+	}
 	return true;
 }
 
@@ -412,9 +539,13 @@ void UAssemblySessionComponent::ShowMessage(FText Message)
 bool UAssemblySessionComponent::CanUseSession(FText& OutReason) const
 {
 	OutReason = FText::GetEmpty();
-	if (!bInitialized || bReleasing || !BoundAssembly.IsValid() || !BoundAssembly->IsInitialized()
-		|| !BoundWorkbench.IsValid() || !BoundController.IsValid() || !BoundController->IsLocalController()
-		|| BoundController->GetPawn() != GetOwner())
+	if (bTransitioning || bInitializing || bReleasing)
+	{
+		OutReason = LOCTEXT("SessionTransitionBusy", "组装会话正在切换阶段、初始化或关闭，请稍后重试。");
+		return false;
+	}
+	if (!IsCurrentSessionBinding(BoundAssembly.Get(), BoundInteraction.Get(),
+		BoundWorkbench.Get(), BoundController.Get()))
 	{
 		OutReason = LOCTEXT("SessionUnavailable", "请先初始化当前本地角色的组装会话。");
 		return false;
@@ -422,35 +553,136 @@ bool UAssemblySessionComponent::CanUseSession(FText& OutReason) const
 	return true;
 }
 
+bool UAssemblySessionComponent::IsCurrentSessionBinding(const UAssemblyComponent* Model,
+	const UAssemblyInteractionComponent* Interaction, const UAssemblyWorkbenchComponent* Workbench,
+	const APlayerController* PC) const
+{
+	const APawn* Pawn = Cast<APawn>(GetOwner());
+	return bInitialized && !bReleasing && !bAutoInitializationSuppressed && IsValid(Model)
+		&& IsValid(Interaction) && IsValid(Workbench) && IsValid(PC) && IsValid(Pawn)
+		&& Model->IsInitialized() && Interaction->IsInteractionInitialized() && Workbench->IsWorkbenchInitialized()
+		&& Interaction->GetAssemblyComponent() == Model && Workbench->GetAssemblyComponent() == Model
+		&& Workbench->GetInteractionComponent() == Interaction && Workbench->GetPlayerController() == PC
+		&& (!bHadPhysicsBridgeBinding || (BoundPhysicsBridge.IsValid() && BoundPhysicsBridge->IsBridgeInitialized()
+			&& BoundPhysicsBridge->GetPhysicsContext().Assembly == Model && BoundPhysicsBridge->GetPhysicsContext().World == GetWorld()))
+		&& BoundPhysicsBridge.Get() == Interaction->GetPhysicsBridge()
+		&& !Pawn->IsActorBeingDestroyed() && BoundAssembly.Get() == Model && BoundInteraction.Get() == Interaction
+		&& BoundWorkbench.Get() == Workbench && BoundController.Get() == PC && PC->IsLocalController()
+		&& PC->GetPawn() == Pawn && Pawn->GetController() == PC;
+}
+
 bool UAssemblySessionComponent::StartPlaying(FText& OutReason)
 {
-	if (!CanUseSession(OutReason)) { ShowMessage(OutReason); return false; }
-	BoundWorkbench->CancelTool();
-	// Keep the selection so a chosen breakable joint can still be controlled while playing.
-	if (!BoundAssembly->TryStartPlaying(OutReason)) { ShowMessage(OutReason); return false; }
-	ApplyHeldMuscleInput();
-	bReplayHeldMusclesPending = false;
+	if (!CanUseSession(OutReason))
+	{
+		if (!bTransitioning && !bInitializing && !bReleasing) { ShowMessage(OutReason); }
+		return false;
+	}
+	TGuardValue<bool> TransitionGuard(bTransitioning, true);
+	UAssemblyComponent* Model = BoundAssembly.Get();
+	UAssemblyInteractionComponent* Interaction = BoundInteraction.Get();
+	UAssemblyWorkbenchComponent* Workbench = BoundWorkbench.Get();
+	APlayerController* PC = BoundController.Get();
+	Workbench->CancelTool();
+	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
+	{
+		OutReason = LOCTEXT("StartCanceled", "组装会话在开始操控前已被关闭或更换。");
+		return false;
+	}
+	// The model's gate prepares physics before changing Phase, including direct model calls.
+	// Keep the selection so a chosen breakable joint remains controllable while playing.
+	if (!Model->TryStartPlaying(OutReason)) { ShowMessage(OutReason); return false; }
+	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
+	{
+		OutReason = LOCTEXT("StartPhysicsCanceled", "组装会话在开始操控期间已被关闭或更换。");
+		return false;
+	}
 	UpdateMovementGate();
+	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
+	{
+		OutReason = LOCTEXT("StartProxyCanceled", "组装会话在切换角色代理时已被关闭。");
+		return false;
+	}
+	// Replay already-held muscle intents after phase application while rejecting external input reentry.
+	ApplyHeldMuscleInput(true);
+	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
+	{
+		OutReason = LOCTEXT("StartInputCanceled", "组装会话在发送操控输入时已被关闭。");
+		return false;
+	}
+	bReplayHeldMusclesPending = false;
 	ShowMessage(FText::GetEmpty());
+	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
+	{
+		OutReason = LOCTEXT("StartMessageCanceled", "组装会话在开始操控通知期间已被关闭或更换。");
+		return false;
+	}
 	OnSessionChanged.Broadcast();
+	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
+	{
+		OutReason = LOCTEXT("StartNotificationCanceled", "组装会话在开始操控通知期间已被关闭或更换。");
+		return false;
+	}
 	return true;
 }
 
 bool UAssemblySessionComponent::RestartSession(FText& OutReason)
 {
-	if (!CanUseSession(OutReason)) { ShowMessage(OutReason); return false; }
-	ClearHeldInput();
-	BoundWorkbench->CancelTool();
-	if (!BoundAssembly->RestartAssembly(OutReason)) { ShowMessage(OutReason); return false; }
-	BoundWorkbench->ClearSelection();
-	// Interaction owns safe spawn-pose restoration; physical bodies/constraints remain external.
-	if (BoundInteraction.IsValid())
+	if (!CanUseSession(OutReason))
 	{
-		if (UAssemblyPhysicsBridgeComponent* Bridge = BoundInteraction->GetPhysicsBridge()) { Bridge->RequestPhysicsRebuild(); }
+		if (!bTransitioning && !bInitializing && !bReleasing) { ShowMessage(OutReason); }
+		return false;
 	}
+	TGuardValue<bool> TransitionGuard(bTransitioning, true);
+	UAssemblyComponent* Model = BoundAssembly.Get();
+	UAssemblyInteractionComponent* Interaction = BoundInteraction.Get();
+	UAssemblyWorkbenchComponent* Workbench = BoundWorkbench.Get();
+	APlayerController* PC = BoundController.Get();
+	ClearHeldInput();
+	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
+	{
+		OutReason = LOCTEXT("RestartInputCanceled", "组装会话在停止操控输入时已被关闭。");
+		return false;
+	}
+	Workbench->CancelTool();
+	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
+	{
+		OutReason = LOCTEXT("RestartCanceled", "组装会话在重新组装前已被关闭或更换。");
+		return false;
+	}
+	// StopBeforeReset is enforced by the model before pose sources/data/views are cleared.
+	if (!Model->RestartAssembly(OutReason)) { ShowMessage(OutReason); return false; }
+	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
+	{
+		OutReason = LOCTEXT("RestartPhysicsCanceled", "组装会话在重新组装期间已被关闭或更换。");
+		return false;
+	}
+	Workbench->ClearSelection();
+	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
+	{
+		OutReason = LOCTEXT("RestartSelectionCanceled", "组装会话在清除选择期间已被关闭。");
+		return false;
+	}
+	// Interaction owns safe spawn-pose restoration; physical bodies/constraints remain external.
+	if (UAssemblyPhysicsBridgeComponent* Bridge = BoundPhysicsBridge.Get()) { Bridge->RequestPhysicsRebuild(); }
 	UpdateMovementGate();
+	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
+	{
+		OutReason = LOCTEXT("RestartProxyCanceled", "组装会话在恢复组装角色代理时已被关闭。");
+		return false;
+	}
 	ShowMessage(FText::GetEmpty());
+	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
+	{
+		OutReason = LOCTEXT("RestartMessageCanceled", "组装会话在重新组装通知期间已被关闭或更换。");
+		return false;
+	}
 	OnSessionChanged.Broadcast();
+	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
+	{
+		OutReason = LOCTEXT("RestartNotificationCanceled", "组装会话在重新组装通知期间已被关闭或更换。");
+		return false;
+	}
 	return true;
 }
 
@@ -465,22 +697,142 @@ void UAssemblySessionComponent::ClearHeldInput()
 void UAssemblySessionComponent::UpdateMovementGate()
 {
 	if (!BoundController.IsValid()) { bIgnoreMoveInputAdded = false; return; }
-	const bool bShouldIgnore = bInitialized && BoundAssembly.IsValid() && BoundAssembly->GetPhase() == EAssemblyPhase::Assembly;
+	// WASD belongs only to muscles. A controller must not drive the character proxy in either phase.
+	const bool bShouldIgnore = bInitialized && BoundAssembly.IsValid();
 	if (bShouldIgnore != bIgnoreMoveInputAdded)
 	{
 		// SetIgnoreMoveInput uses a count. Release only the count added by this session.
 		BoundController->SetIgnoreMoveInput(bShouldIgnore);
 		bIgnoreMoveInputAdded = bShouldIgnore;
 	}
+	UpdateCharacterProxyState();
 }
 
-void UAssemblySessionComponent::ApplyHeldMuscleInput()
+void UAssemblySessionComponent::SuspendCharacterMovement()
 {
-	if (!CanAcceptInput() || BoundAssembly->GetPhase() != EAssemblyPhase::Playing) { return; }
+	ACharacter* Character = Cast<ACharacter>(GetOwner());
+	auto CanSuspend = [this, Character]()
+	{
+		return (bInitialized || bInitializing) && !bEndingPlay && !bReleasing && !bAutoInitializationSuppressed
+			&& !bProxyRestorePending && IsValid(Character) && BoundAssembly.IsValid() && BoundInteraction.IsValid()
+			&& BoundController.IsValid() && BoundController->GetPawn() == Character && Character->GetController() == BoundController.Get();
+	};
+	if (!CanSuspend()) { return; }
+	UCharacterMovementComponent* Movement = Character->GetCharacterMovement();
+	if (!bSuspendCharacterMovement || SuspendedCharacterMovement.Get() != Movement)
+	{
+		RestoreCharacterMovement();
+	}
+	if (!CanSuspend()) { return; }
+	if (bSuspendCharacterMovement && IsValid(Movement) && !bCharacterMovementSuspended)
+	{
+		SuspendedCharacterMovement = Movement;
+		PreviousCharacterMovementMode = static_cast<uint8>(Movement->MovementMode);
+		PreviousCharacterCustomMovementMode = Movement->CustomMovementMode;
+		bPreviousCharacterMovementTick = Movement->IsComponentTickEnabled();
+		// Claim these writes before callbacks (MovementModeChanged may close the session).
+		bCharacterMovementSuspended = true;
+		Character->StopJumping();
+		Character->ConsumeMovementInputVector();
+		Movement->StopMovementImmediately();
+		Movement->ClearAccumulatedForces();
+		Movement->SetComponentTickEnabled(false);
+		Movement->DisableMovement();
+	}
+	// Capsule collision requires the actual physics snapshot, which may not exist during early initialization.
+}
+
+void UAssemblySessionComponent::UpdateCharacterProxyState()
+{
+	ACharacter* Character = Cast<ACharacter>(GetOwner());
+	if (!bInitialized || bReleasing || !IsValid(Character)) { return; }
+	SuspendCharacterMovement();
+	if (!bInitialized || bReleasing) { return; }
+	UCapsuleComponent* Capsule = Character->GetCapsuleComponent();
+	UAssemblyPhysicsBridgeComponent* Bridge = BoundPhysicsBridge.Get();
+	FAssemblyPhysicsSnapshotMessage Snapshot;
+	bool bDisableProxyCapsule = bDisableCharacterCapsuleForPhysics && IsValid(Capsule)
+		&& !Capsule->IsSimulatingPhysics() && IsValid(Bridge) && Bridge->IsBridgeInitialized()
+		&& Bridge->HasPhysicsLifecycleProvider() && Bridge->GetPhysicsSnapshot(Snapshot)
+		&& Snapshot.Context.Assembly == BoundAssembly.Get() && Snapshot.Context.World == GetWorld();
+	if (bDisableProxyCapsule)
+	{
+		// A capsule explicitly supplied as a real assembly body is never a disposable proxy.
+		bDisableProxyCapsule = Snapshot.CoreBody != Capsule && !Snapshot.BonePoses.ContainsByPredicate(
+			[Capsule](const FAssemblyPhysicsBonePose& Pose) { return Pose.Body == Capsule || Pose.PoseSource == Capsule; });
+	}
+	if (!bDisableProxyCapsule || DisabledCharacterCapsule.Get() != Capsule)
+	{
+		RestoreCharacterCapsule();
+	}
+	if (!bInitialized || bReleasing) { return; }
+	if (bDisableProxyCapsule && !bCharacterCapsuleDisabled)
+	{
+		DisabledCharacterCapsule = Capsule;
+		PreviousCharacterCapsuleCollision = Capsule->GetCollisionEnabled();
+		bCharacterCapsuleDisabled = true;
+		Capsule->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	}
+}
+
+void UAssemblySessionComponent::RestoreCharacterMovement()
+{
+	UCharacterMovementComponent* Movement = SuspendedCharacterMovement.Get();
+	const bool bRestore = bCharacterMovementSuspended && IsValid(Movement);
+	// Clear ownership before any callback can attempt another release.
+	bCharacterMovementSuspended = false;
+	SuspendedCharacterMovement.Reset();
+	if (!bRestore) { return; }
+	const bool bOwnsMode = Movement->MovementMode == MOVE_None && Movement->CustomMovementMode == 0;
+	const bool bOwnsTick = !Movement->IsComponentTickEnabled();
+	if (bOwnsMode && bOwnsTick)
+	{
+		if (APawn* Pawn = Cast<APawn>(GetOwner())) { Pawn->ConsumeMovementInputVector(); }
+		Movement->StopMovementImmediately();
+		Movement->ClearAccumulatedForces();
+	}
+	// Do not restore cached velocity or overwrite a mode/tick state another owner has replaced.
+	if (bOwnsTick) { Movement->SetComponentTickEnabled(bPreviousCharacterMovementTick); }
+	if (bOwnsMode)
+	{
+		Movement->SetMovementMode(static_cast<EMovementMode>(PreviousCharacterMovementMode), PreviousCharacterCustomMovementMode);
+	}
+}
+
+void UAssemblySessionComponent::RestoreCharacterCapsule()
+{
+	UCapsuleComponent* Capsule = DisabledCharacterCapsule.Get();
+	const bool bRestore = bCharacterCapsuleDisabled && IsValid(Capsule)
+		&& Capsule->GetCollisionEnabled() == ECollisionEnabled::NoCollision;
+	bCharacterCapsuleDisabled = false;
+	DisabledCharacterCapsule.Reset();
+	if (bRestore) { Capsule->SetCollisionEnabled(PreviousCharacterCapsuleCollision); }
+}
+
+bool UAssemblySessionComponent::TryRestoreCharacterProxy()
+{
+	if (!bProxyRestorePending) { return true; }
+	if (const UAssemblyPhysicsBridgeComponent* Bridge = PendingProxyShutdownBridge.Get())
+	{
+		// A shutdown requested inside a provider callback is deferred until that callback unwinds.
+		// An externally resumed bridge still owns physical movement; never restore its character proxy.
+		if (Bridge->IsPhysicsLifecycleBusy() || !Bridge->IsPhysicsLifecycleShutdown()) { return false; }
+	}
+	TGuardValue<bool> RestoringGuard(bReleasing, true);
+	bProxyRestorePending = false;
+	PendingProxyShutdownBridge.Reset();
+	RestoreCharacterCapsule();
+	RestoreCharacterMovement();
+	return true;
+}
+
+void UAssemblySessionComponent::ApplyHeldMuscleInput(bool bAllowTransition)
+{
+	if (!CanAcceptInput(bAllowTransition) || BoundAssembly->GetPhase() != EAssemblyPhase::Playing) { return; }
 	const TArray<EAssemblyMuscleKey> Keys = HeldMuscleKeys.Array();
 	for (const EAssemblyMuscleKey Key : Keys)
 	{
-		if (!CanAcceptInput()) { break; }
+		if (!CanAcceptInput(bAllowTransition)) { break; }
 		if (HeldMuscleKeys.Contains(Key)) { BoundAssembly->SetMuscleInput(Key, true); }
 	}
 }
@@ -501,9 +853,10 @@ bool UAssemblySessionComponent::IsSessionViewportFocused() const
 	return IsValid(HUD) && (HUD->HasAnyUserFocus() || HUD->HasFocusedDescendants());
 }
 
-bool UAssemblySessionComponent::CanAcceptInput() const
+bool UAssemblySessionComponent::CanAcceptInput(bool bAllowTransition) const
 {
-	return bInitialized && !bReleasing && BoundController.IsValid() && BoundAssembly.IsValid()
+	return !bInitializing && (!bTransitioning || bAllowTransition)
+		&& IsCurrentSessionBinding(BoundAssembly.Get(), BoundInteraction.Get(), BoundWorkbench.Get(), BoundController.Get())
 		&& GetWorld() && !GetWorld()->IsPaused() && BoundController->GetPawn() == GetOwner() && IsSessionViewportFocused();
 }
 
@@ -585,7 +938,7 @@ void UAssemblySessionComponent::HandleWorkbenchChanged() { bModelRefreshPending 
 void UAssemblySessionComponent::HandleWorkbenchMessage(FText Message) { ShowMessage(Message); }
 void UAssemblySessionComponent::HandlePhaseChanged(EAssemblyPhase Phase)
 {
-	// This only adjusts the controller's input count; it never mutates the notifying model.
+	// Maintain proxy ownership without mutating the notifying model; physics phases belong to the provider.
 	UpdateMovementGate();
 	bReplayHeldMusclesPending = Phase == EAssemblyPhase::Playing;
 	bModelRefreshPending = true;
@@ -602,11 +955,13 @@ void UAssemblySessionComponent::HandleModelReset()
 void UAssemblySessionComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+	// Shutdown sessions still tick: return the proxy only after their old physical owner has stopped.
+	if (!bEndingPlay) { TryRestoreCharacterProxy(); }
 	APawn* Pawn = Cast<APawn>(GetOwner());
 	APlayerController* DesiredController = Pawn ? Cast<APlayerController>(Pawn->GetController()) : nullptr;
 	if (DesiredController && (!DesiredController->IsLocalController() || DesiredController->GetPawn() != Pawn)) { DesiredController = nullptr; }
-	if (bInitialized && (BoundController.Get() != DesiredController || !BoundAssembly.IsValid()
-		|| !BoundInteraction.IsValid() || !BoundWorkbench.IsValid() || !IsValid(SessionInput)))
+	if (bInitialized && (BoundController.Get() != DesiredController || !IsValid(SessionInput)
+		|| !IsCurrentSessionBinding(BoundAssembly.Get(), BoundInteraction.Get(), BoundWorkbench.Get(), BoundController.Get())))
 	{
 		ReleaseSession();
 	}
@@ -643,6 +998,19 @@ void UAssemblySessionComponent::ReleaseSession()
 	if (bReleasing) { return; }
 	TGuardValue<bool> ReleasingGuard(bReleasing, true);
 	ClearHeldInput();
+	TWeakObjectPtr<UAssemblyPhysicsBridgeComponent> ReleasedBridge = BoundPhysicsBridge;
+	if (!ReleasedBridge.IsValid() && bInitializing && BoundInteraction.IsValid())
+	{
+		// InitializeInteraction may be inside a newly created bridge's synchronous provider callback.
+		UAssemblyPhysicsBridgeComponent* Candidate = BoundInteraction->GetPhysicsBridge();
+		if (IsValid(Candidate) && (!Candidate->IsBridgeInitialized()
+			|| Candidate->GetPhysicsContext().Assembly == BoundAssembly.Get()))
+		{
+			ReleasedBridge = Candidate;
+		}
+	}
+	// Stop real bodies/constraints before restoring the character proxy, even when views are caller-owned.
+	if (UAssemblyPhysicsBridgeComponent* Bridge = ReleasedBridge.Get()) { Bridge->ShutdownPhysicsLifecycle(); }
 	FCoreDelegates::ApplicationWillDeactivateDelegate.Remove(DeactivationHandle);
 	FCoreDelegates::ApplicationWillEnterBackgroundDelegate.Remove(BackgroundHandle);
 	DeactivationHandle.Reset();
@@ -651,6 +1019,12 @@ void UAssemblySessionComponent::ReleaseSession()
 	UnbindSessionInput();
 	if (bIgnoreMoveInputAdded && BoundController.IsValid()) { BoundController->SetIgnoreMoveInput(false); }
 	bIgnoreMoveInputAdded = false;
+	if ((bCharacterMovementSuspended || bCharacterCapsuleDisabled) && !bProxyRestorePending)
+	{
+		PendingProxyShutdownBridge = ReleasedBridge;
+		bProxyRestorePending = true;
+	}
+	TryRestoreCharacterProxy();
 	if (BoundAssembly.IsValid())
 	{
 		BoundAssembly->OnAssemblyChanged.RemoveDynamic(this, &UAssemblySessionComponent::HandleModelChanged);
@@ -665,6 +1039,8 @@ void UAssemblySessionComponent::ReleaseSession()
 	}
 	BoundWorkbench.Reset();
 	BoundInteraction.Reset();
+	BoundPhysicsBridge.Reset();
+	bHadPhysicsBridgeBinding = false;
 	BoundAssembly.Reset();
 	BoundController.Reset();
 	bInitialized = false;
@@ -675,19 +1051,23 @@ void UAssemblySessionComponent::ReleaseSession()
 
 void UAssemblySessionComponent::ShutdownSession()
 {
+	const bool bNotify = !bAutoInitializationSuppressed || bInitialized;
 	bAutoInitializationSuppressed = true;
+	if (bReleasing) { return; }
 	ReleaseSession();
-	OnSessionChanged.Broadcast();
+	if (bNotify) { OnSessionChanged.Broadcast(); }
 }
 
 void UAssemblySessionComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	bEndingPlay = true;
 	ReleaseSession();
 	Super::EndPlay(EndPlayReason);
 }
 
 void UAssemblySessionComponent::OnComponentDestroyed(bool bDestroyingHierarchy)
 {
+	bEndingPlay = true;
 	ReleaseSession();
 	HUD = nullptr;
 	Super::OnComponentDestroyed(bDestroyingHierarchy);
