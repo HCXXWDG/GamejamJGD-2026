@@ -88,11 +88,13 @@ bool UAssemblyWorkbenchComponent::UpdateMusclePreview(FText& OutReason)
 		if (IsValid(MusclePreviewActor)) { MusclePreviewActor->SetPreviewValid(false); }
 		return false;
 	}
-	const bool bOnBone = Assembly->FindBoneAtWorldPosition(PointerWorld, CandidateEndpoint);
+	const bool bOnBone = Assembly->FindBoneAtWorldPosition(PointerWorld, CandidateEndpoint)
+		&& !Assembly->IsJointPart(CandidateEndpoint.BoneId);
+	if (!bOnBone) { CandidateEndpoint = FAssemblyMuscleEndpoint(); }
 	if (Tool == EAssemblyWorkbenchTool::MuscleFirst)
 	{
 		MusclePreview.bValid = bOnBone;
-		if (!bOnBone) { MusclePreview.Reason = LOCTEXT("FirstOffBone", "第一连接点必须位于骨头上，核心不能连接肌肉。"); }
+		if (!bOnBone) { MusclePreview.Reason = LOCTEXT("FirstOffBone", "第一连接点必须位于骨头上，核心和关节组件不能连接肌肉。"); }
 		OutReason = MusclePreview.Reason;
 		return bOnBone;
 	}
@@ -123,7 +125,7 @@ bool UAssemblyWorkbenchComponent::UpdateMusclePreview(FText& OutReason)
 	}
 	else
 	{
-		MusclePreview.Reason = LOCTEXT("SecondOffBone", "第二连接点必须位于骨头上，核心不能连接肌肉。");
+		MusclePreview.Reason = LOCTEXT("SecondOffBone", "第二连接点必须位于骨头上，核心和关节组件不能连接肌肉。");
 	}
 	if (IsValid(MusclePreviewActor))
 	{
@@ -156,10 +158,11 @@ bool UAssemblyWorkbenchComponent::UpdateMusclePreview(FText& OutReason)
 bool UAssemblyWorkbenchComponent::CaptureFirstEndpoint(FText& OutReason)
 {
 	if (!CanEdit(OutReason)) { return Fail(OutReason, OutReason); }
-	if (!bPointerValid || !Assembly->FindBoneAtWorldPosition(PointerWorld, FirstEndpoint))
+	if (!bPointerValid || !Assembly->FindBoneAtWorldPosition(PointerWorld, FirstEndpoint)
+		|| Assembly->IsJointPart(FirstEndpoint.BoneId))
 	{
 		FirstEndpoint = FAssemblyMuscleEndpoint();
-		return Fail(LOCTEXT("CannotCaptureFirst", "请在骨头上点击第一连接点，核心不能连接肌肉。"), OutReason);
+		return Fail(LOCTEXT("CannotCaptureFirst", "请在骨头上点击第一连接点，核心和关节组件不能连接肌肉。"), OutReason);
 	}
 	Tool = EAssemblyWorkbenchTool::MuscleSecond;
 	LastMessage = LOCTEXT("ChooseSecondAnchor", "点击骨头上的第二连接点；同一骨头可以选两个不同位置。Esc 或右键取消。");

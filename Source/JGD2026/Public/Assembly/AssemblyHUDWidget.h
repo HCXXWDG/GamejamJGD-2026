@@ -123,6 +123,8 @@ private:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UButton>> KeyButtons;
 	UPROPERTY(Transient)
+	TArray<TObjectPtr<UButton>> JointKindButtons;
+	UPROPERTY(Transient)
 	TArray<TObjectPtr<UAssemblyHUDActionReceiver>> Actions;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UAssemblyHUDActionReceiver>> JointActions;

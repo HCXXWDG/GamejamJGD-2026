@@ -49,6 +49,9 @@ public:
 	// Drawing priority only; anchors are still at their exact world positions.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Muscle|Visual")
 	int32 TranslucencySortPriority = 10;
+	// Display-only offset along the assembly plane's +Y normal; negative draws behind bones.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Muscle|Visual")
+	float VisualDepthOffset = -1.0f;
 
 	// Call after model installation succeeds. This never consumes inventory or installs a muscle.
 	UFUNCTION(BlueprintCallable, Category = "Muscle|Assembly")

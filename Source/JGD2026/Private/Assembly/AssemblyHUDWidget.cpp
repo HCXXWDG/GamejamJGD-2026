@@ -210,7 +210,7 @@ void UAssemblyHUDWidget::BuildPlaceholder()
 	EditSlot->SetHorizontalAlignment(HAlign_Left);
 	EditSlot->SetVerticalAlignment(VAlign_Top);
 	EditSlot->SetPadding(FMargin(16.0f));
-	Contents->AddChild(MakeText(Text(TEXT("组装：将组件拖到场景中\nR 旋转 90° · 滚轮微调 · Esc 取消\nSpace 请求核心顺时针旋转"))));
+	Contents->AddChild(MakeText(Text(TEXT("组装：将组件拖到场景中\nR 旋转 90° · 滚轮微调 · Esc 取消\n开始操控后，Space 驱动核心旋转"))));
 
 	UHorizontalBox* Keys = WidgetTree->ConstructWidget<UHorizontalBox>();
 	for (int32 Key = static_cast<int32>(EAssemblyMuscleKey::W); Key <= static_cast<int32>(EAssemblyMuscleKey::D); ++Key)
@@ -220,10 +220,10 @@ void UAssemblyHUDWidget::BuildPlaceholder()
 		Keys->AddChild(Button);
 	}
 	Contents->AddChild(Keys);
-	Contents->AddChild(MakeText(Text(TEXT("仅肌肉绑定 WASD：先选键，再拖组件。\n骨头自由摆放，肌肉两端必须在骨头上。"))));
+	Contents->AddChild(MakeText(Text(TEXT("仅肌肉绑定 WASD：先选键，再拖组件。\n骨头之间需有关节；核心也可连接骨头。靠近表面吸附，拉远脱离。"))));
 	Shelf = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("ComponentShelf"));
 	Contents->AddChild(Shelf);
-	SelectionCaption = MakeText(Text(TEXT("点击场景中的骨头、肌肉或关节进行选择。")));
+	SelectionCaption = MakeText(Text(TEXT("点击骨头、肌肉或关节组件；约束连接可在下方列表选择。")));
 	Contents->AddChild(SelectionCaption);
 	UHorizontalBox* InstanceActions = WidgetTree->ConstructWidget<UHorizontalBox>();
 	InstanceActions->AddChild(MakeButton(Text(TEXT("移动")), EAssemblyHUDAction::Move));
@@ -231,14 +231,17 @@ void UAssemblyHUDWidget::BuildPlaceholder()
 	InstanceActions->AddChild(MakeButton(Text(TEXT("取消")), EAssemblyHUDAction::Cancel));
 	InstanceActions->AddChild(MakeButton(Text(TEXT("旋转")), EAssemblyHUDAction::Rotate, 90));
 	Contents->AddChild(InstanceActions);
-	Contents->AddChild(MakeText(Text(TEXT("关节：选择后设置种类和角度"))));
+	Contents->AddChild(MakeText(Text(TEXT("连接约束：在列表选择后设置种类和角度"))));
 	JointList = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("AssemblyJoints"));
 	Contents->AddChild(JointList);
 	UHorizontalBox* JointKinds = WidgetTree->ConstructWidget<UHorizontalBox>();
-	JointKinds->AddChild(MakeButton(Text(TEXT("活动")), EAssemblyHUDAction::JointKind, static_cast<int32>(EAssemblyJointKind::Hinge)));
-	JointKinds->AddChild(MakeButton(Text(TEXT("固定")), EAssemblyHUDAction::JointKind, static_cast<int32>(EAssemblyJointKind::Fixed)));
-	JointKinds->AddChild(MakeButton(Text(TEXT("可断\n活动")), EAssemblyHUDAction::JointKind, static_cast<int32>(EAssemblyJointKind::BreakableHinge)));
-	JointKinds->AddChild(MakeButton(Text(TEXT("可断\n固定")), EAssemblyHUDAction::JointKind, static_cast<int32>(EAssemblyJointKind::BreakableFixed)));
+	const TCHAR* JointKindLabels[] = { TEXT("活动"), TEXT("固定"), TEXT("可断\n活动"), TEXT("可断\n固定") };
+	for (int32 Kind = 0; Kind < UE_ARRAY_COUNT(JointKindLabels); ++Kind)
+	{
+		UButton* Button = MakeButton(Text(JointKindLabels[Kind]), EAssemblyHUDAction::JointKind, Kind);
+		JointKindButtons.Add(Button);
+		JointKinds->AddChild(Button);
+	}
 	Contents->AddChild(JointKinds);
 	UHorizontalBox* Limits = WidgetTree->ConstructWidget<UHorizontalBox>();
 	MinAngle = WidgetTree->ConstructWidget<USpinBox>();
@@ -302,24 +305,29 @@ void UAssemblyHUDWidget::RefreshShelf()
 	FString Signature;
 	const TArray<FAssemblyBoneDefinition> Bones = Model->GetBoneDefinitions();
 	const TArray<FAssemblyMuscleDefinition> Muscles = Model->GetMuscleDefinitions();
-	for (const FAssemblyBoneDefinition& Bone : Bones) Signature += TEXT("B:") + Bone.TypeId.ToString() + TEXT(":") + Bone.DisplayName.ToString() + TEXT(";");
+	for (const FAssemblyBoneDefinition& Bone : Bones)
+		Signature += (Bone.PartKind == EAssemblyRigidPartKind::JointPart ? TEXT("J:") : TEXT("B:"))
+			+ Bone.TypeId.ToString() + TEXT(":") + Bone.DisplayName.ToString() + TEXT(";");
 	for (const FAssemblyMuscleDefinition& Muscle : Muscles) Signature += TEXT("M:") + Muscle.TypeId.ToString() + TEXT(":") + Muscle.DisplayName.ToString() + TEXT(";");
 	if (Signature != ShelfSignature || Cards.Num() != Bones.Num() + Muscles.Num())
 	{
 		ShelfSignature = Signature;
 		Shelf->ClearChildren();
 		Cards.Reset();
-		auto AddCard = [this, ActiveWorkbench](FName TypeId, FText Name, bool bMuscle)
+		auto AddCard = [this, ActiveWorkbench](FName TypeId, FText Name, EAssemblyShelfPartKind PartKind)
 		{
 			UAssemblyShelfCardWidget* Card = GetOwningPlayer() ? CreateWidget<UAssemblyShelfCardWidget>(GetOwningPlayer(), ShelfCardClass)
 				: CreateWidget<UAssemblyShelfCardWidget>(this, ShelfCardClass);
 			if (!Card) return;
-			Card->InitializeCard(ActiveWorkbench, TypeId, Name, bMuscle);
+			Card->InitializePartCard(ActiveWorkbench, TypeId, Name, PartKind);
 			Shelf->AddChild(Card);
 			Cards.Add(Card);
 		};
-		for (const FAssemblyBoneDefinition& Bone : Bones) AddCard(Bone.TypeId, Bone.DisplayName, false);
-		for (const FAssemblyMuscleDefinition& Muscle : Muscles) AddCard(Muscle.TypeId, Muscle.DisplayName, true);
+		for (const FAssemblyBoneDefinition& Bone : Bones)
+			if (Bone.PartKind == EAssemblyRigidPartKind::Bone) AddCard(Bone.TypeId, Bone.DisplayName, EAssemblyShelfPartKind::Bone);
+		for (const FAssemblyMuscleDefinition& Muscle : Muscles) AddCard(Muscle.TypeId, Muscle.DisplayName, EAssemblyShelfPartKind::Muscle);
+		for (const FAssemblyBoneDefinition& Part : Bones)
+			if (Part.PartKind == EAssemblyRigidPartKind::JointPart) AddCard(Part.TypeId, Part.DisplayName, EAssemblyShelfPartKind::JointPart);
 	}
 	for (UAssemblyShelfCardWidget* Card : Cards) if (Card) Card->RefreshQuantity();
 }
@@ -376,12 +384,25 @@ void UAssemblyHUDWidget::RefreshPresentation()
 		if (PlayPanel) PlayPanel->SetVisibility(bAssembly ? ESlateVisibility::Collapsed : ESlateVisibility::Visible);
 		EAssemblyMuscleKey HighlightKey = Model->GetSelectedMuscleKey();
 		const FAssemblySelection Selection = ActiveWorkbench->GetSelection();
-		FString Description = TEXT("未选择组件。点击骨头、肌肉或关节。");
+		FString Description = TEXT("未选择组件。点击骨头、肌肉或关节组件。");
 		if (Selection.Kind == EAssemblySelectionKind::Bone)
 		{
 			FAssemblyBoneInstance Bone;
 			if (Model->GetBone(Selection.InstanceId, Bone))
 				Description = FString::Printf(TEXT("骨头 %s\n位置 %.1f, %.1f · 角度 %.1f°"), *Bone.TypeId.ToString(), Bone.LocalPosition.X, Bone.LocalPosition.Y, Bone.RotationDegrees);
+		}
+		else if (Selection.Kind == EAssemblySelectionKind::JointPart)
+		{
+			FAssemblyBoneInstance Part;
+			FAssemblyBoneDefinition Definition;
+			if (Model->GetBone(Selection.InstanceId, Part) && Model->GetBoneDefinition(Part.TypeId, Definition))
+			{
+				const TCHAR* Nature = Definition.JointShape == EAssemblyJointPartShape::Round
+					? TEXT("紫色活动关节：可转动") : TEXT("黄色固定关节：保持固定");
+				Description = FString::Printf(TEXT("%s\n位置 %.1f, %.1f · 角度 %.1f°\n完整表面连接 · %s\n可拖动、旋转和拆下；连接约束在列表中编辑。"),
+					*Definition.DisplayName.ToString(), Part.LocalPosition.X, Part.LocalPosition.Y, Part.RotationDegrees,
+					Nature);
+			}
 		}
 		else if (Selection.Kind == EAssemblySelectionKind::Muscle)
 		{
@@ -414,6 +435,14 @@ void UAssemblyHUDWidget::RefreshPresentation()
 		if (Selection.Kind != EAssemblySelectionKind::Joint) DisplayedAngleJoint.Invalidate();
 		if (MinAngle) MinAngle->SetIsEnabled(bJointSelected);
 		if (MaxAngle) MaxAngle->SetIsEnabled(bJointSelected);
+		for (int32 Kind = 0; Kind < JointKindButtons.Num(); ++Kind)
+		{
+			if (JointKindButtons[Kind])
+			{
+				JointKindButtons[Kind]->SetIsEnabled(bJointSelected
+					&& Model->IsJointKindAllowed(Selection.InstanceId, static_cast<EAssemblyJointKind>(Kind)));
+			}
+		}
 		for (int32 Index = 0; Index < KeyButtons.Num(); ++Index)
 		{
 			if (KeyButtons[Index]) KeyButtons[Index]->SetBackgroundColor(static_cast<int32>(HighlightKey) == Index + 1
@@ -445,7 +474,9 @@ FText UAssemblyHUDWidget::GetDefaultMessage() const
 		switch (ActiveWorkbench->GetTool())
 		{
 		case EAssemblyWorkbenchTool::Bone:
-			return Text(TEXT("拖动骨头到场景中。R 旋转 90°，滚轮微调；松开安装，Esc 或右键取消。"));
+			return Text(TEXT("骨头靠近关节或核心表面时吸附，拉远脱离；骨头之间不能直接连接。R 旋转，滚轮微调；松开安装，Esc 或右键取消。"));
+		case EAssemblyWorkbenchTool::JointPart:
+			return Text(TEXT("关节可吸附骨头中段、关节或核心表面，拉远脱离。R 旋转，滚轮微调；松开安装，Esc 或右键取消。"));
 		case EAssemblyWorkbenchTool::MuscleFirst:
 			return Text(TEXT("在骨头上选择肌肉第一连接点；从组件栏拖出时，在骨头上松开。Esc 或右键取消。"));
 		case EAssemblyWorkbenchTool::MuscleSecond:
@@ -513,7 +544,7 @@ bool UAssemblyHUDWidget::OwnsCapturedTool() const
 {
 	const UAssemblyWorkbenchComponent* ActiveWorkbench = CapturedWorkbench.Get();
 	return bOwnsPointerCapture && CapturedToolId.IsValid() && ActiveWorkbench
-		&& ActiveWorkbench->GetToolId() == CapturedToolId && ActiveWorkbench->GetTool() == EAssemblyWorkbenchTool::Bone;
+		&& ActiveWorkbench->GetToolId() == CapturedToolId && ActiveWorkbench->IsRigidPartTool();
 }
 
 void UAssemblyHUDWidget::EndWorldPointerCapture(bool bCancelTool)
@@ -552,7 +583,7 @@ FReply UAssemblyHUDWidget::NativeOnMouseButtonDown(const FGeometry& Geometry, co
 	const FGuid PressedToolId = ActiveWorkbench->GetToolId();
 	PresentReason(bSucceeded, Reason);
 	if (ActiveWorkbench == GetWorkbench() && ActiveWorkbench->GetToolId() == PressedToolId
-		&& ActiveWorkbench->GetTool() == EAssemblyWorkbenchTool::Bone)
+		&& ActiveWorkbench->IsRigidPartTool())
 	{
 		bOwnsPointerCapture = true;
 		CapturedWorkbench = ActiveWorkbench;
@@ -587,19 +618,27 @@ FReply UAssemblyHUDWidget::NativeOnMouseButtonUp(const FGeometry& Geometry, cons
 	}
 	if (IsOverPlaceholderPanel(MouseEvent.GetScreenSpacePosition()))
 	{
-		// Returning a moved installed bone to the shelf requests a real removal, subject to connectivity.
+		// Returning an installed rigid part to the shelf removes it only when connectivity allows.
 		const FAssemblySelection Selection = ActiveWorkbench->GetSelection();
-		const bool bReturningInstalledBone = ActiveWorkbench->GetTool() == EAssemblyWorkbenchTool::Bone && Selection.Kind == EAssemblySelectionKind::Bone
+		const FGuid ReturningToolId = ActiveWorkbench->GetToolId();
+		const bool bReturningInstalledBone = ReturningToolId.IsValid() && ActiveWorkbench->IsRigidPartTool()
+			&& (Selection.Kind == EAssemblySelectionKind::Bone || Selection.Kind == EAssemblySelectionKind::JointPart)
+			&& (!bOwnsPointerCapture || (CapturedWorkbench.Get() == ActiveWorkbench && CapturedToolId == ReturningToolId))
 			&& Shelf && Shelf->GetCachedGeometry().IsUnderLocation(MouseEvent.GetScreenSpacePosition());
 		ActiveWorkbench->CancelTool();
 		HandleMessage(FText::GetEmpty());
-		if (bReturningInstalledBone)
+		const FAssemblySelection CurrentSelection = ActiveWorkbench->GetSelection();
+		// Cancel/message notifications may select another part or start a replacement drag.
+		// The old mouse release may only return the originally selected part from its own tool.
+		if (bReturningInstalledBone && ActiveWorkbench == GetWorkbench()
+			&& ActiveWorkbench->GetTool() == EAssemblyWorkbenchTool::None && !ActiveWorkbench->GetToolId().IsValid()
+			&& CurrentSelection.Kind == Selection.Kind && CurrentSelection.InstanceId == Selection.InstanceId)
 		{
 			FText Reason;
 			PresentReason(ActiveWorkbench->RemoveSelected(Reason), Reason);
 		}
 	}
-	else if (ActiveWorkbench->GetTool() == EAssemblyWorkbenchTool::Bone)
+	else if (ActiveWorkbench->IsRigidPartTool())
 	{
 		FText Reason;
 		PresentReason(ActiveWorkbench->PointerReleased(ToViewportPixels(MouseEvent.GetScreenSpacePosition()), Reason), Reason);
@@ -634,7 +673,7 @@ FReply UAssemblyHUDWidget::NativeOnMouseWheel(const FGeometry& Geometry, const F
 	if (Reply.IsEventHandled() || !bForwardWorldPointerEvents || IsOverPlaceholderPanel(MouseEvent.GetScreenSpacePosition())) return Reply;
 	if (UAssemblyWorkbenchComponent* ActiveWorkbench = GetWorkbench())
 	{
-		if (ActiveWorkbench->GetTool() == EAssemblyWorkbenchTool::Bone)
+		if (ActiveWorkbench->IsRigidPartTool())
 		{
 			FText Reason;
 			PresentReason(ActiveWorkbench->RotateTool(MouseEvent.GetWheelDelta() * 15.0f, Reason), Reason);

@@ -54,8 +54,47 @@ bool UAssemblyPhysicsBridgeComponent::HasPhysicsLifecycleProvider() const
 bool UAssemblyPhysicsBridgeComponent::HasSessionLifecycleOwnership() const
 {
 	const AActor* Owner = GetOwner();
+	if (Cast<ACharacter>(Owner) && (HasPhysicsLifecycleProvider() || bRequirePhysicsLifecycleProvider))
+	{
+		TArray<UAssemblySessionComponent*> Sessions;
+		Owner->GetComponents(Sessions);
+		Sessions.RemoveAll([](const UAssemblySessionComponent* Session) { return !IsValid(Session); });
+		return Sessions.Num() == 1 && Sessions[0]->CanOwnPhysicsLifecycle(BoundAssembly.Get());
+	}
 	const UAssemblySessionComponent* Session = Owner ? Owner->FindComponentByClass<UAssemblySessionComponent>() : nullptr;
 	return !IsValid(Session) || Session->CanOwnPhysicsLifecycle(BoundAssembly.Get());
+}
+
+bool UAssemblyPhysicsBridgeComponent::EnsureFormalProxyReady(const FAssemblyPhysicsSnapshotMessage& Snapshot, FText& OutReason)
+{
+	if (!HasPhysicsLifecycleProvider() && !bRequirePhysicsLifecycleProvider) { return true; }
+	const AActor* Owner = GetOwner();
+	if (!Cast<ACharacter>(Owner)) { return true; }
+	TArray<UAssemblySessionComponent*> Sessions;
+	Owner->GetComponents(Sessions);
+	Sessions.RemoveAll([](const UAssemblySessionComponent* Session) { return !IsValid(Session); });
+	if (Sessions.Num() != 1)
+	{
+		OutReason = LOCTEXT("UniquePhysicsSessionRequired", "正式角色物理需要唯一的 Assembly Session 接管角色代理；请先完成会话接入。");
+		return false;
+	}
+	return Sessions[0]->EnsurePhysicsProxyReady(BoundAssembly.Get(), Snapshot, OutReason);
+}
+
+bool UAssemblyPhysicsBridgeComponent::ValidateFormalProxyReady(const FAssemblyPhysicsSnapshotMessage& Snapshot, FText& OutReason) const
+{
+	if (!HasPhysicsLifecycleProvider() && !bRequirePhysicsLifecycleProvider) { return true; }
+	const AActor* Owner = GetOwner();
+	if (!Cast<ACharacter>(Owner)) { return true; }
+	TArray<UAssemblySessionComponent*> Sessions;
+	Owner->GetComponents(Sessions);
+	Sessions.RemoveAll([](const UAssemblySessionComponent* Session) { return !IsValid(Session); });
+	if (Sessions.Num() != 1)
+	{
+		OutReason = LOCTEXT("UniquePhysicsSessionRequired", "正式角色物理需要唯一的 Assembly Session 接管角色代理；请先完成会话接入。");
+		return false;
+	}
+	return Sessions[0]->ValidatePhysicsProxyReady(BoundAssembly.Get(), Snapshot, OutReason);
 }
 
 bool UAssemblyPhysicsBridgeComponent::ResolvePhysicsLifecycleProvider(FText& OutReason)
@@ -165,7 +204,8 @@ bool UAssemblyPhysicsBridgeComponent::ValidatePhysicalBodies(
 {
 	auto IsReady = [this](UPrimitiveComponent* Body)
 	{
-		return IsValid(Body) && Body->IsRegistered() && Body->GetWorld() == GetWorld();
+		return IsValid(Body) && Body->IsRegistered() && Body->GetWorld() == GetWorld()
+			&& IsValid(Body->GetOwner()) && !Body->GetOwner()->IsActorBeingDestroyed();
 	};
 	if (!IsReady(Snapshot.CoreBody.Get()))
 	{
@@ -205,6 +245,8 @@ void UAssemblyPhysicsBridgeComponent::AbortPreparedState()
 	if (GetPhysicsSnapshot(Latest) && Latest.Context.SourceId == Snapshot.Context.SourceId
 		&& Latest.Context.RoundGeneration == Snapshot.Context.RoundGeneration) { Snapshot = MoveTemp(Latest); }
 	bHasPreparedPlaying = false;
+	bPreparedPlayingApplied = false;
+	bPlayingPhaseCommitted = false;
 	PreparedProvider.Reset();
 	PreparedSnapshot = FAssemblyPhysicsSnapshotMessage();
 	BeforePreparationSnapshot = FAssemblyPhysicsSnapshotMessage();
@@ -291,15 +333,22 @@ bool UAssemblyPhysicsBridgeComponent::PrepareForPlaying(FText& OutReason)
 	}
 	LastLifecycleSnapshot = Snapshot;
 	// Keep an abort token before invoking Prepare, including partial/failed preparations.
+	if (!EnsureFormalProxyReady(Snapshot, OutReason) || !IsLifecycleBindingCurrent(Snapshot.Context, Provider))
+	{
+		if (OutReason.IsEmpty()) { OutReason = LOCTEXT("PrepareProxyCanceled", "冻结角色代理期间物理会话已关闭或替换。"); }
+		return false;
+	}
 	PreparedProvider = Provider;
 	PreparedSnapshot = Snapshot;
 	BeforePreparationSnapshot = Snapshot;
 	bHasPreparedPlaying = true;
+	bPreparedPlayingApplied = false;
+	bPlayingPhaseCommitted = false;
 	const bool bPrepared = IAssemblyPhysicsLifecycle::Execute_PrepareForPlaying(Provider, Snapshot, OutReason);
 	FAssemblyPhysicsSnapshotMessage ReadySnapshot;
 	const bool bStillCurrent = IsLifecycleBindingCurrent(Snapshot.Context, Provider);
 	const bool bBodiesReady = bPrepared && bStillCurrent && GetPhysicsSnapshot(ReadySnapshot)
-		&& ValidatePhysicalBodies(ReadySnapshot, OutReason);
+		&& ValidatePhysicalBodies(ReadySnapshot, OutReason) && ValidateFormalProxyReady(ReadySnapshot, OutReason);
 	if (!bBodiesReady)
 	{
 		if (OutReason.IsEmpty())
@@ -330,7 +379,7 @@ void UAssemblyPhysicsBridgeComponent::ReleaseHeldPhysicsIntents()
 		Pair.Value.Phase = Phase;
 		Pair.Value.bContracting = false;
 		Pair.Value.Muscle.bContracting = false;
-		Bus->BroadcastMessage(AssemblyMessageTags::MuscleDriveRequested, FInstancedStruct::Make(Pair.Value));
+		DispatchDriveMessage(Bus, AssemblyMessageTags::MuscleDriveRequested, FInstancedStruct::Make(Pair.Value));
 	}
 	if (bReleaseCore)
 	{
@@ -340,7 +389,7 @@ void UAssemblyPhysicsBridgeComponent::ReleaseHeldPhysicsIntents()
 		Stop.CoreBody = CoreBody.Get();
 		Stop.FrameTransform = BoundAssembly.IsValid() ? BoundAssembly->GetGridFrameTransform() : LastLifecycleSnapshot.FrameTransform;
 		Stop.WorldClockwiseAxis = Stop.FrameTransform.TransformVectorNoScale(FVector(0, 1, 0)).GetSafeNormal();
-		Bus->BroadcastMessage(AssemblyMessageTags::CoreRotationRequested, FInstancedStruct::Make(Stop));
+		DispatchDriveMessage(Bus, AssemblyMessageTags::CoreRotationRequested, FInstancedStruct::Make(Stop));
 	}
 }
 
@@ -382,39 +431,167 @@ bool UAssemblyPhysicsBridgeComponent::StopBeforeReset(FText& OutReason)
 	}
 	bLifecycleShutdown = true;
 	bHasPreparedPlaying = false;
+	bPreparedPlayingApplied = false;
+	bPlayingPhaseCommitted = false;
 	PreparedProvider.Reset();
 	PreparedSnapshot = FAssemblyPhysicsSnapshotMessage();
 	BeforePreparationSnapshot = FAssemblyPhysicsSnapshotMessage();
 	return true;
 }
 
-void UAssemblyPhysicsBridgeComponent::ApplyPhysicsPhase()
+bool UAssemblyPhysicsBridgeComponent::ApplyPhysicsPhase(FText& OutReason)
 {
-	if (bLifecycleBusy || bClearing || !IsBridgeInitialized()) { return; }
-	if (!HasSessionLifecycleOwnership()) { bLifecycleShutdown = true; return; }
+	OutReason = FText::GetEmpty();
+	if (bLifecycleBusy || bClearing || !IsBridgeInitialized())
+	{
+		OutReason = LOCTEXT("ApplyUnavailable", "物理桥未初始化或正在执行同步生命周期回调。");
+		return false;
+	}
+	if (!ResolvePhysicsLifecycleProvider(OutReason)) { return false; }
 	FAssemblyPhysicsSnapshotMessage Snapshot;
-	if (!GetPhysicsSnapshot(Snapshot)) { return; }
-	LastLifecycleSnapshot = Snapshot;
-	bLifecycleShutdown = false;
+	if (!GetPhysicsSnapshot(Snapshot))
+	{
+		OutReason = LOCTEXT("MissingSnapshot", "无法取得当前组装的物理快照。");
+		return false;
+	}
 	UObject* Provider = GetPhysicsLifecycleProvider();
-	if (!Provider) { return; }
 	ON_SCOPE_EXIT { FlushDeferredLifecycleActions(); };
 	TGuardValue<bool> Guard(bLifecycleBusy, true);
-	IAssemblyPhysicsLifecycle::Execute_ApplyAssemblyPhase(Provider, Snapshot);
-	if (!IsLifecycleBindingCurrent(Snapshot.Context, Provider)) { AbortPreparedState(); return; }
-	// The model has committed Playing; later restarts use Stop/Shutdown rather than Abort.
-	if (Snapshot.Phase == EAssemblyPhase::Playing)
+	auto Reject = [&]()
 	{
-		bHasPreparedPlaying = false;
-		PreparedProvider.Reset();
-		PreparedSnapshot = FAssemblyPhysicsSnapshotMessage();
-		BeforePreparationSnapshot = FAssemblyPhysicsSnapshotMessage();
+		ReleaseHeldPhysicsIntents();
+		AbortPreparedState();
+		bPlayingPhaseCommitted = false;
+		// Rejection blocks drives while this callback is busy, but does not prove cleanup completed.
+		// Assembly Apply has no preparation token, and may still own partially activated resources.
+		// Defer a real Shutdown until Abort/Apply has unwound; its normal flag makes later cleanup idempotent.
+		bLifecycleShutdown = false;
+		bLifecycleShutdownPending = true;
+		if (OutReason.IsEmpty()) { OutReason = LOCTEXT("ApplyRejected", "物理执行器未确认操控阶段已安全激活。"); }
+		return false;
+	};
+	if (!HasSessionLifecycleOwnership() || !EnsureFormalProxyReady(Snapshot, OutReason)
+		|| !IsLifecycleBindingCurrent(Snapshot.Context, Provider)) { return Reject(); }
+	const bool bPlaying = Snapshot.Phase == EAssemblyPhase::Playing;
+	if (bPlaying && Provider && (!bHasPreparedPlaying || PreparedProvider.Get() != Provider
+		|| PreparedSnapshot.Context.SourceId != Snapshot.Context.SourceId
+		|| PreparedSnapshot.Context.RoundGeneration != Snapshot.Context.RoundGeneration))
+	{
+		OutReason = LOCTEXT("PlayingNotPrepared", "操控阶段尚未完成当前执行器、本轮结构的同步准备。");
+		return Reject();
 	}
+	if (Provider && bPlaying && !ValidatePhysicalBodies(Snapshot, OutReason)) { return Reject(); }
+	LastLifecycleSnapshot = Snapshot;
+	if (Provider && !IAssemblyPhysicsLifecycle::Execute_ApplyAssemblyPhase(Provider, Snapshot, OutReason)) { return Reject(); }
+	FAssemblyPhysicsSnapshotMessage AppliedSnapshot;
+	if (!IsLifecycleBindingCurrent(Snapshot.Context, Provider) || !GetPhysicsSnapshot(AppliedSnapshot)
+		|| !ValidateFormalProxyReady(AppliedSnapshot, OutReason)
+		|| (Provider && bPlaying && !ValidatePhysicalBodies(AppliedSnapshot, OutReason))) { return Reject(); }
+	LastLifecycleSnapshot = AppliedSnapshot;
+	bLifecycleShutdown = false;
+	if (!bPlaying) { bPlayingPhaseCommitted = false; }
+	if (bPlaying && Provider)
+	{
+		bPreparedPlayingApplied = true;
+		PreparedSnapshot = AppliedSnapshot;
+	}
+	OutReason = FText::GetEmpty();
+	return true;
+}
+
+bool UAssemblyPhysicsBridgeComponent::CommitPreparedPlaying(FText& OutReason)
+{
+	if (!IsBridgeInitialized() || BoundAssembly->GetPhase() != EAssemblyPhase::Playing)
+	{
+		OutReason = LOCTEXT("CommitWrongPhase", "操控阶段提交需要当前模型的临时 Playing 阶段。");
+		return false;
+	}
+	if (bPreparedPlayingApplied) { return ValidateCommittedPlaying(OutReason); }
+	return ApplyPhysicsPhase(OutReason);
+}
+
+bool UAssemblyPhysicsBridgeComponent::ValidateCommittedPlaying(FText& OutReason)
+{
+	OutReason = FText::GetEmpty();
+	if (bLifecycleBusy || bClearing || bLifecycleShutdown || !IsBridgeInitialized()
+		|| BoundAssembly->GetPhase() != EAssemblyPhase::Playing)
+	{
+		OutReason = LOCTEXT("VerifyPlayingUnavailable", "操控阶段复核期间物理桥已停止或当前阶段已失效。");
+		return false;
+	}
+	UObject* Provider = GetPhysicsLifecycleProvider();
+	FAssemblyPhysicsSnapshotMessage Snapshot;
+	if (!GetPhysicsSnapshot(Snapshot) || !IsLifecycleBindingCurrent(LastLifecycleSnapshot.Context, Provider))
+	{
+		OutReason = LOCTEXT("VerifyPlayingCanceled", "阶段通知期间物理绑定、角色会话或世界已结束或替换。");
+		return false;
+	}
+	if (!ResolvePhysicsLifecycleProvider(OutReason) || GetPhysicsLifecycleProvider() != Provider
+		|| !ValidateFormalProxyReady(Snapshot, OutReason)) { return false; }
+	if (Provider)
+	{
+		const bool bPreparedTransaction = bHasPreparedPlaying && bPreparedPlayingApplied && PreparedProvider.Get() == Provider;
+		if (!bPreparedTransaction && !bPlayingPhaseCommitted)
+		{
+			OutReason = LOCTEXT("PlayingConfirmationLost", "本轮物理激活的准备或提交确认已失效。");
+			return false;
+		}
+		if (!ValidatePhysicalBodies(Snapshot, OutReason)) { return false; }
+		const FAssemblyPhysicsSnapshotMessage& Activation = bPreparedTransaction ? PreparedSnapshot : LastLifecycleSnapshot;
+		if (Snapshot.CoreBody != Activation.CoreBody || Snapshot.BonePoses.Num() != Activation.BonePoses.Num())
+		{
+			OutReason = LOCTEXT("PlayingBodiesChanged", "阶段通知期间已激活的物理刚体被替换，请重新准备结构。");
+			return false;
+		}
+		for (const FAssemblyPhysicsBonePose& Pose : Snapshot.BonePoses)
+		{
+			const FAssemblyPhysicsBonePose* Prepared = Activation.BonePoses.FindByPredicate(
+				[&Pose](const FAssemblyPhysicsBonePose& Other) { return Other.BoneId == Pose.BoneId; });
+			if (!Prepared || Pose.Body != Prepared->Body || Pose.PoseSource != Prepared->PoseSource)
+			{
+				OutReason = LOCTEXT("PlayingBodiesChanged", "阶段通知期间已激活的物理刚体被替换，请重新准备结构。");
+				return false;
+			}
+		}
+	}
+	LastLifecycleSnapshot = Snapshot;
+	return true;
+}
+
+bool UAssemblyPhysicsBridgeComponent::FinalizePreparedPlaying(FText& OutReason)
+{
+	if (!ValidateCommittedPlaying(OutReason)) { return false; }
+	// No external calls after this point: notification callbacks can no longer invalidate the token.
+	bHasPreparedPlaying = false;
+	bPreparedPlayingApplied = false;
+	bPlayingPhaseCommitted = true;
+	PreparedProvider.Reset();
+	PreparedSnapshot = FAssemblyPhysicsSnapshotMessage();
+	BeforePreparationSnapshot = FAssemblyPhysicsSnapshotMessage();
+	return true;
 }
 
 bool UAssemblyPhysicsBridgeComponent::RefreshPhysicsLifecycle(FText& OutReason)
 {
 	OutReason = FText::GetEmpty();
+	if (BoundAssembly.IsValid() && BoundAssembly->IsRecoveringFromPhysicsFailure())
+	{
+		OutReason = LOCTEXT("RefreshDuringRecovery", "物理失败恢复通知期间不能重新激活执行器，请在回调结束后重试。");
+		return false;
+	}
+	auto FailRefresh = [&]()
+	{
+		const FText Failure = OutReason;
+		ShutdownPhysicsLifecycle();
+		if (IsBridgeInitialized() && BoundAssembly->GetPhase() == EAssemblyPhase::Playing)
+		{
+			FText RecoveryReason;
+			// Model mutation guards reject recovery inside its in-flight start transaction.
+			BoundAssembly->RecoverAssemblyAfterPhysicsFailure(RecoveryReason);
+		}
+		OutReason = Failure;
+		return false;
+	};
 	if (bLifecycleBusy || bClearing || !IsBridgeInitialized())
 	{
 		OutReason = LOCTEXT("RefreshUnavailable", "物理桥未初始化或正在执行同步生命周期回调。");
@@ -423,20 +600,26 @@ bool UAssemblyPhysicsBridgeComponent::RefreshPhysicsLifecycle(FText& OutReason)
 	if (!HasSessionLifecycleOwnership())
 	{
 		OutReason = LOCTEXT("SessionNotReady", "请先初始化角色的 Assembly Session；物理阶段只能在会话接管并冻结角色移动后启用。");
-		return false;
+		return FailRefresh();
 	}
-	if (!ResolvePhysicsLifecycleProvider(OutReason)) { return false; }
+	if (!ResolvePhysicsLifecycleProvider(OutReason)) { return FailRefresh(); }
 	const FAssemblyPhysicsContext Binding = GetPhysicsContext();
 	UObject* Provider = GetPhysicsLifecycleProvider();
 	const bool bPlaying = BoundAssembly->GetPhase() == EAssemblyPhase::Playing;
-	if (bPlaying && !PrepareForPlaying(OutReason)) { return false; }
-	ApplyPhysicsPhase();
+	if (bPlaying && !PrepareForPlaying(OutReason)) { return FailRefresh(); }
+	if (!ApplyPhysicsPhase(OutReason)) { return FailRefresh(); }
+	if (bPlaying && !FinalizePreparedPlaying(OutReason))
+	{
+		AbortPreparedPlaying();
+		return FailRefresh();
+	}
 	if (!IsLifecycleBindingCurrent(Binding, Provider) || bLifecycleShutdown)
 	{
 		OutReason = LOCTEXT("RefreshCanceled", "恢复物理生命周期期间绑定已被关闭或替换。");
-		return false;
+		return FailRefresh();
 	}
-	return ReplayHeldPhysicsIntents(Binding, OutReason);
+	if (!ReplayHeldPhysicsIntents(Binding, OutReason)) { return FailRefresh(); }
+	return true;
 }
 
 bool UAssemblyPhysicsBridgeComponent::ReplayHeldPhysicsIntents(
@@ -493,6 +676,7 @@ void UAssemblyPhysicsBridgeComponent::ShutdownPhysicsLifecycle()
 	const TWeakObjectPtr<UObject> Provider = PhysicsLifecycleProvider;
 	// Mark before callbacks, so release is idempotent even when a listener requests shutdown again.
 	bLifecycleShutdown = true;
+	bPlayingPhaseCommitted = false;
 	ReleaseHeldPhysicsIntents();
 	AbortPreparedState();
 	BeforePreparationSnapshot = FAssemblyPhysicsSnapshotMessage();
@@ -531,7 +715,8 @@ void UAssemblyPhysicsBridgeComponent::FlushDeferredLifecycleActions()
 bool UAssemblyPhysicsBridgeComponent::IsBridgeInitialized() const
 {
 	return bInitialized && !bClearing && BoundAssembly.IsValid() && MessageBus.IsValid()
-		&& BoundAssembly->IsInitialized() && !BoundAssembly->IsEndingPlay() && BoundAssembly->GetWorld() == GetWorld();
+		&& BoundAssembly->IsInitialized() && !BoundAssembly->IsEndingPlay() && BoundAssembly->GetWorld() == GetWorld()
+		&& IsValid(GetOwner()) && !GetOwner()->IsActorBeingDestroyed();
 }
 
 bool UAssemblyPhysicsBridgeComponent::InitializeBridge(UAssemblyComponent* Assembly,
@@ -607,6 +792,14 @@ bool UAssemblyPhysicsBridgeComponent::InitializeBridge(UAssemblyComponent* Assem
 		FAssemblyLifecycleCheck::CreateUObject(this, &ThisClass::StopBeforeReset),
 		FSimpleDelegate::CreateUObject(this, &ThisClass::AbortPreparedPlaying),
 		FSimpleDelegate::CreateUObject(this, &ThisClass::ShutdownPhysicsLifecycle), OutReason))
+	{
+		ClearBridge();
+		return false;
+	}
+	if (!Assembly->RegisterPlayingCommitCallbacks(this,
+		FAssemblyLifecycleCheck::CreateUObject(this, &ThisClass::CommitPreparedPlaying),
+		FAssemblyLifecycleCheck::CreateUObject(this, &ThisClass::ValidateCommittedPlaying),
+		FAssemblyLifecycleCheck::CreateUObject(this, &ThisClass::FinalizePreparedPlaying), OutReason))
 	{
 		ClearBridge();
 		return false;
@@ -713,11 +906,11 @@ void UAssemblyPhysicsBridgeComponent::ClearBridge()
 		{
 			Pair.Value.bContracting = false;
 			Pair.Value.Muscle.bContracting = false;
-			Bus->BroadcastMessage(AssemblyMessageTags::MuscleDriveRequested, FInstancedStruct::Make(Pair.Value));
+			DispatchDriveMessage(Bus, AssemblyMessageTags::MuscleDriveRequested, FInstancedStruct::Make(Pair.Value));
 		}
 		if (bReleaseCore)
 		{
-			Bus->BroadcastMessage(AssemblyMessageTags::CoreRotationRequested, FInstancedStruct::Make(CoreStop));
+			DispatchDriveMessage(Bus, AssemblyMessageTags::CoreRotationRequested, FInstancedStruct::Make(CoreStop));
 		}
 		if (bHadBinding)
 		{
@@ -731,6 +924,8 @@ void UAssemblyPhysicsBridgeComponent::ClearBridge()
 	RoundGeneration = 0;
 	Revision = 0;
 	bHasPreparedPlaying = false;
+	bPreparedPlayingApplied = false;
+	bPlayingPhaseCommitted = false;
 	PreparedProvider.Reset();
 	PreparedSnapshot = FAssemblyPhysicsSnapshotMessage();
 	BeforePreparationSnapshot = FAssemblyPhysicsSnapshotMessage();
@@ -871,6 +1066,8 @@ void UAssemblyPhysicsBridgeComponent::HandleAssemblyReset()
 		PendingJointConfirmations.Reset();
 		OutstandingJointBreaks.Reset();
 		bHasPreparedPlaying = false;
+		bPreparedPlayingApplied = false;
+		bPlayingPhaseCommitted = false;
 		PreparedProvider.Reset();
 		PreparedSnapshot = FAssemblyPhysicsSnapshotMessage();
 		BeforePreparationSnapshot = FAssemblyPhysicsSnapshotMessage();
@@ -887,13 +1084,19 @@ void UAssemblyPhysicsBridgeComponent::HandlePhaseChanged(EAssemblyPhase Phase)
 	if (IsBridgeInitialized())
 	{
 		const FAssemblyPhysicsContext Binding = GetPhysicsContext();
-		ApplyPhysicsPhase();
+		// Playing was already synchronously applied by the model's commit callback.
+		// Keep its abort token until all phase listeners and the final verification have run.
+		if (Phase == EAssemblyPhase::Assembly && !BoundAssembly->IsRecoveringFromPhysicsFailure())
+		{
+			FText ApplyReason;
+			ApplyPhysicsPhase(ApplyReason);
+		}
 		if (!IsCurrentContext(Binding)) { return; }
 		++Revision;
 		bRebuildPending = true;
 		BroadcastSnapshot(AssemblyMessageTags::AssemblyPhaseChanged);
-		// Preserve a held Space across the transition, now with the committed physical phase.
-		if (!bLifecycleShutdown && HasPhysicsLifecycleProvider() && IsCurrentContext(Binding) && BoundAssembly->IsCoreRotationHeld())
+		if (Phase == EAssemblyPhase::Playing && !bHasPreparedPlaying && !bLifecycleShutdown
+			&& HasPhysicsLifecycleProvider() && IsCurrentContext(Binding) && BoundAssembly->IsCoreRotationHeld())
 		{
 			BroadcastCoreRequest(true);
 		}
@@ -904,7 +1107,43 @@ void UAssemblyPhysicsBridgeComponent::BroadcastMuscleRequest(const FAssemblyPhys
 {
 	if (IsBridgeInitialized())
 	{
-		MessageBus->BroadcastMessage(AssemblyMessageTags::MuscleDriveRequested, FInstancedStruct::Make(Request));
+		DispatchDriveMessage(MessageBus.Get(), AssemblyMessageTags::MuscleDriveRequested, FInstancedStruct::Make(Request));
+	}
+}
+
+void UAssemblyPhysicsBridgeComponent::DispatchDriveMessage(UJGDMessageSubsystem* Bus,
+	FGameplayTag Channel, const FInstancedStruct& Payload)
+{
+	if (!IsValid(Bus)) { return; }
+	if (DriveDispatchDepth > 0)
+	{
+		FAssemblyQueuedDriveMessage& Queued = QueuedDriveMessages.AddDefaulted_GetRef();
+		Queued.Bus = Bus;
+		Queued.Channel = Channel;
+		Queued.Payload = Payload;
+		return;
+	}
+	++DriveDispatchDepth;
+	ON_SCOPE_EXIT
+	{
+		--DriveDispatchDepth;
+		DrainDriveMessages();
+	};
+	// The shared bus invokes a copy of its listener list synchronously. Nested releases must wait
+	// until this complete fanout returns, so later listeners cannot observe false followed by stale true.
+	Bus->BroadcastMessage(Channel, Payload);
+}
+
+void UAssemblyPhysicsBridgeComponent::DrainDriveMessages()
+{
+	if (DriveDispatchDepth > 0 || bDrainingDriveMessages) { return; }
+	TGuardValue<bool> Guard(bDrainingDriveMessages, true);
+	while (!QueuedDriveMessages.IsEmpty())
+	{
+		FAssemblyQueuedDriveMessage Queued = MoveTemp(QueuedDriveMessages[0]);
+		QueuedDriveMessages.RemoveAt(0);
+		// Use the captured destination/context. ClearBridge may already have reset MessageBus/SourceId.
+		DispatchDriveMessage(Queued.Bus.Get(), Queued.Channel, Queued.Payload);
 	}
 }
 
@@ -916,7 +1155,7 @@ void UAssemblyPhysicsBridgeComponent::HandleMuscleDriveRequested(FGuid MuscleId,
 	}
 	if (bContracting && (bLifecycleBusy || bLifecycleShutdown || BoundAssembly->GetPhase() != EAssemblyPhase::Playing)) { return; }
 	FAssemblyPhysicsMuscleDriveMessage Request;
-	if (!BoundAssembly->GetMuscle(MuscleId, Request.Muscle))
+	if (!BoundAssembly->GetMuscle(MuscleId, Request.Muscle) || Request.Muscle.bContracting != bContracting)
 	{
 		return;
 	}
@@ -947,7 +1186,9 @@ void UAssemblyPhysicsBridgeComponent::BroadcastCoreRequest(bool bHeld)
 	{
 		return;
 	}
-	if (bHeld && (bLifecycleBusy || bLifecycleShutdown)) { return; }
+	if (bHeld && (bLifecycleBusy || bLifecycleShutdown || !HasSessionLifecycleOwnership()
+		|| BoundAssembly->GetPhase() != EAssemblyPhase::Playing || bHasPreparedPlaying
+		|| !BoundAssembly->IsCoreRotationHeld())) { return; }
 	FAssemblyPhysicsCoreRotationMessage Request;
 	Request.Context = GetPhysicsContext();
 	Request.Phase = BoundAssembly->GetPhase();
@@ -956,7 +1197,7 @@ void UAssemblyPhysicsBridgeComponent::BroadcastCoreRequest(bool bHeld)
 	Request.FrameTransform = BoundAssembly->GetGridFrameTransform();
 	Request.WorldClockwiseAxis = Request.FrameTransform.TransformVectorNoScale(FVector(0, 1, 0)).GetSafeNormal();
 	bCoreWasHeld = bHeld;
-	MessageBus->BroadcastMessage(AssemblyMessageTags::CoreRotationRequested, FInstancedStruct::Make(Request));
+	DispatchDriveMessage(MessageBus.Get(), AssemblyMessageTags::CoreRotationRequested, FInstancedStruct::Make(Request));
 }
 
 void UAssemblyPhysicsBridgeComponent::HandleCoreRotationRequested(bool bHeld)

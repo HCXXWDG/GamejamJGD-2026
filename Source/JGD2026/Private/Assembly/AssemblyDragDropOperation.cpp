@@ -5,9 +5,14 @@
 
 void UAssemblyDragDropOperation::InitializeDrag(UAssemblyWorkbenchComponent* InWorkbench, bool bInMuscle)
 {
+	InitializePartDrag(InWorkbench, bInMuscle ? EAssemblyShelfPartKind::Muscle : EAssemblyShelfPartKind::Bone);
+}
+
+void UAssemblyDragDropOperation::InitializePartDrag(UAssemblyWorkbenchComponent* InWorkbench, EAssemblyShelfPartKind InPartKind)
+{
 	CancelAssemblyDrag();
 	Workbench = InWorkbench;
-	bMuscle = bInMuscle;
+	PartKind = InPartKind;
 	bFinished = false;
 	ToolId = InWorkbench ? InWorkbench->GetToolId() : FGuid();
 	if (OwnsCurrentTool()) InWorkbench->SetExternalPointerTracking(true);
@@ -17,8 +22,16 @@ void UAssemblyDragDropOperation::InitializeDrag(UAssemblyWorkbenchComponent* InW
 bool UAssemblyDragDropOperation::OwnsCurrentTool() const
 {
 	const UAssemblyWorkbenchComponent* ActiveWorkbench = Workbench.Get();
+	EAssemblyWorkbenchTool ExpectedTool = EAssemblyWorkbenchTool::None;
+	switch (PartKind)
+	{
+	case EAssemblyShelfPartKind::Bone: ExpectedTool = EAssemblyWorkbenchTool::Bone; break;
+	case EAssemblyShelfPartKind::Muscle: ExpectedTool = EAssemblyWorkbenchTool::MuscleFirst; break;
+	case EAssemblyShelfPartKind::JointPart: ExpectedTool = EAssemblyWorkbenchTool::JointPart; break;
+	default: return false;
+	}
 	return !bFinished && ToolId.IsValid() && ActiveWorkbench && ActiveWorkbench->GetToolId() == ToolId
-		&& ActiveWorkbench->GetTool() == (bMuscle ? EAssemblyWorkbenchTool::MuscleFirst : EAssemblyWorkbenchTool::Bone);
+		&& ActiveWorkbench->GetTool() == ExpectedTool;
 }
 
 bool UAssemblyDragDropOperation::FinishAtViewportPosition(FVector2D ViewportPixels, FText& OutReason)
@@ -47,7 +60,7 @@ bool UAssemblyDragDropOperation::FinishAtViewportPosition(FVector2D ViewportPixe
 		return false;
 	}
 	bool bSucceeded = false;
-	if (bMuscle)
+	if (PartKind == EAssemblyShelfPartKind::Muscle)
 	{
 		// The first drop anchors the curve. A subsequent world click selects its second end.
 		bSucceeded = ActiveWorkbench->PointerPressed(ViewportPixels, OutReason);

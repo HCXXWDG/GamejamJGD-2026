@@ -33,6 +33,9 @@ public:
 	FAssemblyGridSettings DefaultGrid;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|Config")
 	TArray<FAssemblyBoneDefinition> DefaultBones;
+	// Appended only by the first default Free entry. Explicit ConfigureFreeAssembly receives a complete list.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|Config")
+	TArray<FAssemblyBoneDefinition> DefaultJointParts;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|Config")
 	TArray<FAssemblyMuscleDefinition> DefaultMuscles;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|Config")
@@ -62,6 +65,13 @@ public:
 	// Physics remains outside the model; pose-source registration is allowed during preparation.
 	bool RegisterLifecycleCallbacks(UObject* Owner, FAssemblyLifecycleCheck BeforePlaying,
 		FAssemblyLifecycleCheck BeforeReset, FSimpleDelegate AbortPlaying, FSimpleDelegate BeforeEndPlay, FText& OutReason);
+	// Optional transactional extension. Commit activates once; Verify runs after phase listeners;
+	// Finalize releases the abort token only after every synchronous confirmation succeeded.
+	bool RegisterPlayingCommitCallbacks(UObject* Owner, FAssemblyLifecycleCheck Commit,
+		FAssemblyLifecycleCheck Verify, FAssemblyLifecycleCheck Finalize, FText& OutReason);
+	// Bridge recovery after a failed resume. Keeps this round and inventory; it is not a restart.
+	bool RecoverAssemblyAfterPhysicsFailure(FText& OutReason);
+	bool IsRecoveringFromPhysicsFailure() const { return bRecoveringPhysicsFailure; }
 	void UnregisterLifecycleCallbacksIfMatches(const UObject* Owner);
 	bool IsEndingPlay() const { return bEndingPlay; }
 
@@ -96,6 +106,14 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Assembly|Data")
 	TArray<FAssemblyBoneDefinition> GetBoneDefinitions() const;
 	UFUNCTION(BlueprintPure, Category = "Assembly|Data")
+	bool GetBoneDefinition(FName TypeId, FAssemblyBoneDefinition& OutDefinition) const;
+	UFUNCTION(BlueprintPure, Category = "Assembly|JointParts")
+	TArray<FAssemblyBoneDefinition> GetJointPartDefinitions() const;
+	UFUNCTION(BlueprintPure, Category = "Assembly|JointParts")
+	TArray<FAssemblyBoneInstance> GetJointParts() const;
+	UFUNCTION(BlueprintPure, Category = "Assembly|JointParts")
+	bool IsJointPart(FGuid InstanceId) const;
+	UFUNCTION(BlueprintPure, Category = "Assembly|Data")
 	TArray<FAssemblyMuscleDefinition> GetMuscleDefinitions() const;
 	UFUNCTION(BlueprintPure, Category = "Assembly|Data")
 	TArray<FAssemblyBoneInstance> GetBones() const { return InstalledBones; }
@@ -122,12 +140,29 @@ public:
 	bool TryMoveBone(FGuid InstanceId, FIntPoint AnchorCell, int32 QuarterTurns, FText& OutReason);
 	UFUNCTION(BlueprintPure, Category = "Assembly|Bones")
 	FAssemblyPlacementResult ValidateFreeBonePlacement(FName TypeId, FVector2D LocalPosition, float RotationDegrees, FGuid IgnoreId) const;
+	// Resolve a raw pointer pose for a drag preview. Commit the returned exact pose; never feed it back as the pointer.
+	// PreviousSnap retains the contact target until the larger release distance is exceeded.
+	UFUNCTION(BlueprintPure, Category = "Assembly|Drag")
+	FAssemblyPlacementResult ResolveFreeBoneDragPlacement(FName TypeId, FVector2D RawPosition, float RotationDegrees,
+		FGuid IgnoreId, const FAssemblySurfaceSnapState& PreviousSnap) const;
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Bones")
 	bool TryInstallFreeBone(FName TypeId, FVector2D LocalPosition, float RotationDegrees, FGuid& OutInstanceId, FText& OutReason);
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Bones")
 	bool TryMoveFreeBone(FGuid InstanceId, FVector2D LocalPosition, float RotationDegrees, FText& OutReason);
+	UFUNCTION(BlueprintPure, Category = "Assembly|JointParts")
+	FAssemblyPlacementResult ValidateJointPartPlacement(FName TypeId, FVector2D LocalPosition, float RotationDegrees, FGuid IgnoreId) const;
+	UFUNCTION(BlueprintCallable, Category = "Assembly|JointParts")
+	bool TryInstallJointPart(FName TypeId, FVector2D LocalPosition, float RotationDegrees, FGuid& OutInstanceId, FText& OutReason);
+	UFUNCTION(BlueprintCallable, Category = "Assembly|JointParts")
+	bool TryMoveJointPart(FGuid InstanceId, FVector2D LocalPosition, float RotationDegrees, FText& OutReason);
+	UFUNCTION(BlueprintCallable, Category = "Assembly|JointParts")
+	bool RemoveJointPart(FGuid InstanceId, FText& OutReason);
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Joints")
 	bool TrySetJointKind(FGuid JointId, EAssemblyJointKind Kind, FText& OutReason);
+	// Purple Round pieces permit only hinge variants; yellow pieces permit only fixed variants.
+	// Legacy edges without independent pieces retain the four original choices.
+	UFUNCTION(BlueprintPure, Category = "Assembly|Joints")
+	bool IsJointKindAllowed(FGuid JointId, EAssemblyJointKind Kind) const;
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Joints")
 	bool TrySetJointLimits(FGuid JointId, float MinAngleDegrees, float MaxAngleDegrees, FText& OutReason);
 	// Sends intent only; the physics module confirms the break via the bridge.
@@ -241,13 +276,22 @@ private:
 	bool bNotifying = false;
 	bool bEndingPlay = false;
 	bool bInLifecycleCallback = false;
+	bool bRecoveringPhysicsFailure = false;
 	TWeakObjectPtr<UObject> LifecycleOwner;
 	FAssemblyLifecycleCheck BeforePlayingCallback;
 	FAssemblyLifecycleCheck BeforeResetCallback;
+	FAssemblyLifecycleCheck CommitPlayingCallback;
+	FAssemblyLifecycleCheck VerifyPlayingCallback;
+	FAssemblyLifecycleCheck FinalizePlayingCallback;
 	FSimpleDelegate AbortPlayingCallback;
 	FSimpleDelegate BeforeEndPlayCallback;
 
 	bool CanEdit(FText& OutReason) const;
+	bool CanEditFreeBone(FName TypeId, FGuid IgnoreId, FText& OutReason) const;
+	// Read-only snapshot in the current assembly frame. Registered bodies remain authoritative.
+	bool BuildEffectiveFreeBoneSnapshot(TArray<FAssemblyBoneInstance>& OutBones, FText& OutReason) const;
+	FAssemblyValidationResult ValidateAssemblyState(const TArray<FAssemblyBoneInstance>& Bones,
+		const TArray<FAssemblyJointInstance>& Joints) const;
 	bool CanMutate(FText& OutReason) const;
 	bool RunLifecycleCheck(bool bBeforePlaying, FText& OutReason);
 	// Actual body bounds in both modes, plus occupied footprint cells in Grid mode.
@@ -263,7 +307,7 @@ private:
 	void NotifyPhase();
 	void RequestMuscleDrive(FGuid Id, bool bContracting);
 	void RequestCoreRotation(bool bHeld);
-	void RebuildFreeJoints();
+	void RebuildFreeJoints(const TArray<FAssemblyBoneInstance>* EffectiveBones = nullptr);
 	bool IsFreeConnected(const TArray<FAssemblyBoneInstance>& Bones, const TArray<FAssemblyMuscleInstance>& Muscles,
 		const TArray<FAssemblyJointInstance>& Joints) const;
 	TSet<FGuid> GetFreeCoreReachable(const TArray<FAssemblyBoneInstance>& Bones, const TArray<FAssemblyMuscleInstance>& Muscles,

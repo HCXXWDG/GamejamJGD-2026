@@ -2,6 +2,7 @@
 #include "Assembly/AssemblyComponent.h"
 #include "Assembly/AssemblyAppearanceData.h"
 #include "Assembly/AssemblyMuscle.h"
+#include "Assembly/AssemblyJointPart.h"
 #include "Assembly/AssemblyPhysicsBridgeComponent.h"
 #include "Assembly/AssemblySessionComponent.h"
 #include "Assembly/NormalBone.h"
@@ -24,6 +25,7 @@ UAssemblyInteractionComponent::UAssemblyInteractionComponent()
 		TEXT("/Game/Character/Assembly/DA_AssemblyAppearance_Default.DA_AssemblyAppearance_Default")));
 	BoneActorClass = ANormalBone::StaticClass();
 	MuscleActorClass = AAssemblyMuscle::StaticClass();
+	JointPartActorClass = AAssemblyJointPart::StaticClass();
 	PhysicsBridgeClass = UAssemblyPhysicsBridgeComponent::StaticClass();
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> Sphere(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
 	CorePlaceholderMesh = Sphere.Object;
@@ -76,18 +78,25 @@ void UAssemblyInteractionComponent::TickComponent(float DeltaTime, ELevelTick Ti
 	}
 	UpdateCorePlaceholder();
 	UpdateAppearanceTransforms();
-	// Re-evaluate when Space/physics moves the assembly frame; do not quantize the cursor to cells.
-	if (bDragging && bHasPointerPosition && BoundAssembly.IsValid())
+	// Re-evaluate a changed assembly frame; do not quantize the cursor to cells.
+	if (bDragging)
 	{
-		DragPreview = BoundAssembly->ValidateFreeBonePlacement(DragTypeId, DragPreview.LocalPosition, DragPreview.RotationDegrees, DragExistingId);
-		ApplyPreview();
+		FText Reason;
+		if (!CanEdit(Reason)) { CancelBoneDrag(); }
+		else if (bHasPointerPosition) { RefreshBoneDragPreview(false); }
 	}
 }
 
 bool UAssemblyInteractionComponent::CanEdit(FText& OutReason) const
 {
 	OutReason = FText::GetEmpty();
-	if (!BoundAssembly.IsValid() || !BoundAssembly->IsInitialized())
+	if (bClearingInteraction || bClearInteractionPending)
+	{
+		OutReason = LOCTEXT("EditingWhileClearing", "展示组件正在结束物理生命周期，请等待当前操作结束。");
+		return false;
+	}
+	if (!BoundAssembly.IsValid() || !BoundAssembly->IsInitialized() || BoundAssembly->IsEndingPlay()
+		|| !IsValid(GetOwner()) || GetOwner()->IsActorBeingDestroyed())
 	{
 		OutReason = LOCTEXT("NotInitialized", "请先初始化 AssemblyInteractionComponent 和 AssemblyComponent。");
 		return false;
@@ -218,10 +227,24 @@ AAssemblyMuscle* UAssemblyInteractionComponent::GetMuscleActor(FGuid InstanceId)
 	return Actor && IsValid(Actor->Get()) ? Actor->Get() : nullptr;
 }
 
+AAssemblyJointPart* UAssemblyInteractionComponent::GetJointPartActor(FGuid InstanceId) const
+{
+	return Cast<AAssemblyJointPart>(GetBoneActor(InstanceId));
+}
+
+UPaperSprite* UAssemblyInteractionComponent::GetJointPartArtSprite(FName TypeId) const
+{
+	FAssemblyBoneDefinition Definition;
+	if (!BoundAssembly.IsValid() || !JointPartActorClass
+		|| !BoundAssembly->GetBoneDefinition(TypeId, Definition)
+		|| Definition.PartKind != EAssemblyRigidPartKind::JointPart) return nullptr;
+	return JointPartActorClass->GetDefaultObject<AAssemblyJointPart>()->GetSpriteForShape(Definition.JointShape);
+}
+
 ANormalBone* UAssemblyInteractionComponent::SpawnBoneView(FGuid InstanceId, FText& OutReason)
 {
 	if (ANormalBone* Existing = GetBoneActor(InstanceId)) { return Existing; }
-	if (!BoneActorClass || !BoundAssembly.IsValid() || !GetWorld())
+	if (!BoundAssembly.IsValid() || !GetWorld())
 	{
 		OutReason = LOCTEXT("MissingBoneClass", "没有可用的骨头 Actor 类。");
 		return nullptr;
@@ -233,8 +256,13 @@ ANormalBone* UAssemblyInteractionComponent::SpawnBoneView(FGuid InstanceId, FTex
 	}
 	FAssemblyBoneInstance Instance;
 	if (!BoundAssembly->GetBone(InstanceId, Instance)) { return nullptr; }
+	FAssemblyBoneDefinition Definition;
+	if (!BoundAssembly->GetBoneDefinition(Instance.TypeId, Definition)) return nullptr;
+	const TSubclassOf<ANormalBone> ActorClass = Definition.PartKind == EAssemblyRigidPartKind::JointPart
+		? TSubclassOf<ANormalBone>(JointPartActorClass.Get()) : BoneActorClass;
+	if (!ActorClass) { OutReason = LOCTEXT("MissingRigidClass", "缺少此刚体组件的 Actor 类。"); return nullptr; }
 	const FTransform Pose = Instance.LocalVisualTransform * BoundAssembly->GetGridFrameTransform();
-	ANormalBone* Bone = GetWorld()->SpawnActorDeferred<ANormalBone>(BoneActorClass, Pose, GetOwner(), nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+	ANormalBone* Bone = GetWorld()->SpawnActorDeferred<ANormalBone>(ActorClass, Pose, GetOwner(), nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
 	if (!Bone) { OutReason = LOCTEXT("BoneSpawnFailed", "创建骨头外观失败，安装库存已恢复。"); return nullptr; }
 	Bone->FinishSpawning(Pose);
 	if (!Bone->InitializeBone(BoundAssembly.Get(), InstanceId, OutReason)) { Bone->Destroy(); return nullptr; }
@@ -319,6 +347,8 @@ bool UAssemblyInteractionComponent::BeginBoneDrag(FName TypeId, FGuid ExistingId
 		return false;
 	}
 	FAssemblyBoneInstance Existing;
+	FVector2D StartPosition = BoundAssembly->GetFreeSettings().CoreLocalPosition;
+	float StartAngle = 0.0f;
 	if (ExistingId.IsValid())
 	{
 		ANormalBone* Bone = GetBoneActor(ExistingId);
@@ -328,14 +358,28 @@ bool UAssemblyInteractionComponent::BeginBoneDrag(FName TypeId, FGuid ExistingId
 			OutReason = LOCTEXT("CannotMoveBone", "无法拖动此骨头：实例类型不匹配，或姿态已由物理程序接管。");
 			return false;
 		}
+		FTransform WorldPose;
+		if (!BoundAssembly->GetBoneWorldTransform(ExistingId, WorldPose))
+		{
+			OutReason = LOCTEXT("InvalidDraggedPose", "骨头当前姿态无效，无法开始拖动。");
+			return false;
+		}
+		const FTransform LocalPose = WorldPose.GetRelativeTransform(BoundAssembly->GetGridFrameTransform());
+		const FVector LocalAxis = LocalPose.GetRotation().RotateVector(FVector::XAxisVector);
+		StartPosition = FVector2D(LocalPose.GetLocation().X, LocalPose.GetLocation().Z);
+		// Positive rotation around local Y maps +X towards -Z in the existing XZ game plane.
+		StartAngle = FMath::RadiansToDegrees(FMath::Atan2(-LocalAxis.Z, LocalAxis.X));
 	}
-	if (!BoneActorClass || !GetWorld()) { OutReason = LOCTEXT("NoPreviewClass", "请配置骨头预览 Actor 类。"); return false; }
-	PreviewActor = GetWorld()->SpawnActorDeferred<ANormalBone>(BoneActorClass, FTransform::Identity, GetOwner(), nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+	const TSubclassOf<ANormalBone> ActorClass = Definition->PartKind == EAssemblyRigidPartKind::JointPart
+		? TSubclassOf<ANormalBone>(JointPartActorClass.Get()) : BoneActorClass;
+	if (!ActorClass || !GetWorld()) { OutReason = LOCTEXT("NoPreviewClass", "请配置此组件的预览 Actor 类。"); return false; }
+	PreviewActor = GetWorld()->SpawnActorDeferred<ANormalBone>(ActorClass, FTransform::Identity, GetOwner(), nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
 	if (!PreviewActor) { OutReason = LOCTEXT("NoPreview", "无法创建骨头预览。"); return false; }
 	PreviewActor->PreviewParameters = Definition->BoneParameters;
 	PreviewActor->FinishSpawning(FTransform::Identity);
 	PreviewActor->SetActorEnableCollision(false);
-	if (!PreviewActor->GetBoneSprite()->GetSprite() || !PreviewActor->GetPhysicalStats().bValid)
+	if (!PreviewActor->ApplyRigidPartDefinition(*Definition, OutReason)
+		|| !PreviewActor->GetBoneSprite()->GetSprite() || !PreviewActor->GetPhysicalStats().bValid)
 	{
 		PreviewActor->Destroy(); PreviewActor = nullptr;
 		OutReason = LOCTEXT("InvalidPreview", "骨头预览 Sprite 或参数无效，请检查 BoneActorClass。");
@@ -345,16 +389,49 @@ bool UAssemblyInteractionComponent::BeginBoneDrag(FName TypeId, FGuid ExistingId
 	bHasPointerPosition = ExistingId.IsValid();
 	DragTypeId = TypeId;
 	DragExistingId = ExistingId;
+	RawDragPosition = StartPosition;
+	DragRotationDegrees = StartAngle;
+	DragSurfaceSnap = FAssemblySurfaceSnapState();
 	if (ANormalBone* Bone = GetBoneActor(ExistingId))
 	{
 		bDraggedActorWasHidden = Bone->IsHidden();
 		Bone->SetActorHiddenInGame(true);
 	}
-	const FVector2D Position = ExistingId.IsValid() ? Existing.LocalPosition : BoundAssembly->GetFreeSettings().CoreLocalPosition;
-	DragPreview = BoundAssembly->ValidateFreeBonePlacement(TypeId, Position, ExistingId.IsValid() ? Existing.RotationDegrees : 0.0f, ExistingId);
-	ApplyPreview();
-	OnBoneDragPreviewChanged.Broadcast();
+	RefreshBoneDragPreview();
 	return true;
+}
+
+void UAssemblyInteractionComponent::RefreshBoneDragPreview(bool bAlwaysNotify)
+{
+	if (!bDragging || !BoundAssembly.IsValid()) { return; }
+	const FAssemblyPlacementResult Previous = DragPreview;
+	if (bHasPointerPosition)
+	{
+		DragPreview = BoundAssembly->ResolveFreeBoneDragPlacement(DragTypeId, RawDragPosition,
+			DragRotationDegrees, DragExistingId, DragSurfaceSnap);
+	}
+	else
+	{
+		// A shelf drag must receive a fresh pointer, and a lost projection cannot reuse a valid old drop.
+		// Even its invalid display pose must stay unsnapped until a pointer actually exists.
+		DragPreview = BoundAssembly->ValidateFreeBonePlacement(DragTypeId, RawDragPosition,
+			DragRotationDegrees, DragExistingId);
+		DragPreview.bValid = false;
+		DragPreview.SurfaceSnap = FAssemblySurfaceSnapState();
+		DragPreview.Reason = Previous.Reason.IsEmpty()
+			? LOCTEXT("MissingDragPointer", "请将鼠标移到组装场景中，获得有效的摆放位置。") : Previous.Reason;
+	}
+	DragSurfaceSnap = DragPreview.SurfaceSnap;
+	ApplyPreview();
+	const bool bChanged = Previous.bValid != DragPreview.bValid
+		|| !Previous.Reason.EqualTo(DragPreview.Reason)
+		|| !Previous.LocalVisualTransform.Equals(DragPreview.LocalVisualTransform)
+		|| Previous.SurfaceSnap.bSnapped != DragSurfaceSnap.bSnapped
+		|| Previous.SurfaceSnap.bCore != DragSurfaceSnap.bCore
+		|| Previous.SurfaceSnap.TargetId != DragSurfaceSnap.TargetId
+		|| Previous.SurfaceSnap.SourceLocalAnchor != DragSurfaceSnap.SourceLocalAnchor
+		|| Previous.SurfaceSnap.TargetLocalAnchor != DragSurfaceSnap.TargetLocalAnchor;
+	if (bAlwaysNotify || bChanged) { OnBoneDragPreviewChanged.Broadcast(); }
 }
 
 void UAssemblyInteractionComponent::ApplyPreview()
@@ -382,9 +459,11 @@ bool UAssemblyInteractionComponent::UpdateBoneDragFromMouse(APlayerController* P
 void UAssemblyInteractionComponent::InvalidateBoneDragPreview(FText Reason)
 {
 	bHasPointerPosition = false;
+	DragSurfaceSnap = FAssemblySurfaceSnapState();
 	if (bDragging)
 	{
 		DragPreview.bValid = false;
+		DragPreview.SurfaceSnap = FAssemblySurfaceSnapState();
 		DragPreview.Reason = Reason;
 		ApplyPreview();
 		OnBoneDragPreviewChanged.Broadcast();
@@ -396,10 +475,15 @@ bool UAssemblyInteractionComponent::UpdateBoneDragAtLocalPosition(FVector2D Loca
 	if (!CanEdit(OutReason)) { return false; }
 	if (!bDragging) { OutReason = LOCTEXT("NoActiveDrag", "请先从组件展示栏开始拖动骨头。"); return false; }
 	bHasPointerPosition = FMath::IsFinite(LocalPosition.X) && FMath::IsFinite(LocalPosition.Y);
-	DragPreview = BoundAssembly->ValidateFreeBonePlacement(DragTypeId, LocalPosition, DragPreview.RotationDegrees, DragExistingId);
+	if (!bHasPointerPosition)
+	{
+		OutReason = LOCTEXT("InvalidDragPosition", "骨头位置必须是有限数值。");
+		InvalidateBoneDragPreview(OutReason);
+		return false;
+	}
+	RawDragPosition = LocalPosition;
+	RefreshBoneDragPreview();
 	OutReason = DragPreview.Reason;
-	ApplyPreview();
-	OnBoneDragPreviewChanged.Broadcast();
 	return DragPreview.bValid;
 }
 
@@ -408,10 +492,9 @@ bool UAssemblyInteractionComponent::RotateBoneDrag(float DeltaDegrees, FText& Ou
 	if (!CanEdit(OutReason)) { return false; }
 	if (!bDragging) { OutReason = LOCTEXT("NoRotateDrag", "请先开始拖动骨头再旋转。"); return false; }
 	if (!FMath::IsFinite(DeltaDegrees)) { OutReason = LOCTEXT("InvalidAngle", "旋转角度必须是有限值。"); return false; }
-	DragPreview = BoundAssembly->ValidateFreeBonePlacement(DragTypeId, DragPreview.LocalPosition, DragPreview.RotationDegrees + DeltaDegrees, DragExistingId);
+	DragRotationDegrees = FMath::Fmod(DragRotationDegrees + FMath::Fmod(DeltaDegrees, 360.0f), 360.0f);
+	RefreshBoneDragPreview();
 	OutReason = DragPreview.Reason;
-	ApplyPreview();
-	OnBoneDragPreviewChanged.Broadcast();
 	return DragPreview.bValid;
 }
 
@@ -457,6 +540,9 @@ void UAssemblyInteractionComponent::CancelBoneDrag()
 	DragTypeId = NAME_None;
 	DragExistingId.Invalidate();
 	DragPreview = FAssemblyPlacementResult();
+	RawDragPosition = FVector2D::ZeroVector;
+	DragRotationDegrees = 0.0f;
+	DragSurfaceSnap = FAssemblySurfaceSnapState();
 	if (bWasDragging) { OnBoneDragPreviewChanged.Broadcast(); }
 }
 
@@ -562,6 +648,8 @@ void UAssemblyInteractionComponent::ClearInteraction()
 	{
 		// A provider must finish its synchronous work before its body endpoints disappear.
 		bClearInteractionPending = true;
+		// The drag preview is not a registered physical body; release its latch immediately.
+		CancelBoneDrag();
 		return;
 	}
 	TGuardValue<bool> ClearingGuard(bClearingInteraction, true);

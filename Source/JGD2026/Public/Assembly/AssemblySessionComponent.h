@@ -22,6 +22,7 @@ class UGameViewportClient;
 class UCharacterMovementComponent;
 class UCapsuleComponent;
 class SWidget;
+struct FAssemblyPhysicsSnapshotMessage;
 
 /** Local assembly lifecycle and input. Reuses the character's model, presentation and camera. */
 UCLASS(BlueprintType, Blueprintable, ClassGroup = (Assembly), meta = (BlueprintSpawnableComponent))
@@ -34,10 +35,10 @@ public:
 	// Automatic initialization runs after the owning pawn's BeginPlay and local possession.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Session")
 	bool bAutoInitialize = true;
-	// Assembly movement belongs to the core/rigid bodies in both phases, never WASD locomotion.
+	// Freeze the character proxy in both phases; Playing motion belongs to the core/rigid bodies.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Physics")
 	bool bSuspendCharacterMovement = true;
-	// Takes effect only with a registered physics lifecycle provider. Never disables a real body.
+	// Required for formal physics. An explicitly registered real capsule always keeps its collision.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Physics")
 	bool bDisableCharacterCapsuleForPhysics = true;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|UI")
@@ -85,8 +86,14 @@ public:
 	UAssemblyWorkbenchComponent* GetWorkbench() const;
 	UFUNCTION(BlueprintPure, Category = "Assembly|Session")
 	UAssemblyComponent* GetAssemblyComponent() const;
-	// Native bridge gate: a cached model alone does not mean its character proxy is ready or owned.
+	// Prototype-compatible ownership gate. Formal physics must also use the strict snapshot checks.
 	bool CanOwnPhysicsLifecycle(const UAssemblyComponent* Model) const;
+	// Formal physics only: the supplied snapshot also works during first bridge initialization.
+	bool EnsurePhysicsProxyReady(const UAssemblyComponent* Model,
+		const FAssemblyPhysicsSnapshotMessage& Snapshot, FText& OutReason);
+	// Pure post-callback check. Never hides a provider/phase listener restoring locomotion or collision.
+	bool ValidatePhysicsProxyReady(const UAssemblyComponent* Model,
+		const FAssemblyPhysicsSnapshotMessage& Snapshot, FText& OutReason) const;
 	UFUNCTION(BlueprintPure, Category = "Assembly|Session")
 	APlayerController* GetPlayerController() const;
 	UFUNCTION(BlueprintPure, Category = "Assembly|UI")
@@ -156,6 +163,7 @@ private:
 	bool bModelRefreshPending = false;
 	bool bReplayHeldMusclesPending = false;
 	bool bCharacterMovementSuspended = false;
+	bool bSuspendingCharacterMovement = false;
 	bool bCharacterCapsuleDisabled = false;
 	bool bHadPhysicsBridgeBinding = false;
 	bool bProxyRestorePending = false;
@@ -167,6 +175,7 @@ private:
 	FText LastInitializationFailure;
 
 	bool CanUseSession(FText& OutReason) const;
+	bool HasPhysicsSessionClaim(const UAssemblyComponent* Model) const;
 	bool IsCurrentSessionBinding(const UAssemblyComponent* Model, const UAssemblyInteractionComponent* Interaction,
 		const UAssemblyWorkbenchComponent* Workbench, const APlayerController* PC) const;
 	bool BindSessionInput(FText& OutReason);

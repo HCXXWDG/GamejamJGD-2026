@@ -31,11 +31,12 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Assembly|Physics|Lifecycle")
 	bool StopBeforeReset(const FAssemblyPhysicsSnapshotMessage& Snapshot, FText& OutReason);
 	virtual bool StopBeforeReset_Implementation(const FAssemblyPhysicsSnapshotMessage& Snapshot, FText& OutReason);
-	// Assembly: stable editing, no muscle drive; Space may rotate through physics.
-	// Playing: the prepared physical structure accepts muscle and core drive intents.
+	// Assembly: stop drives, simulation/gravity/force fields and velocities; keep editing stable.
+	// Playing: confirm prepared bodies/constraints are active before reporting success.
+	// Failure must be reversible by AbortPreparedPlaying. Space drives only in Playing.
 	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Assembly|Physics|Lifecycle")
-	void ApplyAssemblyPhase(const FAssemblyPhysicsSnapshotMessage& Snapshot);
-	virtual void ApplyAssemblyPhase_Implementation(const FAssemblyPhysicsSnapshotMessage& Snapshot);
+	bool ApplyAssemblyPhase(const FAssemblyPhysicsSnapshotMessage& Snapshot, FText& OutReason);
+	virtual bool ApplyAssemblyPhase_Implementation(const FAssemblyPhysicsSnapshotMessage& Snapshot, FText& OutReason);
 	// Forced shutdown cannot veto actor destruction; release constraints before bodies disappear.
 	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Assembly|Physics|Lifecycle")
 	void ShutdownPhysics(const FAssemblyPhysicsSnapshotMessage& Snapshot);

@@ -8,6 +8,19 @@
 
 class UJGDMessageSubsystem;
 
+/** Retains the original destination and payload while a drive broadcast is being fanned out. */
+USTRUCT()
+struct FAssemblyQueuedDriveMessage
+{
+	GENERATED_BODY()
+	UPROPERTY(Transient)
+	TObjectPtr<UJGDMessageSubsystem> Bus;
+	UPROPERTY(Transient)
+	FGameplayTag Channel;
+	UPROPERTY(Transient)
+	FInstancedStruct Payload;
+};
+
 /** Typed GameplayTags adapter. Owns no movement, physics, input assets or widgets. */
 UCLASS(BlueprintType, Blueprintable, ClassGroup = (Assembly), meta = (BlueprintSpawnableComponent))
 class JGD2026_API UAssemblyPhysicsBridgeComponent : public UActorComponent
@@ -35,6 +48,10 @@ public:
 	}
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Physics|Lifecycle")
 	bool PrepareForPlaying(FText& OutReason);
+	// Native model transaction: Apply once, verify after all phase listeners, then release the abort token.
+	bool CommitPreparedPlaying(FText& OutReason);
+	bool ValidateCommittedPlaying(FText& OutReason);
+	bool FinalizePreparedPlaying(FText& OutReason);
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Physics|Lifecycle")
 	bool StopBeforeReset(FText& OutReason);
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Physics|Lifecycle")
@@ -95,6 +112,8 @@ private:
 	bool bLifecycleBusy = false;
 	bool bLifecycleShutdown = false;
 	bool bHasPreparedPlaying = false;
+	bool bPreparedPlayingApplied = false;
+	bool bPlayingPhaseCommitted = false;
 	bool bLifecycleShutdownPending = false;
 	bool bClearBridgePending = false;
 	bool bAbortPlayingPending = false;
@@ -105,18 +124,28 @@ private:
 	UPROPERTY(Transient)
 	TArray<FAssemblyPhysicsJointBrokenMessage> PendingJointConfirmations;
 	TSet<FGuid> OutstandingJointBreaks;
+	// These survive ClearBridge until the outer broadcast unwinds. Nested stop must reach every
+	// listener after the old press, even when that listener has already cleared the current binding.
+	UPROPERTY(Transient)
+	TArray<FAssemblyQueuedDriveMessage> QueuedDriveMessages;
+	int32 DriveDispatchDepth = 0;
+	bool bDrainingDriveMessages = false;
 
 	FAssemblyPhysicsBonePose MakeBonePose(FGuid BoneId) const;
 	bool IsCurrentContext(const FAssemblyPhysicsContext& Context) const;
 	void BroadcastSnapshot(FGameplayTag Channel, bool bClearState = false);
 	void BroadcastMuscleRequest(const FAssemblyPhysicsMuscleDriveMessage& Request);
 	void BroadcastCoreRequest(bool bHeld);
+	void DispatchDriveMessage(UJGDMessageSubsystem* Bus, FGameplayTag Channel, const FInstancedStruct& Payload);
+	void DrainDriveMessages();
 	void UnbindModel();
 	bool ResolvePhysicsLifecycleProvider(FText& OutReason);
 	bool HasSessionLifecycleOwnership() const;
 	bool ValidatePhysicalBodies(const FAssemblyPhysicsSnapshotMessage& Snapshot, FText& OutReason) const;
 	bool IsLifecycleBindingCurrent(const FAssemblyPhysicsContext& Context, const UObject* Provider) const;
-	void ApplyPhysicsPhase();
+	bool ApplyPhysicsPhase(FText& OutReason);
+	bool EnsureFormalProxyReady(const FAssemblyPhysicsSnapshotMessage& Snapshot, FText& OutReason);
+	bool ValidateFormalProxyReady(const FAssemblyPhysicsSnapshotMessage& Snapshot, FText& OutReason) const;
 	void AbortPreparedState();
 	void RestorePreparationPoseSources(const FAssemblyPhysicsSnapshotMessage& BeforePreparation);
 	void ReleaseHeldPhysicsIntents();

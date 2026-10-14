@@ -2,6 +2,7 @@
 
 #include "Assembly/AssemblyAppearanceData.h"
 #include "Assembly/AssemblyComponent.h"
+#include "AssemblyRenderLayers.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "GameFramework/Actor.h"
@@ -107,7 +108,21 @@ UPaperSprite* UAssemblyInteractionComponent::GetCoreArtSprite() const
 UPaperSprite* UAssemblyInteractionComponent::GetJointArtSprite(FGuid InstanceId) const
 {
 	const TObjectPtr<UPaperSpriteComponent>* View = JointArtViews.Find(InstanceId);
-	return View && IsValid(View->Get()) && View->Get()->IsVisible() ? View->Get()->GetSprite() : nullptr;
+	if (View && IsValid(View->Get()) && View->Get()->IsVisible()) return View->Get()->GetSprite();
+	if (BoundAssembly.IsValid())
+	{
+		for (const FAssemblyJointInstance& Joint : BoundAssembly->GetJoints())
+		{
+			if (Joint.InstanceId != InstanceId) continue;
+			for (FGuid PartId : { Joint.BoneA, Joint.BoneB })
+			{
+				FAssemblyBoneInstance Part;
+				if (BoundAssembly->IsJointPart(PartId) && BoundAssembly->GetBone(PartId, Part))
+					return GetJointPartArtSprite(Part.TypeId);
+			}
+		}
+	}
+	return nullptr;
 }
 
 bool UAssemblyInteractionComponent::HasJointArt(FGuid InstanceId) const
@@ -176,12 +191,17 @@ void UAssemblyInteractionComponent::SynchronizeAppearanceViews()
 	for (const FAssemblyJointInstance& Joint : BoundAssembly->GetJoints())
 	{
 		const TObjectPtr<UPaperSprite>* Sprite = Appearance->JointSprites.Find(Joint.Kind);
-		if (!Joint.InstanceId.IsValid() || !Sprite || !GetUsableSpriteBounds(Sprite->Get(), Bounds)
-			|| !IsUsableDiameter(Appearance->JointDiameter)) { continue; }
-		JointIds.Add(Joint.InstanceId);
-		TObjectPtr<UPaperSpriteComponent>& View = JointArtViews.FindOrAdd(Joint.InstanceId);
-		if (!IsValid(View)) { View = CreateSpriteView(GetOwner(), GetOwner()->GetRootComponent(), true); }
-		ApplySpriteStyle(View, Sprite->Get(), Appearance);
+		if (!Joint.InstanceId.IsValid()) continue;
+		const bool bHasIndependentPart = BoundAssembly->IsJointPart(Joint.BoneA) || BoundAssembly->IsJointPart(Joint.BoneB);
+		if (!bHasIndependentPart && Sprite && GetUsableSpriteBounds(Sprite->Get(), Bounds)
+			&& IsUsableDiameter(Appearance->JointDiameter))
+		{
+			// Independent joint parts already have their complete artwork; do not stack a legacy cap over it.
+			JointIds.Add(Joint.InstanceId);
+			TObjectPtr<UPaperSpriteComponent>& View = JointArtViews.FindOrAdd(Joint.InstanceId);
+			if (!IsValid(View)) { View = CreateSpriteView(GetOwner(), GetOwner()->GetRootComponent(), true); }
+			ApplySpriteStyle(View, Sprite->Get(), Appearance);
+		}
 		if (IsBreakable(Joint.Kind) && GetUsableSpriteBounds(Appearance->BreakableJointMarker, Bounds)
 			&& IsUsableDiameter(Appearance->BreakableMarkerDiameter))
 		{
@@ -241,17 +261,20 @@ void UAssemblyInteractionComponent::UpdateAppearanceTransforms()
 		}
 		const FQuat Rotation = BonePose.GetRotation();
 		const FVector JointCenter = (A + B) * 0.5;
+		const int32 Rank = AssemblyRenderLayers::GetRank(BoundAssembly->GetJoints(), Joint.InstanceId);
+		const double InstanceDepth = Rank * AssemblyRenderLayers::DepthStep;
 		if (View)
 		{
 			// Masked Sprite materials use the depth buffer, so separate overlapping visual layers.
 			SetSpritePose(View->Get(), Appearance->JointDiameter, Rotation,
-				JointCenter + Rotation.RotateVector(FVector(0.0, Appearance->PlaneDepthOffset + 0.1f, 0.0)));
+				JointCenter + Rotation.RotateVector(FVector(0.0, Appearance->PlaneDepthOffset + 0.1f + InstanceDepth, 0.0)));
 		}
 		if (Marker)
 		{
 			const double Offset = Appearance->JointDiameter * 0.35;
 			SetSpritePose(Marker->Get(), Appearance->BreakableMarkerDiameter, Rotation,
-				JointCenter + Rotation.RotateVector(FVector(Offset, Appearance->PlaneDepthOffset + 0.2f, Offset)));
+				JointCenter + Rotation.RotateVector(FVector(Offset, Appearance->PlaneDepthOffset + 0.2f
+					+ BoundAssembly->GetJoints().Num() * AssemblyRenderLayers::DepthStep + InstanceDepth, Offset)));
 		}
 	}
 }

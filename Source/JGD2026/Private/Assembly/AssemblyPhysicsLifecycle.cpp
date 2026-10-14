@@ -19,8 +19,12 @@ bool IAssemblyPhysicsLifecycle::StopBeforeReset_Implementation(
 	return false;
 }
 
-void IAssemblyPhysicsLifecycle::ApplyAssemblyPhase_Implementation(
-	const FAssemblyPhysicsSnapshotMessage& Snapshot) {}
+bool IAssemblyPhysicsLifecycle::ApplyAssemblyPhase_Implementation(
+	const FAssemblyPhysicsSnapshotMessage& Snapshot, FText& OutReason)
+{
+	OutReason = LOCTEXT("ApplyNotImplemented", "物理执行器尚未实现阶段应用的同步成功确认。");
+	return false;
+}
 
 void IAssemblyPhysicsLifecycle::ShutdownPhysics_Implementation(
 	const FAssemblyPhysicsSnapshotMessage& Snapshot) {}

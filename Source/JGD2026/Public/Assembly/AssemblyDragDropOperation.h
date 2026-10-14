@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/DragDropOperation.h"
+#include "Assembly/AssemblyWorkbenchTypes.h"
 #include "AssemblyDragDropOperation.generated.h"
 
 class UAssemblyWorkbenchComponent;
@@ -16,13 +17,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Assembly|UI")
 	void InitializeDrag(UAssemblyWorkbenchComponent* InWorkbench, bool bInMuscle);
 	UFUNCTION(BlueprintCallable, Category = "Assembly|UI")
+	void InitializePartDrag(UAssemblyWorkbenchComponent* InWorkbench, EAssemblyShelfPartKind InPartKind);
+	UFUNCTION(BlueprintCallable, Category = "Assembly|UI")
 	bool FinishAtViewportPosition(FVector2D ViewportPixels, FText& OutReason);
 	UFUNCTION(BlueprintCallable, Category = "Assembly|UI")
 	void CancelAssemblyDrag();
 	UFUNCTION(BlueprintPure, Category = "Assembly|UI")
 	UAssemblyWorkbenchComponent* GetWorkbench() const { return Workbench.Get(); }
 	UFUNCTION(BlueprintPure, Category = "Assembly|UI")
-	bool IsMuscleDrag() const { return bMuscle; }
+	bool IsMuscleDrag() const { return PartKind == EAssemblyShelfPartKind::Muscle; }
+	UFUNCTION(BlueprintPure, Category = "Assembly|UI")
+	EAssemblyShelfPartKind GetPartKind() const { return PartKind; }
 	UFUNCTION(BlueprintPure, Category = "Assembly|UI")
 	bool IsCurrentDrag() const { return OwnsCurrentTool(); }
 
@@ -33,7 +38,7 @@ public:
 private:
 	UPROPERTY(Transient)
 	TWeakObjectPtr<UAssemblyWorkbenchComponent> Workbench;
-	bool bMuscle = false;
+	EAssemblyShelfPartKind PartKind = EAssemblyShelfPartKind::Bone;
 	bool bFinished = false;
 	FGuid ToolId;
 	bool OwnsCurrentTool() const;

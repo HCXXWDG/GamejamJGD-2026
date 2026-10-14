@@ -50,6 +50,8 @@ public:
 	APlayerController* GetPlayerController() const;
 	UFUNCTION(BlueprintPure, Category = "Assembly|Workbench")
 	EAssemblyWorkbenchTool GetTool() const { return Tool; }
+	UFUNCTION(BlueprintPure, Category = "Assembly|Workbench")
+	bool IsRigidPartTool() const { return Tool == EAssemblyWorkbenchTool::Bone || Tool == EAssemblyWorkbenchTool::JointPart; }
 	// A drag transport may only operate on the exact tool transaction which created it.
 	UFUNCTION(BlueprintPure, Category = "Assembly|Workbench")
 	FGuid GetToolId() const { return ToolId; }
@@ -60,6 +62,8 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Tools")
 	bool BeginShelfBoneDrag(FName TypeId, FText& OutReason);
+	UFUNCTION(BlueprintCallable, Category = "Assembly|Tools")
+	bool BeginShelfJointDrag(FName TypeId, FText& OutReason);
 	// Invalid ExistingId installs from stock; a valid id edits endpoints without changing its binding.
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Tools")
 	bool BeginMusclePlacement(FName TypeId, FGuid ExistingId, FText& OutReason);
@@ -145,6 +149,7 @@ private:
 	bool ProjectPointer(FVector2D ViewportPixels, FVector2D& OutLocal, FVector& OutWorld, FText& OutReason) const;
 	void InvalidatePointer(const FText& Reason);
 	bool BeginBoneMove(FGuid BoneId, FText& OutReason);
+	bool BeginShelfRigidDrag(FName TypeId, EAssemblyRigidPartKind PartKind, FText& OutReason);
 	bool UpdateMusclePreview(FText& OutReason);
 	bool CaptureFirstEndpoint(FText& OutReason);
 	bool CommitMuscle(FGuid& OutId, FText& OutReason);

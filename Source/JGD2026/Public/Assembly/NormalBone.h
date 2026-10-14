@@ -28,6 +28,14 @@ public:
 	// This changes only the sprite; physical dimensions and bone-local anchors retain their definitions.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Bone|Visual")
 	bool bUseArtworkProportions = false;
+	// Local +Y is toward the side-view camera. Only the Sprite moves; the body and anchors stay put.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bone|Visual")
+	float VisualDepthOffset = 0.0f;
+	// Applies a rigid-part definition without installing it or consuming stock.
+	UFUNCTION(BlueprintCallable, Category = "Bone|Assembly")
+	virtual bool ApplyRigidPartDefinition(const FAssemblyBoneDefinition& Definition, FText& OutReason);
+	UFUNCTION(BlueprintPure, Category = "Bone|Assembly")
+	FAssemblyBoneDefinition GetRigidPartDefinition() const;
 
 	// Call only after TryInstallBone succeeds. This never consumes inventory or creates a model instance.
 	UFUNCTION(BlueprintCallable, Category = "Bone|Assembly")
@@ -94,9 +102,14 @@ private:
 	TArray<FIntPoint> Footprint;
 	UPROPERTY(Transient)
 	FNormalBoneParameters InstalledParameters;
+	UPROPERTY(Transient)
+	FAssemblyBoneDefinition AppliedDefinition;
+	bool bHasAppliedDefinition = false;
+	bool bApplyingModelDefinition = false;
 	float CellSize = 64.0f;
 
 	bool CanApplyPose(UAssemblyComponent* Assembly, FGuid InstanceId, FText& OutReason) const;
+	bool ApplyModelDefinition(UAssemblyComponent* Assembly, FGuid InstanceId, FText& OutReason);
 	bool ReadAssemblyData(UAssemblyComponent* Assembly, FGuid InstanceId, FAssemblyBoneInstance& OutBone,
 		TArray<FIntPoint>& OutFootprint, FNormalBoneParameters& OutParameters, float& OutCellSize,
 		FTransform& OutPose, FText& OutReason) const;

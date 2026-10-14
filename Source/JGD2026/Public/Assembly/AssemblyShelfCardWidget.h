@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
+#include "Assembly/AssemblyWorkbenchTypes.h"
 #include "AssemblyShelfCardWidget.generated.h"
 
 class UAssemblyWorkbenchComponent;
@@ -25,15 +26,21 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Assembly|UI")
 	void InitializeCard(UAssemblyWorkbenchComponent* InWorkbench, FName InTypeId, FText InDisplayName, bool bInMuscle);
 	UFUNCTION(BlueprintCallable, Category = "Assembly|UI")
+	void InitializePartCard(UAssemblyWorkbenchComponent* InWorkbench, FName InTypeId, FText InDisplayName, EAssemblyShelfPartKind InPartKind);
+	UFUNCTION(BlueprintCallable, Category = "Assembly|UI")
 	void RefreshQuantity();
 	UFUNCTION(BlueprintPure, Category = "Assembly|UI")
 	FName GetTypeId() const { return TypeId; }
+	UFUNCTION(BlueprintPure, Category = "Assembly|UI")
+	EAssemblyShelfPartKind GetPartKind() const { return PartKind; }
 	UFUNCTION(BlueprintPure, Category = "Assembly|UI")
 	int32 GetRemainingQuantity() const;
 	UFUNCTION(BlueprintPure, Category = "Assembly|UI")
 	UPaperSprite* GetPresentationSprite() const;
 	UFUNCTION(BlueprintImplementableEvent, Category = "Assembly|UI")
 	void OnCardPresentationChanged(const FText& InDisplayName, int32 RemainingQuantity, bool bIsMuscle);
+	UFUNCTION(BlueprintImplementableEvent, Category = "Assembly|UI")
+	void OnPartCardPresentationChanged(const FText& InDisplayName, int32 RemainingQuantity, EAssemblyShelfPartKind InPartKind);
 
 protected:
 	virtual void NativeOnInitialized() override;
@@ -54,6 +61,6 @@ private:
 	TObjectPtr<UPaperSprite> AppliedIconSprite;
 	FName TypeId;
 	FText DisplayName;
-	bool bMuscle = false;
+	EAssemblyShelfPartKind PartKind = EAssemblyShelfPartKind::Bone;
 	void BuildPlaceholder();
 };

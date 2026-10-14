@@ -4,6 +4,7 @@
 #include "Assembly/AssemblyMuscle.h"
 #include "Assembly/NormalBone.h"
 #include "Components/SplineComponent.h"
+#include "Components/BoxComponent.h"
 #include "Components/PrimitiveComponent.h"
 #include "DrawDebugHelpers.h"
 #include "GameFramework/PlayerController.h"
@@ -29,9 +30,11 @@ bool UAssemblyWorkbenchComponent::SelectionExists(const FAssemblySelection& Valu
 	switch (Value.Kind)
 	{
 	case EAssemblySelectionKind::Bone:
+	case EAssemblySelectionKind::JointPart:
 	{
 		FAssemblyBoneInstance Bone;
-		return Assembly->GetBone(Value.InstanceId, Bone);
+		return Assembly->GetBone(Value.InstanceId, Bone)
+			&& Assembly->IsJointPart(Value.InstanceId) == (Value.Kind == EAssemblySelectionKind::JointPart);
 	}
 	case EAssemblySelectionKind::Muscle:
 	{
@@ -74,9 +77,10 @@ void UAssemblyWorkbenchComponent::ClearSelection()
 bool UAssemblyWorkbenchComponent::RemoveSelected(FText& OutReason)
 {
 	if (!CanEdit(OutReason)) { return Fail(OutReason, OutReason); }
-	if (Selection.Kind != EAssemblySelectionKind::Bone && Selection.Kind != EAssemblySelectionKind::Muscle)
+	if (Selection.Kind != EAssemblySelectionKind::Bone && Selection.Kind != EAssemblySelectionKind::JointPart
+		&& Selection.Kind != EAssemblySelectionKind::Muscle)
 	{
-		return Fail(LOCTEXT("NoRemovableSelection", "请选择要拆下的骨头或肌肉；核心不能拆卸。"), OutReason);
+		return Fail(LOCTEXT("NoRemovableSelection", "请选择要拆下的骨头、关节组件或肌肉；核心不能拆卸。"), OutReason);
 	}
 	const FGuid Id = Selection.InstanceId;
 	CancelTool();
@@ -140,6 +144,15 @@ bool UAssemblyWorkbenchComponent::PickAtPointer(FVector2D ViewportPixels, FAssem
 {
 	OutSelection = FAssemblySelection();
 	if (!IsWorkbenchInitialized() || !bPointerValid) { return false; }
+	FAssemblyMuscleEndpoint RigidPoint;
+	const bool bOverRigidPart = Assembly->FindBoneAtWorldPosition(PointerWorld, RigidPoint);
+	if (bOverRigidPart && Assembly->IsJointPart(RigidPoint.BoneId))
+	{
+		// The draggable physical part wins over its attached constraint-edge handles.
+		OutSelection.Kind = EAssemblySelectionKind::JointPart;
+		OutSelection.InstanceId = RigidPoint.BoneId;
+		return true;
+	}
 	double BestJointDistance = FMath::Square(static_cast<double>(FMath::Max(1.0f, JointPickRadiusPixels)));
 	for (const FAssemblyJointInstance& Joint : Assembly->GetJoints())
 	{
@@ -188,11 +201,10 @@ bool UAssemblyWorkbenchComponent::PickAtPointer(FVector2D ViewportPixels, FAssem
 		}
 	}
 	if (OutSelection.Kind != EAssemblySelectionKind::None) { return true; }
-	FAssemblyMuscleEndpoint BonePoint;
-	if (Assembly->FindBoneAtWorldPosition(PointerWorld, BonePoint))
+	if (bOverRigidPart)
 	{
 		OutSelection.Kind = EAssemblySelectionKind::Bone;
-		OutSelection.InstanceId = BonePoint.BoneId;
+		OutSelection.InstanceId = RigidPoint.BoneId;
 		return true;
 	}
 	return false;
@@ -214,17 +226,17 @@ void UAssemblyWorkbenchComponent::DrawSelectionFeedback() const
 			if (bSelected) { DrawDebugLine(GetWorld(), A, B, SelectionColor, false, 0.0f, 0, 2.0f); }
 		}
 	}
-	if (Selection.Kind == EAssemblySelectionKind::Bone)
+	if (Selection.Kind == EAssemblySelectionKind::Bone || Selection.Kind == EAssemblySelectionKind::JointPart)
 	{
 		const ANormalBone* Actor = Presenter->GetBoneActor(Selection.InstanceId);
 		FTransform Pose;
 		if (IsValid(Actor) && !Actor->IsHidden() && Assembly->GetBoneWorldTransform(Selection.InstanceId, Pose))
 		{
-			const FNormalBonePhysicalStats Stats = Actor->GetPhysicalStats();
-			if (Stats.bValid)
+			const UBoxComponent* Body = Actor->GetBoneBody();
+			if (IsValid(Body))
 			{
 				const FVector Scale = Pose.GetScale3D().GetAbs();
-				DrawDebugBox(GetWorld(), Pose.GetLocation(), FVector(Stats.Length * 0.5f, Actor->BodyHalfThickness, Stats.Thickness * 0.5f) * Scale,
+				DrawDebugBox(GetWorld(), Pose.GetLocation(), Body->GetUnscaledBoxExtent() * Scale,
 					Pose.GetRotation(), SelectionColor, false, 0.0f, 0, 1.5f);
 			}
 		}

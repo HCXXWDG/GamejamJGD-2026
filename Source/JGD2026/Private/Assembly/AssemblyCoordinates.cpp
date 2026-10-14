@@ -18,7 +18,7 @@ namespace
 
 bool UAssemblyComponent::IsPointOnBoneDefinition(const FAssemblyBoneDefinition& Definition, FVector2D LocalPoint) const
 {
-	return AssemblyFreeRules::IsPointOnBone(Definition.BoneParameters, LocalPoint)
+	return AssemblyFreeRules::IsPointOnRigidPart(Definition, LocalPoint)
 		&& (RoundPlacementMode == EAssemblyPlacementMode::Free
 			|| (RoundPlacementMode == EAssemblyPlacementMode::Grid
 				&& AssemblyRules::IsPointOnBone(Definition.Footprint, RoundGrid.CellSize, LocalPoint)));

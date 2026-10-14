@@ -1,5 +1,6 @@
 #include "Assembly/AssemblyMuscle.h"
 #include "Assembly/AssemblyComponent.h"
+#include "AssemblyRenderLayers.h"
 #include "Components/SceneComponent.h"
 #include "Components/SplineComponent.h"
 #include "Materials/MaterialInterface.h"
@@ -62,7 +63,7 @@ UAssemblyComponent* AAssemblyMuscle::GetAssemblyComponent() const
 bool AAssemblyMuscle::HasUsablePresentation() const
 {
 	if (!FMath::IsFinite(LineWidth) || LineWidth <= UE_SMALL_NUMBER
-		|| !FMath::IsFinite(BendRatio))
+		|| !FMath::IsFinite(BendRatio) || !FMath::IsFinite(VisualDepthOffset))
 	{
 		return false;
 	}
@@ -172,6 +173,16 @@ void AAssemblyMuscle::RefreshCurve()
 	const FLinearColor Color = GetFeedbackColor();
 	const int32 Count = SegmentSprites.Num();
 	const bool bUseSlices = !CurveSliceSprites.IsEmpty();
+	const UAssemblyComponent* RenderAssembly = BoundAssembly.Get();
+	if (!RenderAssembly && GetOwner()) RenderAssembly = GetOwner()->FindComponentByClass<UAssemblyComponent>();
+	const FVector DepthNormal = RenderAssembly
+		? RenderAssembly->GetGridFrameTransform().GetUnitAxis(EAxis::Y) : FVector::YAxisVector;
+	double DepthBase = VisualDepthOffset - (RenderAssembly ? RenderAssembly->GetBones().Num() : 0) * AssemblyRenderLayers::DepthStep;
+	if (IsMuscleInitialized())
+	{
+		const int32 Rank = AssemblyRenderLayers::GetRank(BoundAssembly->GetMuscles(), MuscleData.InstanceId);
+		DepthBase -= (Rank + 1.0) * AssemblyRenderLayers::MuscleSlotSpan;
+	}
 	for (int32 Index = 0; Index < Count; ++Index)
 	{
 		UPaperSpriteComponent* Segment = SegmentSprites[Index];
@@ -200,7 +211,10 @@ void AAssemblyMuscle::RefreshCurve()
 		const FVector DrawEnd = End + Direction * (Index + 1 < Count ? SeamOverlap : 0.0);
 		const FVector Scale(FVector::Distance(DrawStart, DrawEnd) / (Bounds.BoxExtent.X * 2.0),
 			1.0, LineWidth / (Bounds.BoxExtent.Z * 2.0));
-		const FVector Location = (DrawStart + DrawEnd) * 0.5 - Rotation.RotateVector(Bounds.Origin * Scale);
+		// Every muscle gets a disjoint depth slot; its slices receive stable depths inside it.
+		// The spline and physical endpoints retain their exact positions on the gameplay plane.
+		const double Depth = DepthBase - AssemblyRenderLayers::DepthStep * (Index + 1.0);
+		const FVector Location = (DrawStart + DrawEnd) * 0.5 - Rotation.RotateVector(Bounds.Origin * Scale) + DepthNormal * Depth;
 		Segment->SetWorldTransform(FTransform(Rotation, Location, Scale));
 		Segment->SetVisibility(true);
 	}

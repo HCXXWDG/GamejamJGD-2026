@@ -67,10 +67,16 @@ void UAssemblyShelfCardWidget::BuildPlaceholder()
 
 void UAssemblyShelfCardWidget::InitializeCard(UAssemblyWorkbenchComponent* InWorkbench, FName InTypeId, FText InDisplayName, bool bInMuscle)
 {
+	InitializePartCard(InWorkbench, InTypeId, InDisplayName, bInMuscle ? EAssemblyShelfPartKind::Muscle : EAssemblyShelfPartKind::Bone);
+}
+
+void UAssemblyShelfCardWidget::InitializePartCard(UAssemblyWorkbenchComponent* InWorkbench, FName InTypeId,
+	FText InDisplayName, EAssemblyShelfPartKind InPartKind)
+{
 	Workbench = InWorkbench;
 	TypeId = InTypeId;
 	DisplayName = InDisplayName.IsEmpty() ? FText::FromName(InTypeId) : InDisplayName;
-	bMuscle = bInMuscle;
+	PartKind = InPartKind;
 	RefreshQuantity();
 }
 
@@ -87,7 +93,11 @@ UPaperSprite* UAssemblyShelfCardWidget::GetPresentationSprite() const
 	const UAssemblyWorkbenchComponent* ActiveWorkbench = Workbench.Get();
 	const UAssemblyInteractionComponent* Interaction = ActiveWorkbench ? ActiveWorkbench->GetInteractionComponent() : nullptr;
 	if (!Interaction) return nullptr;
-	if (bMuscle)
+	if (PartKind == EAssemblyShelfPartKind::JointPart)
+	{
+		return Interaction->GetJointPartArtSprite(TypeId);
+	}
+	if (PartKind == EAssemblyShelfPartKind::Muscle)
 	{
 		const AAssemblyMuscle* MuscleDefaults = Interaction->MuscleActorClass.GetDefaultObject();
 		return MuscleDefaults ? MuscleDefaults->CurveSprite.Get() : nullptr;
@@ -99,6 +109,8 @@ UPaperSprite* UAssemblyShelfCardWidget::GetPresentationSprite() const
 
 void UAssemblyShelfCardWidget::RefreshQuantity()
 {
+	const bool bMuscle = PartKind == EAssemblyShelfPartKind::Muscle;
+	const bool bJointPart = PartKind == EAssemblyShelfPartKind::JointPart;
 	const int32 Remaining = GetRemainingQuantity();
 	UPaperSprite* PresentationSprite = GetPresentationSprite();
 	if (IconImage && AppliedIconSprite != PresentationSprite)
@@ -109,15 +121,26 @@ void UAssemblyShelfCardWidget::RefreshQuantity()
 	}
 	if (Caption)
 	{
+		FString Instruction = bMuscle ? TEXT("拖到骨头上，点击第二端") : TEXT("拖到场景中摆放");
+		const UAssemblyWorkbenchComponent* ActiveWorkbench = Workbench.Get();
+		const UAssemblyComponent* Model = ActiveWorkbench ? ActiveWorkbench->GetAssemblyComponent() : nullptr;
+		FAssemblyBoneDefinition Definition;
+		if (bJointPart && Model && Model->GetBoneDefinition(TypeId, Definition))
+		{
+			Instruction = Definition.JointShape == EAssemblyJointPartShape::Round
+				? TEXT("紫色活动 · 自由摆放") : TEXT("黄色固定 · 自由摆放");
+		}
 		Caption->SetText(FText::Format(FText::FromString(TEXT("{0}  × {1}\n{2}")), DisplayName, FText::AsNumber(Remaining),
-			FText::FromString(bMuscle ? TEXT("拖到骨头上，点击第二端") : TEXT("拖到场景中摆放"))));
+			FText::FromString(Instruction)));
 	}
 	if (Background)
 	{
-		Background->SetBrushColor(Remaining > 0 ? (bMuscle ? FLinearColor(0.40f, 0.12f, 0.22f, 0.96f) : FLinearColor(0.15f, 0.24f, 0.34f, 0.96f))
+		Background->SetBrushColor(Remaining > 0 ? (bMuscle ? FLinearColor(0.40f, 0.12f, 0.22f, 0.96f)
+			: (bJointPart ? FLinearColor(0.29f, 0.23f, 0.40f, 0.96f) : FLinearColor(0.15f, 0.24f, 0.34f, 0.96f)))
 			: FLinearColor(0.12f, 0.12f, 0.12f, 0.96f));
 	}
 	OnCardPresentationChanged(DisplayName, Remaining, bMuscle);
+	OnPartCardPresentationChanged(DisplayName, Remaining, PartKind);
 }
 
 FReply UAssemblyShelfCardWidget::NativeOnMouseButtonDown(const FGeometry& Geometry, const FPointerEvent& MouseEvent)
@@ -138,11 +161,17 @@ void UAssemblyShelfCardWidget::NativeOnDragDetected(const FGeometry& Geometry, c
 	UAssemblyWorkbenchComponent* ActiveWorkbench = Workbench.Get();
 	if (!ActiveWorkbench) return;
 	FText Reason;
-	const bool bStarted = bMuscle ? ActiveWorkbench->BeginMusclePlacement(TypeId, FGuid(), Reason)
-		: ActiveWorkbench->BeginShelfBoneDrag(TypeId, Reason);
+	bool bStarted = false;
+	switch (PartKind)
+	{
+	case EAssemblyShelfPartKind::Muscle: bStarted = ActiveWorkbench->BeginMusclePlacement(TypeId, FGuid(), Reason); break;
+	case EAssemblyShelfPartKind::JointPart: bStarted = ActiveWorkbench->BeginShelfJointDrag(TypeId, Reason); break;
+	case EAssemblyShelfPartKind::Bone: bStarted = ActiveWorkbench->BeginShelfBoneDrag(TypeId, Reason); break;
+	default: break;
+	}
 	if (!bStarted) return;
 	UAssemblyDragDropOperation* Operation = NewObject<UAssemblyDragDropOperation>(this);
-	Operation->InitializeDrag(ActiveWorkbench, bMuscle);
+	Operation->InitializePartDrag(ActiveWorkbench, PartKind);
 	Operation->Pivot = EDragPivot::CenterCenter;
 	UTextBlock* Visual = NewObject<UTextBlock>(Operation);
 	Visual->SetText(DisplayName);
@@ -157,6 +186,10 @@ bool UAssemblyShelfCardWidget::NativeOnDrop(const FGeometry& Geometry, const FDr
 	if (Super::NativeOnDrop(Geometry, DragDropEvent, Operation)) return true;
 	if (UAssemblyDragDropOperation* AssemblyDrag = Cast<UAssemblyDragDropOperation>(Operation))
 	{
+		if (!Workbench.IsValid() || AssemblyDrag->GetWorkbench() != Workbench.Get() || !AssemblyDrag->IsCurrentDrag())
+		{
+			return false;
+		}
 		AssemblyDrag->CancelAssemblyDrag();
 		return true;
 	}

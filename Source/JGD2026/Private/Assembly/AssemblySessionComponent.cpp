@@ -3,6 +3,7 @@
 #include "Assembly/AssemblyHUDWidget.h"
 #include "Assembly/AssemblyInteractionComponent.h"
 #include "Assembly/AssemblyPhysicsBridgeComponent.h"
+#include "Assembly/AssemblyPhysicsMessages.h"
 #include "Assembly/AssemblyWorkbenchComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Engine/GameViewportClient.h"
@@ -113,22 +114,141 @@ UAssemblyWorkbenchComponent* UAssemblySessionComponent::GetWorkbench() const { r
 UAssemblyComponent* UAssemblySessionComponent::GetAssemblyComponent() const { return BoundAssembly.Get(); }
 bool UAssemblySessionComponent::CanOwnPhysicsLifecycle(const UAssemblyComponent* Model) const
 {
-	const APawn* Pawn = Cast<APawn>(GetOwner());
-	const APlayerController* PC = BoundController.Get();
-	if ((!bInitialized && !bInitializing) || bReleasing || bEndingPlay || bAutoInitializationSuppressed
-		|| bProxyRestorePending || !IsValid(Model) || BoundAssembly.Get() != Model || Model->GetWorld() != GetWorld()
-		|| !IsValid(Pawn) || Pawn->IsActorBeingDestroyed() || !IsValid(PC) || !PC->IsLocalController()
-		|| PC->GetPawn() != Pawn || Pawn->GetController() != PC)
-	{
-		return false;
-	}
-	if (const ACharacter* Character = Cast<ACharacter>(Pawn); Character && bSuspendCharacterMovement)
+	if (!HasPhysicsSessionClaim(Model)) { return false; }
+	if (const ACharacter* Character = Cast<ACharacter>(GetOwner()); Character && bSuspendCharacterMovement)
 	{
 		const UCharacterMovementComponent* Movement = Character->GetCharacterMovement();
 		return bCharacterMovementSuspended && IsValid(Movement) && SuspendedCharacterMovement.Get() == Movement
 			&& Movement->MovementMode == MOVE_None && Movement->CustomMovementMode == 0 && !Movement->IsComponentTickEnabled();
 	}
 	return true;
+}
+
+bool UAssemblySessionComponent::HasPhysicsSessionClaim(const UAssemblyComponent* Model) const
+{
+	const APawn* Pawn = Cast<APawn>(GetOwner());
+	const APlayerController* PC = BoundController.Get();
+	if ((!bInitialized && !bInitializing) || bReleasing || bEndingPlay || bAutoInitializationSuppressed
+		|| bProxyRestorePending || !IsValid(Model) || BoundAssembly.Get() != Model || Model->GetWorld() != GetWorld()
+		|| !IsValid(Pawn) || Model->GetOwner() != Pawn || Pawn->IsActorBeingDestroyed() || !IsValid(PC) || !PC->IsLocalController()
+		|| PC->GetPawn() != Pawn || Pawn->GetController() != PC)
+	{
+		return false;
+	}
+	return true;
+}
+
+bool UAssemblySessionComponent::ValidatePhysicsProxyReady(const UAssemblyComponent* Model,
+	const FAssemblyPhysicsSnapshotMessage& Snapshot, FText& OutReason) const
+{
+	OutReason = FText::GetEmpty();
+	if (!HasPhysicsSessionClaim(Model) || Snapshot.Context.Assembly != Model || Snapshot.Context.World != GetWorld())
+	{
+		OutReason = LOCTEXT("PhysicsSessionNotClaimed", "正式物理需要由当前本地角色的 Assembly Session 接管；会话、模型或世界已失效。");
+		return false;
+	}
+	const ACharacter* Character = Cast<ACharacter>(GetOwner());
+	if (!Character) { return true; }
+	if (!bSuspendCharacterMovement)
+	{
+		OutReason = LOCTEXT("FormalMovementProtectionDisabled", "正式物理不能关闭 Suspend Character Movement；角色移动组件会与组装刚体冲突。");
+		return false;
+	}
+	const UCharacterMovementComponent* Movement = Character->GetCharacterMovement();
+	if (!bCharacterMovementSuspended || !IsValid(Movement) || SuspendedCharacterMovement.Get() != Movement
+		|| Movement->MovementMode != MOVE_None || Movement->CustomMovementMode != 0 || Movement->IsComponentTickEnabled())
+	{
+		OutReason = LOCTEXT("FormalMovementNotFrozen", "正式物理需要角色移动组件由 Session 接管、Movement Mode 为 None 且 Tick 关闭；物理或阶段回调不得恢复角色移动。");
+		return false;
+	}
+	const UCapsuleComponent* Capsule = Character->GetCapsuleComponent();
+	if (!IsValid(Capsule) || !Capsule->IsRegistered() || Capsule->GetWorld() != GetWorld())
+	{
+		OutReason = LOCTEXT("FormalCapsuleNotReady", "正式物理需要有效、已注册且属于当前世界的角色胶囊。");
+		return false;
+	}
+	const bool bCapsuleIsRealBody = Snapshot.CoreBody == Capsule || Snapshot.BonePoses.ContainsByPredicate(
+		[Capsule](const FAssemblyPhysicsBonePose& Pose) { return Pose.Body == Capsule || Pose.PoseSource == Capsule; });
+	if (!bDisableCharacterCapsuleForPhysics)
+	{
+		OutReason = LOCTEXT("FormalCapsuleProtectionDisabled", "正式物理不能关闭 Disable Character Capsule For Physics；只有明确登记为核心或组装刚体的胶囊可保留碰撞。");
+		return false;
+	}
+	if (bCapsuleIsRealBody) { return true; }
+	if (Capsule->IsSimulatingPhysics() || Capsule->GetCollisionEnabled() != ECollisionEnabled::NoCollision)
+	{
+		OutReason = LOCTEXT("FormalProxyCapsuleConflict", "角色代理胶囊必须关闭碰撞且不模拟物理；请登记真实核心/零件刚体，并由 Session 保护角色代理。");
+		return false;
+	}
+	return true;
+}
+
+bool UAssemblySessionComponent::EnsurePhysicsProxyReady(const UAssemblyComponent* Model,
+	const FAssemblyPhysicsSnapshotMessage& Snapshot, FText& OutReason)
+{
+	OutReason = FText::GetEmpty();
+	if (!HasPhysicsSessionClaim(Model) || Snapshot.Context.Assembly != Model || Snapshot.Context.World != GetWorld())
+	{
+		OutReason = LOCTEXT("PhysicsSessionNotClaimed", "正式物理需要由当前本地角色的 Assembly Session 接管；会话、模型或世界已失效。");
+		return false;
+	}
+	ACharacter* Character = Cast<ACharacter>(GetOwner());
+	if (!Character) { return true; }
+	if (!bSuspendCharacterMovement)
+	{
+		OutReason = LOCTEXT("FormalMovementProtectionDisabled", "正式物理不能关闭 Suspend Character Movement；角色移动组件会与组装刚体冲突。");
+		return false;
+	}
+	if (!bDisableCharacterCapsuleForPhysics)
+	{
+		OutReason = LOCTEXT("FormalCapsuleProtectionDisabled", "正式物理不能关闭 Disable Character Capsule For Physics；只有明确登记为核心或组装刚体的胶囊可保留碰撞。");
+		return false;
+	}
+	SuspendCharacterMovement();
+	if (!HasPhysicsSessionClaim(Model))
+	{
+		OutReason = LOCTEXT("PhysicsProxyFreezeCanceled", "冻结角色移动期间会话已关闭或控制权已变化。");
+		return false;
+	}
+	UCapsuleComponent* Capsule = Character->GetCapsuleComponent();
+	if (!IsValid(Capsule) || !Capsule->IsRegistered() || Capsule->GetWorld() != GetWorld())
+	{
+		OutReason = LOCTEXT("FormalCapsuleNotReady", "正式物理需要有效、已注册且属于当前世界的角色胶囊。");
+		return false;
+	}
+	const bool bCapsuleIsRealBody = Snapshot.CoreBody == Capsule || Snapshot.BonePoses.ContainsByPredicate(
+		[Capsule](const FAssemblyPhysicsBonePose& Pose) { return Pose.Body == Capsule || Pose.PoseSource == Capsule; });
+	if (bCapsuleIsRealBody)
+	{
+		// A provider may adopt the capsule during Prepare. Return collision that we suppressed as a proxy.
+		RestoreCharacterCapsule();
+	}
+	else
+	{
+		if (Capsule->IsSimulatingPhysics())
+		{
+			OutReason = LOCTEXT("UnclaimedCapsuleSimulation", "角色胶囊正在模拟物理且未登记为真实组装刚体；请先由物理程序明确接管。");
+			return false;
+		}
+		if (DisabledCharacterCapsule.Get() != Capsule) { RestoreCharacterCapsule(); }
+		if (!HasPhysicsSessionClaim(Model))
+		{
+			OutReason = LOCTEXT("PhysicsProxyFreezeCanceled", "冻结角色移动期间会话已关闭或控制权已变化。");
+			return false;
+		}
+		if (!bCharacterCapsuleDisabled)
+		{
+			DisabledCharacterCapsule = Capsule;
+			PreviousCharacterCapsuleCollision = Capsule->GetCollisionEnabled();
+			// Claim before SetCollisionEnabled: overlap callbacks can shut down this session.
+			bCharacterCapsuleDisabled = true;
+		}
+		if (Capsule->GetCollisionEnabled() != ECollisionEnabled::NoCollision)
+		{
+			Capsule->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		}
+	}
+	return ValidatePhysicsProxyReady(Model, Snapshot, OutReason);
 }
 APlayerController* UAssemblySessionComponent::GetPlayerController() const { return BoundController.Get(); }
 UAssemblyHUDWidget* UAssemblySessionComponent::GetHUD() const { return IsValid(HUD) ? HUD.Get() : nullptr; }
@@ -583,6 +703,35 @@ bool UAssemblySessionComponent::StartPlaying(FText& OutReason)
 	UAssemblyInteractionComponent* Interaction = BoundInteraction.Get();
 	UAssemblyWorkbenchComponent* Workbench = BoundWorkbench.Get();
 	APlayerController* PC = BoundController.Get();
+	const TWeakObjectPtr<UAssemblyPhysicsBridgeComponent> StartedBridge = BoundPhysicsBridge;
+	auto RecoverFailedStart = [&]()
+	{
+		const FText Failure = OutReason;
+		HeldMuscleKeys.Reset();
+		bSpaceHeld = false;
+		bReplayHeldMusclesPending = false;
+		// The model has finalized this activation. Stop it through Shutdown, never fake a second Abort.
+		// Keep the original model/bridge even if a notification closed and cleared the Session binding.
+		if (UAssemblyPhysicsBridgeComponent* Bridge = StartedBridge.Get()) { Bridge->ShutdownPhysicsLifecycle(); }
+		if (IsValid(Model) && Model->IsInitialized() && Model->GetPhase() == EAssemblyPhase::Playing)
+		{
+			FText RecoveryReason;
+			Model->RecoverAssemblyAfterPhysicsFailure(RecoveryReason);
+		}
+		OutReason = Failure;
+		// Returning the reason avoids another user callback restarting the failed physical lifecycle.
+		return false;
+	};
+	auto VerifyStartedPhysics = [&]()
+	{
+		if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC) || Model->GetPhase() != EAssemblyPhase::Playing)
+		{
+			OutReason = LOCTEXT("StartNotificationCanceled", "组装会话在开始操控通知期间已被关闭、更换或退出操控。");
+			return false;
+		}
+		UAssemblyPhysicsBridgeComponent* Bridge = StartedBridge.Get();
+		return !Bridge || Bridge->ValidateCommittedPlaying(OutReason);
+	};
 	Workbench->CancelTool();
 	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
 	{
@@ -595,34 +744,28 @@ bool UAssemblySessionComponent::StartPlaying(FText& OutReason)
 	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
 	{
 		OutReason = LOCTEXT("StartPhysicsCanceled", "组装会话在开始操控期间已被关闭或更换。");
-		return false;
+		return RecoverFailedStart();
 	}
 	UpdateMovementGate();
 	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
 	{
 		OutReason = LOCTEXT("StartProxyCanceled", "组装会话在切换角色代理时已被关闭。");
-		return false;
+		return RecoverFailedStart();
 	}
+	if (!VerifyStartedPhysics()) { return RecoverFailedStart(); }
 	// Replay already-held muscle intents after phase application while rejecting external input reentry.
 	ApplyHeldMuscleInput(true);
 	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
 	{
 		OutReason = LOCTEXT("StartInputCanceled", "组装会话在发送操控输入时已被关闭。");
-		return false;
+		return RecoverFailedStart();
 	}
+	if (!VerifyStartedPhysics()) { return RecoverFailedStart(); }
 	bReplayHeldMusclesPending = false;
 	ShowMessage(FText::GetEmpty());
-	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
-	{
-		OutReason = LOCTEXT("StartMessageCanceled", "组装会话在开始操控通知期间已被关闭或更换。");
-		return false;
-	}
+	if (!VerifyStartedPhysics()) { return RecoverFailedStart(); }
 	OnSessionChanged.Broadcast();
-	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
-	{
-		OutReason = LOCTEXT("StartNotificationCanceled", "组装会话在开始操控通知期间已被关闭或更换。");
-		return false;
-	}
+	if (!VerifyStartedPhysics()) { return RecoverFailedStart(); }
 	return true;
 }
 
@@ -710,6 +853,10 @@ void UAssemblySessionComponent::UpdateMovementGate()
 
 void UAssemblySessionComponent::SuspendCharacterMovement()
 {
+	// DisableMovement may notify Blueprint code that reenters this function. One attempt is enough;
+	// the caller verifies the resulting state instead of recursively fighting an external owner.
+	if (bSuspendingCharacterMovement) { return; }
+	TGuardValue<bool> SuspendingGuard(bSuspendingCharacterMovement, true);
 	ACharacter* Character = Cast<ACharacter>(GetOwner());
 	auto CanSuspend = [this, Character]()
 	{
@@ -719,25 +866,37 @@ void UAssemblySessionComponent::SuspendCharacterMovement()
 	};
 	if (!CanSuspend()) { return; }
 	UCharacterMovementComponent* Movement = Character->GetCharacterMovement();
+	UAssemblyPhysicsBridgeComponent* Bridge = BoundPhysicsBridge.Get();
+	const bool bFormalPhysics = IsValid(Bridge) && Bridge->IsBridgeInitialized()
+		&& (Bridge->HasPhysicsLifecycleProvider() || Bridge->bRequirePhysicsLifecycleProvider);
+	// Changing a protection flag cannot restore the proxy beneath an active physical owner.
+	// The formal entry will reject the flag and shutdown remains responsible for restoration.
+	if (!bSuspendCharacterMovement && bFormalPhysics) { return; }
 	if (!bSuspendCharacterMovement || SuspendedCharacterMovement.Get() != Movement)
 	{
 		RestoreCharacterMovement();
 	}
 	if (!CanSuspend()) { return; }
-	if (bSuspendCharacterMovement && IsValid(Movement) && !bCharacterMovementSuspended)
+	if (bSuspendCharacterMovement && IsValid(Movement))
 	{
-		SuspendedCharacterMovement = Movement;
-		PreviousCharacterMovementMode = static_cast<uint8>(Movement->MovementMode);
-		PreviousCharacterCustomMovementMode = Movement->CustomMovementMode;
-		bPreviousCharacterMovementTick = Movement->IsComponentTickEnabled();
-		// Claim these writes before callbacks (MovementModeChanged may close the session).
-		bCharacterMovementSuspended = true;
-		Character->StopJumping();
-		Character->ConsumeMovementInputVector();
-		Movement->StopMovementImmediately();
-		Movement->ClearAccumulatedForces();
-		Movement->SetComponentTickEnabled(false);
-		Movement->DisableMovement();
+		if (!bCharacterMovementSuspended)
+		{
+			SuspendedCharacterMovement = Movement;
+			PreviousCharacterMovementMode = static_cast<uint8>(Movement->MovementMode);
+			PreviousCharacterCustomMovementMode = Movement->CustomMovementMode;
+			bPreviousCharacterMovementTick = Movement->IsComponentTickEnabled();
+			// Preserve the initial state across later freezes; claim before callbacks can release it.
+			bCharacterMovementSuspended = true;
+		}
+		if (Movement->MovementMode != MOVE_None || Movement->CustomMovementMode != 0 || Movement->IsComponentTickEnabled())
+		{
+			Character->StopJumping();
+			Character->ConsumeMovementInputVector();
+			Movement->StopMovementImmediately();
+			Movement->ClearAccumulatedForces();
+			Movement->SetComponentTickEnabled(false);
+			Movement->DisableMovement();
+		}
 	}
 	// Capsule collision requires the actual physics snapshot, which may not exist during early initialization.
 }
@@ -746,33 +905,23 @@ void UAssemblySessionComponent::UpdateCharacterProxyState()
 {
 	ACharacter* Character = Cast<ACharacter>(GetOwner());
 	if (!bInitialized || bReleasing || !IsValid(Character)) { return; }
-	SuspendCharacterMovement();
-	if (!bInitialized || bReleasing) { return; }
-	UCapsuleComponent* Capsule = Character->GetCapsuleComponent();
 	UAssemblyPhysicsBridgeComponent* Bridge = BoundPhysicsBridge.Get();
 	FAssemblyPhysicsSnapshotMessage Snapshot;
-	bool bDisableProxyCapsule = bDisableCharacterCapsuleForPhysics && IsValid(Capsule)
-		&& !Capsule->IsSimulatingPhysics() && IsValid(Bridge) && Bridge->IsBridgeInitialized()
-		&& Bridge->HasPhysicsLifecycleProvider() && Bridge->GetPhysicsSnapshot(Snapshot)
-		&& Snapshot.Context.Assembly == BoundAssembly.Get() && Snapshot.Context.World == GetWorld();
-	if (bDisableProxyCapsule)
+	if (IsValid(Bridge) && Bridge->IsBridgeInitialized()
+		&& (Bridge->HasPhysicsLifecycleProvider() || Bridge->bRequirePhysicsLifecycleProvider))
 	{
-		// A capsule explicitly supplied as a real assembly body is never a disposable proxy.
-		bDisableProxyCapsule = Snapshot.CoreBody != Capsule && !Snapshot.BonePoses.ContainsByPredicate(
-			[Capsule](const FAssemblyPhysicsBonePose& Pose) { return Pose.Body == Capsule || Pose.PoseSource == Capsule; });
+		// Never restore a previously claimed proxy just because a formal binding/snapshot is failing.
+		// Prepare/Commit propagate the precise reason; shutdown releases the physical owner first.
+		if (Bridge->GetPhysicsSnapshot(Snapshot))
+		{
+			FText Reason;
+			EnsurePhysicsProxyReady(BoundAssembly.Get(), Snapshot, Reason);
+		}
+		return;
 	}
-	if (!bDisableProxyCapsule || DisabledCharacterCapsule.Get() != Capsule)
-	{
-		RestoreCharacterCapsule();
-	}
+	SuspendCharacterMovement();
 	if (!bInitialized || bReleasing) { return; }
-	if (bDisableProxyCapsule && !bCharacterCapsuleDisabled)
-	{
-		DisabledCharacterCapsule = Capsule;
-		PreviousCharacterCapsuleCollision = Capsule->GetCollisionEnabled();
-		bCharacterCapsuleDisabled = true;
-		Capsule->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	}
+	RestoreCharacterCapsule();
 }
 
 void UAssemblySessionComponent::RestoreCharacterMovement()
@@ -829,11 +978,12 @@ bool UAssemblySessionComponent::TryRestoreCharacterProxy()
 void UAssemblySessionComponent::ApplyHeldMuscleInput(bool bAllowTransition)
 {
 	if (!CanAcceptInput(bAllowTransition) || BoundAssembly->GetPhase() != EAssemblyPhase::Playing) { return; }
+	UAssemblyComponent* Model = BoundAssembly.Get();
 	const TArray<EAssemblyMuscleKey> Keys = HeldMuscleKeys.Array();
 	for (const EAssemblyMuscleKey Key : Keys)
 	{
-		if (!CanAcceptInput(bAllowTransition)) { break; }
-		if (HeldMuscleKeys.Contains(Key)) { BoundAssembly->SetMuscleInput(Key, true); }
+		if (!CanAcceptInput(bAllowTransition) || BoundAssembly.Get() != Model || Model->GetPhase() != EAssemblyPhase::Playing) { break; }
+		if (HeldMuscleKeys.Contains(Key)) { Model->SetMuscleInput(Key, true); }
 	}
 }
 
@@ -888,8 +1038,13 @@ void UAssemblySessionComponent::HandleMuscleReleased(EAssemblyMuscleKey Key)
 
 void UAssemblySessionComponent::HandleSpacePressed()
 {
-	if (!CanAcceptInput() || bSpaceHeld) { return; }
-	bSpaceHeld = BoundAssembly->SetCoreRotationInput(true);
+	if (!CanAcceptInput() || bSpaceHeld || BoundAssembly->GetPhase() != EAssemblyPhase::Playing) { return; }
+	UAssemblyComponent* Model = BoundAssembly.Get();
+	const bool bAccepted = Model->SetCoreRotationInput(true);
+	// A synchronous drive listener may release input or close the Session before the call returns.
+	bSpaceHeld = bAccepted && BoundAssembly.Get() == Model
+		&& IsCurrentSessionBinding(Model, BoundInteraction.Get(), BoundWorkbench.Get(), BoundController.Get())
+		&& Model->GetPhase() == EAssemblyPhase::Playing && Model->IsCoreRotationHeld();
 }
 
 void UAssemblySessionComponent::HandleSpaceReleased()
@@ -940,6 +1095,7 @@ void UAssemblySessionComponent::HandlePhaseChanged(EAssemblyPhase Phase)
 {
 	// Maintain proxy ownership without mutating the notifying model; physics phases belong to the provider.
 	UpdateMovementGate();
+	if (Phase != EAssemblyPhase::Playing) { bSpaceHeld = false; }
 	bReplayHeldMusclesPending = Phase == EAssemblyPhase::Playing;
 	bModelRefreshPending = true;
 }

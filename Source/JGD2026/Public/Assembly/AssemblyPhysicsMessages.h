@@ -127,7 +127,7 @@ struct JGD2026_API FAssemblyPhysicsCoreRotationMessage
 	GENERATED_BODY()
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Physics")
 	FAssemblyPhysicsContext Context;
-	// Space is available in both phases; the adapter chooses the appropriate physical mode.
+	// New held intents are accepted only in Playing. Stops may also arrive in Assembly/cleanup.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Physics")
 	EAssemblyPhase Phase = EAssemblyPhase::Assembly;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Physics")

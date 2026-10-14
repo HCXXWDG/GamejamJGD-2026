@@ -142,7 +142,7 @@ void UAssemblyWorkbenchComponent::InvalidatePointer(const FText& Reason)
 	MusclePreview.bValid = false;
 	MusclePreview.Reason = Reason;
 	CandidateEndpoint = FAssemblyMuscleEndpoint();
-	if (Presenter.IsValid() && Tool == EAssemblyWorkbenchTool::Bone)
+	if (Presenter.IsValid() && IsRigidPartTool())
 	{
 		Presenter->InvalidateBoneDragPreview(Reason);
 	}
@@ -159,7 +159,7 @@ bool UAssemblyWorkbenchComponent::UpdatePointer(FVector2D ViewportPixels, FText&
 		return false;
 	}
 	bPointerValid = true;
-	if (Tool == EAssemblyWorkbenchTool::Bone)
+	if (IsRigidPartTool())
 	{
 		if (bPointerBoneMove && FVector2D::Distance(BonePressPixels, PointerPixels) >= FMath::Max(0.0f, BoneDragThresholdPixels))
 		{
@@ -177,11 +177,26 @@ bool UAssemblyWorkbenchComponent::UpdatePointer(FVector2D ViewportPixels, FText&
 
 bool UAssemblyWorkbenchComponent::BeginShelfBoneDrag(FName TypeId, FText& OutReason)
 {
+	return BeginShelfRigidDrag(TypeId, EAssemblyRigidPartKind::Bone, OutReason);
+}
+
+bool UAssemblyWorkbenchComponent::BeginShelfJointDrag(FName TypeId, FText& OutReason)
+{
+	return BeginShelfRigidDrag(TypeId, EAssemblyRigidPartKind::JointPart, OutReason);
+}
+
+bool UAssemblyWorkbenchComponent::BeginShelfRigidDrag(FName TypeId, EAssemblyRigidPartKind PartKind, FText& OutReason)
+{
 	if (!CanEdit(OutReason)) { return Fail(OutReason, OutReason); }
+	FAssemblyBoneDefinition Definition;
+	if (!Assembly->GetBoneDefinition(TypeId, Definition) || Definition.PartKind != PartKind)
+	{
+		return Fail(LOCTEXT("WrongShelfPart", "组件类型与组件栏种类不匹配。"), OutReason);
+	}
 	CancelTool();
 	ClearSelection();
 	if (!Presenter->BeginBoneDrag(TypeId, FGuid(), OutReason)) { return Fail(OutReason, OutReason); }
-	Tool = EAssemblyWorkbenchTool::Bone;
+	Tool = PartKind == EAssemblyRigidPartKind::JointPart ? EAssemblyWorkbenchTool::JointPart : EAssemblyWorkbenchTool::Bone;
 	ToolId = FGuid::NewGuid();
 	ToolTypeId = TypeId;
 	LastMessage = FText::GetEmpty();
@@ -198,7 +213,7 @@ bool UAssemblyWorkbenchComponent::BeginBoneMove(FGuid BoneId, FText& OutReason)
 	if (!Assembly->GetBone(BoneId, Bone)) { return Fail(LOCTEXT("MissingBone", "找不到选中的骨头。"), OutReason); }
 	CancelTool();
 	if (!Presenter->BeginBoneDrag(Bone.TypeId, BoneId, OutReason)) { return Fail(OutReason, OutReason); }
-	Tool = EAssemblyWorkbenchTool::Bone;
+	Tool = Assembly->IsJointPart(BoneId) ? EAssemblyWorkbenchTool::JointPart : EAssemblyWorkbenchTool::Bone;
 	ToolId = FGuid::NewGuid();
 	ToolTypeId = Bone.TypeId;
 	ToolExistingId = BoneId;
@@ -211,7 +226,7 @@ bool UAssemblyWorkbenchComponent::BeginBoneMove(FGuid BoneId, FText& OutReason)
 bool UAssemblyWorkbenchComponent::BeginMoveSelected(FText& OutReason)
 {
 	if (!CanEdit(OutReason)) { return Fail(OutReason, OutReason); }
-	if (Selection.Kind == EAssemblySelectionKind::Bone)
+	if (Selection.Kind == EAssemblySelectionKind::Bone || Selection.Kind == EAssemblySelectionKind::JointPart)
 	{
 		return BeginBoneMove(Selection.InstanceId, OutReason);
 	}
@@ -223,7 +238,7 @@ bool UAssemblyWorkbenchComponent::BeginMoveSelected(FText& OutReason)
 			return BeginMusclePlacement(Muscle.TypeId, Muscle.InstanceId, OutReason);
 		}
 	}
-	return Fail(LOCTEXT("NothingToMove", "请先选择要移动的骨头或肌肉。"), OutReason);
+	return Fail(LOCTEXT("NothingToMove", "请先选择要移动的骨头、关节组件或肌肉。"), OutReason);
 }
 
 bool UAssemblyWorkbenchComponent::PointerPressed(FVector2D ViewportPixels, FText& OutReason)
@@ -231,7 +246,7 @@ bool UAssemblyWorkbenchComponent::PointerPressed(FVector2D ViewportPixels, FText
 	if (!CanUse(OutReason)) { return Fail(OutReason, OutReason); }
 	const bool bCandidateValid = UpdatePointer(ViewportPixels, OutReason);
 	if (!bPointerValid) { return Fail(OutReason, OutReason); }
-	if (Tool == EAssemblyWorkbenchTool::Bone) { return bCandidateValid; }
+	if (IsRigidPartTool()) { return bCandidateValid; }
 	if (Tool == EAssemblyWorkbenchTool::MuscleFirst) { return CaptureFirstEndpoint(OutReason); }
 	if (Tool == EAssemblyWorkbenchTool::MuscleSecond)
 	{
@@ -246,13 +261,18 @@ bool UAssemblyWorkbenchComponent::PointerPressed(FVector2D ViewportPixels, FText
 		return true;
 	}
 	if (!SelectInstance(Picked.InstanceId, Picked.Kind, OutReason)) { return false; }
-	if (Picked.Kind == EAssemblySelectionKind::Bone && Assembly->GetPhase() == EAssemblyPhase::Assembly)
+	if ((Picked.Kind == EAssemblySelectionKind::Bone || Picked.Kind == EAssemblySelectionKind::JointPart)
+		&& Assembly->GetPhase() == EAssemblyPhase::Assembly)
 	{
-		FAssemblyBoneInstance Bone;
-		if (!Assembly->GetBone(Picked.InstanceId, Bone)) { return false; }
+		FTransform WorldPose;
+		if (!Assembly->GetBoneWorldTransform(Picked.InstanceId, WorldPose))
+		{
+			return Fail(LOCTEXT("InvalidPickPose", "无法读取所选零件的真实位置，请检查姿态组件。"), OutReason);
+		}
 		const FVector2D ClickLocal = PointerLocal;
 		if (!BeginBoneMove(Picked.InstanceId, OutReason)) { return false; }
-		BoneGrabOffset = Bone.LocalPosition - ClickLocal;
+		const FVector CurrentLocal = Assembly->GetGridFrameTransform().InverseTransformPosition(WorldPose.GetLocation());
+		BoneGrabOffset = FVector2D(CurrentLocal.X, CurrentLocal.Z) - ClickLocal;
 		BonePressPixels = ViewportPixels;
 		bPointerBoneMove = true;
 		return UpdatePointer(ViewportPixels, OutReason);
@@ -263,7 +283,7 @@ bool UAssemblyWorkbenchComponent::PointerPressed(FVector2D ViewportPixels, FText
 
 bool UAssemblyWorkbenchComponent::PointerReleased(FVector2D ViewportPixels, FText& OutReason)
 {
-	if (Tool != EAssemblyWorkbenchTool::Bone)
+	if (!IsRigidPartTool())
 	{
 		OutReason = FText::GetEmpty();
 		return true; // Muscle anchors are confirmed on two presses, never on the first release.
@@ -287,15 +307,23 @@ bool UAssemblyWorkbenchComponent::CommitTool(FGuid& OutInstanceId, FText& OutRea
 	if (!bPointerValid)
 	{
 		const FText Reason = LOCTEXT("NoFreshPointer", "放置前需要有效的当前指针位置。");
-		if (Tool == EAssemblyWorkbenchTool::Bone) { CancelTool(); }
+		if (IsRigidPartTool()) { CancelTool(); }
 		return Fail(Reason, OutReason);
 	}
-	if (Tool == EAssemblyWorkbenchTool::Bone)
+	if (IsRigidPartTool())
 	{
+		const FGuid CommittedToolId = ToolId;
+		const EAssemblySelectionKind InstalledKind = Tool == EAssemblyWorkbenchTool::JointPart
+			? EAssemblySelectionKind::JointPart : EAssemblySelectionKind::Bone;
 		const bool bSuccess = Presenter->CommitBoneDrag(OutInstanceId, OutReason);
-		CancelTool();
+		// A model notification may start a replacement tool. Never cancel or select over it.
+		const bool bStillOwnsTool = ToolId == CommittedToolId;
+		if (bStillOwnsTool) { CancelTool(); }
 		if (!bSuccess) { return Fail(OutReason, OutReason); }
-		SelectInstance(OutInstanceId, EAssemblySelectionKind::Bone, OutReason);
+		if (bStillOwnsTool && Tool == EAssemblyWorkbenchTool::None && !ToolId.IsValid())
+		{
+			SelectInstance(OutInstanceId, InstalledKind, OutReason);
+		}
 		return true;
 	}
 	if (Tool == EAssemblyWorkbenchTool::MuscleFirst) { return CaptureFirstEndpoint(OutReason); }
@@ -306,7 +334,7 @@ bool UAssemblyWorkbenchComponent::CommitTool(FGuid& OutInstanceId, FText& OutRea
 void UAssemblyWorkbenchComponent::CancelTool()
 {
 	const bool bHadTool = Tool != EAssemblyWorkbenchTool::None || IsValid(MusclePreviewActor);
-	if (Presenter.IsValid() && Tool == EAssemblyWorkbenchTool::Bone) { Presenter->CancelBoneDrag(); }
+	if (Presenter.IsValid() && IsRigidPartTool()) { Presenter->CancelBoneDrag(); }
 	DestroyMusclePreview();
 	if (HiddenMuscleActor.IsValid()) { HiddenMuscleActor->SetActorHiddenInGame(bHiddenMuscleWasHidden); }
 	HiddenMuscleActor.Reset();
@@ -331,7 +359,7 @@ void UAssemblyWorkbenchComponent::CancelTool()
 bool UAssemblyWorkbenchComponent::RotateTool(float DeltaDegrees, FText& OutReason)
 {
 	if (!CanEdit(OutReason)) { return Fail(OutReason, OutReason); }
-	if (Tool != EAssemblyWorkbenchTool::Bone) { return Fail(LOCTEXT("RotateBoneOnly", "请先拖动骨头再旋转。"), OutReason); }
+	if (!IsRigidPartTool()) { return Fail(LOCTEXT("RotateRigidPartOnly", "请先拖动骨头或关节组件再旋转。"), OutReason); }
 	if (!FMath::IsFinite(DeltaDegrees)) { return Fail(LOCTEXT("InvalidRotation", "旋转角度必须是有限值。"), OutReason); }
 	bBoneToolRotated |= !FMath::IsNearlyZero(DeltaDegrees);
 	const bool bValid = Presenter->RotateBoneDrag(DeltaDegrees, OutReason);
@@ -370,7 +398,8 @@ void UAssemblyWorkbenchComponent::ReconcileState()
 	{
 		FAssemblySelection Existing;
 		Existing.InstanceId = ToolExistingId;
-		Existing.Kind = Tool == EAssemblyWorkbenchTool::Bone ? EAssemblySelectionKind::Bone : EAssemblySelectionKind::Muscle;
+		Existing.Kind = Tool == EAssemblyWorkbenchTool::JointPart ? EAssemblySelectionKind::JointPart
+			: (Tool == EAssemblyWorkbenchTool::Bone ? EAssemblySelectionKind::Bone : EAssemblySelectionKind::Muscle);
 		if (!SelectionExists(Existing)) { CancelTool(); }
 	}
 	if (Tool == EAssemblyWorkbenchTool::MuscleSecond && Assembly.IsValid())

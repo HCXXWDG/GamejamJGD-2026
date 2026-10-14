@@ -7,6 +7,7 @@
 
 class UAssemblyComponent;
 class ANormalBone;
+class AAssemblyJointPart;
 class AAssemblyMuscle;
 class APlayerController;
 class UPrimitiveComponent;
@@ -35,6 +36,8 @@ public:
 	TSubclassOf<ANormalBone> BoneActorClass;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|Visual")
 	TSubclassOf<AAssemblyMuscle> MuscleActorClass;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|Visual")
+	TSubclassOf<AAssemblyJointPart> JointPartActorClass;
 	// Missing artwork keeps the previous core placeholder and joint debug feedback available.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Visual")
 	TSoftObjectPtr<UAssemblyAppearanceData> AppearanceData;
@@ -93,6 +96,10 @@ public:
 	ANormalBone* GetBoneActor(FGuid InstanceId) const;
 	UFUNCTION(BlueprintPure, Category = "Assembly|Visual")
 	AAssemblyMuscle* GetMuscleActor(FGuid InstanceId) const;
+	UFUNCTION(BlueprintPure, Category = "Assembly|Visual")
+	AAssemblyJointPart* GetJointPartActor(FGuid InstanceId) const;
+	UFUNCTION(BlueprintPure, Category = "Assembly|Visual")
+	UPaperSprite* GetJointPartArtSprite(FName TypeId) const;
 	UFUNCTION(BlueprintPure, Category = "Assembly|Core")
 	UPrimitiveComponent* GetCoreBody() const;
 	UFUNCTION(BlueprintPure, Category = "Assembly|Physics")
@@ -167,6 +174,10 @@ private:
 	FName DragTypeId;
 	FGuid DragExistingId;
 	FAssemblyPlacementResult DragPreview;
+	// Unsnapped pointer pose and latch are separate from the displayed/committed placement.
+	FVector2D RawDragPosition = FVector2D::ZeroVector;
+	float DragRotationDegrees = 0.0f;
+	FAssemblySurfaceSnapState DragSurfaceSnap;
 	FTransform SpawnOwnerTransform = FTransform::Identity;
 
 	bool CanEdit(FText& OutReason) const;
@@ -179,6 +190,7 @@ private:
 	ANormalBone* SpawnBoneView(FGuid InstanceId, FText& OutReason);
 	AAssemblyMuscle* SpawnMuscleView(FGuid InstanceId, FText& OutReason);
 	void ApplyPreview();
+	void RefreshBoneDragPreview(bool bAlwaysNotify = true);
 	void DestroyViews();
 	void RequestPhysicsSnapshot();
 	UFUNCTION()
