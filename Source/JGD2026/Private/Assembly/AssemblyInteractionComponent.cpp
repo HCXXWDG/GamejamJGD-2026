@@ -430,7 +430,11 @@ void UAssemblyInteractionComponent::RefreshBoneDragPreview(bool bAlwaysNotify)
 		|| Previous.SurfaceSnap.bCore != DragSurfaceSnap.bCore
 		|| Previous.SurfaceSnap.TargetId != DragSurfaceSnap.TargetId
 		|| Previous.SurfaceSnap.SourceLocalAnchor != DragSurfaceSnap.SourceLocalAnchor
-		|| Previous.SurfaceSnap.TargetLocalAnchor != DragSurfaceSnap.TargetLocalAnchor;
+		|| Previous.SurfaceSnap.TargetLocalAnchor != DragSurfaceSnap.TargetLocalAnchor
+		|| Previous.SurfaceSnap.bRadialAligned != DragSurfaceSnap.bRadialAligned
+		|| Previous.SurfaceSnap.RadialPointerOffset != DragSurfaceSnap.RadialPointerOffset
+		|| Previous.SurfaceSnap.RadialInputAngle != DragSurfaceSnap.RadialInputAngle
+		|| Previous.SurfaceSnap.bRadialXOutward != DragSurfaceSnap.bRadialXOutward;
 	if (bAlwaysNotify || bChanged) { OnBoneDragPreviewChanged.Broadcast(); }
 }
 

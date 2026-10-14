@@ -220,7 +220,7 @@ void UAssemblyHUDWidget::BuildPlaceholder()
 		Keys->AddChild(Button);
 	}
 	Contents->AddChild(Keys);
-	Contents->AddChild(MakeText(Text(TEXT("仅肌肉绑定 WASD：先选键，再拖组件。\n骨头之间需有关节；核心也可连接骨头。靠近表面吸附，拉远脱离。"))));
+	Contents->AddChild(MakeText(Text(TEXT("仅肌肉绑定 WASD：先选键，再拖组件。\n关节只接骨头端点，中心对齐骨头延长线；关节之间不能直连。核心可接骨头。"))));
 	Shelf = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("ComponentShelf"));
 	Contents->AddChild(Shelf);
 	SelectionCaption = MakeText(Text(TEXT("点击骨头、肌肉或关节组件；约束连接可在下方列表选择。")));
@@ -399,7 +399,7 @@ void UAssemblyHUDWidget::RefreshPresentation()
 			{
 				const TCHAR* Nature = Definition.JointShape == EAssemblyJointPartShape::Round
 					? TEXT("紫色活动关节：可转动") : TEXT("黄色固定关节：保持固定");
-				Description = FString::Printf(TEXT("%s\n位置 %.1f, %.1f · 角度 %.1f°\n完整表面连接 · %s\n可拖动、旋转和拆下；连接约束在列表中编辑。"),
+				Description = FString::Printf(TEXT("%s\n位置 %.1f, %.1f · 角度 %.1f°\n骨头端点连接 · %s\n可拖动、旋转和拆下；连接约束在列表中编辑。"),
 					*Definition.DisplayName.ToString(), Part.LocalPosition.X, Part.LocalPosition.Y, Part.RotationDegrees,
 					Nature);
 			}
@@ -474,9 +474,9 @@ FText UAssemblyHUDWidget::GetDefaultMessage() const
 		switch (ActiveWorkbench->GetTool())
 		{
 		case EAssemblyWorkbenchTool::Bone:
-			return Text(TEXT("骨头靠近关节或核心表面时吸附，拉远脱离；骨头之间不能直接连接。R 旋转，滚轮微调；松开安装，Esc 或右键取消。"));
+			return Text(TEXT("骨头端点吸附关节或核心，连接件中心对齐骨头延长线，拉远脱离。R 旋转，滚轮微调；松开安装，Esc 或右键取消。"));
 		case EAssemblyWorkbenchTool::JointPart:
-			return Text(TEXT("关节可吸附骨头中段、关节或核心表面，拉远脱离。R 旋转，滚轮微调；松开安装，Esc 或右键取消。"));
+			return Text(TEXT("关节只吸附骨头两端，中心对齐骨头延长线；不连接其他关节或核心。R 旋转，滚轮微调；松开安装，Esc 或右键取消。"));
 		case EAssemblyWorkbenchTool::MuscleFirst:
 			return Text(TEXT("在骨头上选择肌肉第一连接点；从组件栏拖出时，在骨头上松开。Esc 或右键取消。"));
 		case EAssemblyWorkbenchTool::MuscleSecond:

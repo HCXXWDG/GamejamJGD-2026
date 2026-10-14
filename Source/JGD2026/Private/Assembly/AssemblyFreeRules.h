@@ -2,6 +2,8 @@
 
 #include "Assembly/AssemblyTypes.h"
 
+namespace AssemblySurfaceGeometry { struct FContact; }
+
 namespace AssemblyFreeRules
 {
 	bool ValidateConfiguration(const FAssemblyFreeSettings& Settings, const TArray<FAssemblyBoneDefinition>& Bones,
@@ -9,6 +11,12 @@ namespace AssemblyFreeRules
 	bool ValidateJointLimits(float Min, float Max);
 	bool IsJointKindValid(EAssemblyJointKind Kind);
 	bool IsJointKindAllowed(const FAssemblyBoneDefinition* PartA, const FAssemblyBoneDefinition* PartB, EAssemblyJointKind Kind);
+	// Exactly one ordinary bone and one connector (nullptr = core). Points retain parameter order.
+	// The connector center must lie beyond a true bone end on its long axis; both anchors are boundaries.
+	bool GetEndpointConnection(const FAssemblyFreeSettings& Settings,
+		const FAssemblyBoneDefinition* PartA, const FTransform& PoseA,
+		const FAssemblyBoneDefinition* PartB, const FTransform& PoseB,
+		AssemblySurfaceGeometry::FContact& OutContact);
 	FAssemblyPlacementResult MakePlacement(FVector2D Position, float Angle);
 	FAssemblyPlacementResult ResolveSurfacePlacement(const FAssemblyFreeSettings& Settings,
 		const TArray<FAssemblyBoneDefinition>& Definitions, const TArray<FAssemblyBoneInstance>& Bones,

@@ -206,6 +206,17 @@ struct JGD2026_API FAssemblySurfaceSnapState
 	FVector2D SourceLocalAnchor = FVector2D::ZeroVector;
 	UPROPERTY(BlueprintReadOnly, Category = "Assembly|Snap")
 	FVector2D TargetLocalAnchor = FVector2D::ZeroVector;
+	// Drag-only calibration: radial bone alignment must not overwrite the unsnapped pointer or angle.
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly|Snap")
+	bool bRadialAligned = false;
+	// Pointer contact radius minus target circle radius; retained while sliding around this circle.
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly|Snap")
+	double RadialPointerOffset = 0.0;
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly|Snap")
+	float RadialInputAngle = 0.0f;
+	// Preserve the contacted end while the user moves around the circle without manually rotating.
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly|Snap")
+	bool bRadialXOutward = true;
 };
 
 USTRUCT(BlueprintType)

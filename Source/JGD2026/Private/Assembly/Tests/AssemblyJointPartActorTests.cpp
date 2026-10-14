@@ -162,13 +162,15 @@ bool FAssemblyJointPartActorTransactionsTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Explicit cancel restores original view and pose"), T.Interaction->GetJointPartActor(PartId) == Part
 			&& !Part->IsHidden() && Part->GetActorTransform().Equals(OriginalPose, 0.001));
 		TestTrue(TEXT("Begin a legal installed-part move"), T.Interaction->BeginBoneDrag(TEXT("Joint_Cross"), PartId, Reason));
-		TestTrue(TEXT("Continuous moved position remains connected within tolerance"), T.Interaction->UpdateBoneDragAtLocalPosition(FVector2D(192, 8), Reason));
+		TestTrue(TEXT("Disabled snapping allows an exact free installed-part move"), T.Interaction->UpdateBoneDragAtLocalPosition(FVector2D(192, 8), Reason));
+		const FAssemblyPlacementResult MovedPreview=T.Interaction->GetBoneDragPreview();
+		TestTrue(TEXT("Disabled snapping preserves the free pointer position without an endpoint latch"),MovedPreview.bValid && !MovedPreview.SurfaceSnap.bSnapped && MovedPreview.LocalPosition.Equals(FVector2D(192,8),0.001));
 		TestTrue(TEXT("Commit legal move without a new instance"), T.Interaction->CommitBoneDrag(MovedId, Reason));
 		TestTrue(TEXT("Move retains both model and actor identity"), MovedId == PartId && T.Interaction->GetJointPartActor(PartId) == Part);
 		TestEqual(TEXT("Moving does not consume another piece"), T.Assembly->GetRemainingQuantity(TEXT("Joint_Cross")), 1);
 		FAssemblyBoneInstance Model;
 		TestTrue(TEXT("Actual moved actor agrees with authoritative local pose"), T.Assembly->GetBone(PartId, Model)
-			&& Model.LocalPosition.Equals(FVector2D(192, 8), 0.001)
+			&& Model.LocalPosition.Equals(MovedPreview.LocalPosition, 0.001)
 			&& Part->GetActorTransform().Equals(Model.LocalVisualTransform * T.Assembly->GetGridFrameTransform(), 0.001));
 		TestTrue(TEXT("Moved body remains on the original gameplay plane"), FMath::IsNearlyZero(Part->GetJointBody()->GetComponentLocation().Y));
 

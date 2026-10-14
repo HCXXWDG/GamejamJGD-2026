@@ -126,7 +126,7 @@ bool FAssemblySurfaceSnapCoreLatchTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblySurfaceSnapConnectionPolicyTest, "JGD2026.Assembly.SurfaceSnap.RequiresJointAndAcceptsFullBoneSurface", SurfaceSnapFlags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblySurfaceSnapConnectionPolicyTest, "JGD2026.Assembly.SurfaceSnap.RequiresJointAndBoneEndpoints", SurfaceSnapFlags)
 bool FAssemblySurfaceSnapConnectionPolicyTest::RunTest(const FString& Parameters)
 {
 	UAssemblyComponent* Model = MakeSurfaceModel(true);
@@ -138,11 +138,19 @@ bool FAssemblySurfaceSnapConnectionPolicyTest::RunTest(const FString& Parameters
 	TestTrue(TEXT("Surface-touching ordinary bones may be staged without a rigid edge"), Model->TryInstallFreeBone(TEXT("Bone"), FVector2D(264, 0), 0, AdjacentBone, Reason));
 	TestEqual(TEXT("No direct bone-bone constraint is created"), Model->GetJoints().Num(), 0);
 	const FAssemblyPlacementResult Midpoint = Model->ResolveFreeBoneDragPlacement(TEXT("Joint_Round"), FVector2D(200, 50), 0, FGuid(), FAssemblySurfaceSnapState());
-	if (!TestTrue(TEXT("A joint acquires the middle of the bone's top surface"), Midpoint.bValid && Midpoint.SurfaceSnap.bSnapped && Midpoint.SurfaceSnap.TargetId == Bone)) { return false; }
-	TestTrue(TEXT("Surface contact uses bone midpoint rather than either end slot"), FMath::Abs(Midpoint.SurfaceSnap.TargetLocalAnchor.X) < 0.001 && FMath::IsNearlyEqual(Midpoint.SurfaceSnap.TargetLocalAnchor.Y, 6.4, 0.001));
-	TestTrue(TEXT("Circle center stays one radius outside the contacted surface"), Midpoint.LocalPosition.Equals(FVector2D(200, 38.4), 0.001));
-	TestTrue(TEXT("Install the resolved standalone joint"), Model->TryInstallJointPart(TEXT("Joint_Round"), Midpoint.LocalPosition, 0, Joint, Reason));
-	TestTrue(TEXT("Bone-joint surface contact creates a real constraint"), Model->GetJoints().ContainsByPredicate([=](const FAssemblyJointInstance& J) { return IsSurfacePair(J, Bone, Joint); }));
+	TestTrue(TEXT("A legal middle-surface placement remains free instead of acquiring an endpoint"), Midpoint.bValid && !Midpoint.SurfaceSnap.bSnapped && Midpoint.LocalPosition.Equals(FVector2D(200,50),0.001));
+	TestTrue(TEXT("A middle-surface tangent may be staged without an endpoint constraint"), Model->TryInstallJointPart(TEXT("Joint_Round"), FVector2D(200,38.4), 0, Joint, Reason));
+	TestFalse(TEXT("The old bone-middle contact does not create an edge"), Model->GetJoints().ContainsByPredicate([=](const FAssemblyJointInstance& J) { return IsSurfacePair(J,Bone,Joint); }));
+	TestFalse(TEXT("A non-rooted set of touching bodies cannot start Playing"),Model->TryStartPlaying(Reason));
+	TestTrue(TEXT("Remove the staged middle joint"),Model->RemoveJointPart(Joint,Reason));
+	// Move the second bone away so both permitted endpoint candidates are unobstructed.
+	TestTrue(TEXT("Separate the other staged bone"),Model->TryMoveFreeBone(AdjacentBone,FVector2D(500,0),0,Reason));
+	const FAssemblyPlacementResult Endpoint = Model->ResolveFreeBoneDragPlacement(TEXT("Joint_Round"),FVector2D(274,0),0,FGuid(),FAssemblySurfaceSnapState());
+	if (!TestTrue(TEXT("A joint acquires the right bone endpoint"),Endpoint.bValid && Endpoint.SurfaceSnap.bSnapped && Endpoint.SurfaceSnap.TargetId == Bone)) { return false; }
+	TestTrue(TEXT("The target anchor is the actual right endpoint"),Endpoint.SurfaceSnap.TargetLocalAnchor.Equals(FVector2D(32,0),0.001));
+	TestTrue(TEXT("Joint center lies on the bone extension with its rim touching the endpoint"),Endpoint.LocalPosition.Equals(FVector2D(264,0),0.001));
+	TestTrue(TEXT("Install the resolved endpoint joint"),Model->TryInstallJointPart(TEXT("Joint_Round"),Endpoint.LocalPosition,Endpoint.RotationDegrees,Joint,Reason));
+	TestTrue(TEXT("Bone-joint endpoint contact creates a real constraint"),Model->GetJoints().ContainsByPredicate([=](const FAssemblyJointInstance& J) { return IsSurfacePair(J,Bone,Joint); }));
 	TestFalse(TEXT("A nearby joint does not resurrect forbidden bone-bone edges"), Model->GetJoints().ContainsByPredicate([=](const FAssemblyJointInstance& J) { return IsSurfacePair(J, Bone, AdjacentBone); }));
 	return true;
 }
@@ -159,7 +167,10 @@ bool FAssemblySurfaceSnapCircleAngleTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Target anchor lies exactly on the circle"), FMath::IsNearlyEqual(Pose.SurfaceSnap.TargetLocalAnchor.Size(), 32.0, 0.001));
 	const FAssemblyPlacementResult Angled = Model->ResolveFreeBoneDragPlacement(TEXT("Bone"), FVector2D(251, 0), 37.25f, FGuid(), FAssemblySurfaceSnapState());
 	TestTrue(TEXT("A nearby arbitrarily rotated body resolves a valid contact"), Angled.bValid && Angled.SurfaceSnap.bSnapped);
-	TestEqual(TEXT("Surface snapping translates only and preserves the requested angle"), Angled.RotationDegrees, 37.25f);
+	const FVector Axis3D = Angled.LocalVisualTransform.TransformVectorNoScale(FVector::ForwardVector);
+	const FVector2D Axis(Axis3D.X, Axis3D.Z);
+	const FVector2D Radial = (Angled.LocalPosition - FVector2D(200, 0)).GetSafeNormal();
+	TestTrue(TEXT("A circle contact turns the bone long axis through the circle center"), FMath::Abs(FVector2D::CrossProduct(Axis, Radial)) < 0.001);
 	return true;
 }
 
@@ -235,8 +246,8 @@ bool FAssemblySurfaceSnapPenetrationTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Configure rectangular surface case"), Model->ConfigureFreeAssembly(Settings, { ShortSurfaceBone(), Bar }, {}, Reason));
 	FGuid Bone;
 	TestTrue(TEXT("Install target rectangle"), Model->TryInstallFreeBone(TEXT("Bone"), FVector2D(200,0), 0, Bone, Reason));
-	const FAssemblyPlacementResult RectangleContact = Model->ResolveFreeBoneDragPlacement(TEXT("Joint_Bar"), FVector2D(200,21), 0, FGuid(), FAssemblySurfaceSnapState());
-	TestTrue(TEXT("A shallow polygon intrusion resolves to the nearest valid facing surface"), RectangleContact.bValid && RectangleContact.SurfaceSnap.bSnapped && RectangleContact.SurfaceSnap.TargetId == Bone && RectangleContact.LocalPosition.Equals(FVector2D(200,22.4), 0.001));
+	const FAssemblyPlacementResult RectangleContact = Model->ResolveFreeBoneDragPlacement(TEXT("Joint_Bar"), FVector2D(260,0), 0, FGuid(), FAssemblySurfaceSnapState());
+	TestTrue(TEXT("A shallow intrusion at a true endpoint resolves to a collinear exact contact"), RectangleContact.bValid && RectangleContact.SurfaceSnap.bSnapped && RectangleContact.SurfaceSnap.TargetId == Bone && RectangleContact.LocalPosition.Equals(FVector2D(264,0), 0.001));
 	TestTrue(TEXT("The resolved polygon placement passes actual installation validation"), Model->ValidateFreeBonePlacement(TEXT("Joint_Bar"), RectangleContact.LocalPosition, RectangleContact.RotationDegrees, FGuid()).bValid);
 	TestEqual(TEXT("Shallow rectangle previews consume no joint pieces"), Model->GetRemainingQuantity(TEXT("Joint_Bar")), 2);
 	FGuid Failed;
@@ -252,20 +263,22 @@ bool FAssemblySurfaceJointRebuildTest::RunTest(const FString& Parameters)
 	Settings.CoreLocalPosition = FVector2D(-1000,0);
 	const TArray<FAssemblyBoneDefinition> Definitions = { ShortSurfaceBone(), SurfaceRound() };
 	const FGuid BoneId(20,0,0,1), RoundId(10,0,0,1);
-	TArray<FAssemblyBoneInstance> Bodies = { SurfaceBody(BoneId, TEXT("Bone"), FVector2D(200,0)), SurfaceBody(RoundId, TEXT("Joint_Round"), FVector2D(200,38.4)) };
+	TArray<FAssemblyBoneInstance> Bodies = { SurfaceBody(BoneId, TEXT("Bone"), FVector2D(200,0)), SurfaceBody(RoundId, TEXT("Joint_Round"), FVector2D(264,0)) };
 	TArray<FAssemblyJointInstance> Original = AssemblyFreeRules::BuildJoints(Settings, Definitions, Bodies, {});
 	if (!TestEqual(TEXT("Complete facing surfaces still create only one constraint per pair"), Original.Num(), 1)) { return false; }
 	Original[0].Kind = EAssemblyJointKind::BreakableHinge;
 	Original[0].MinAngleDegrees = -12;
 	Original[0].MaxAngleDegrees = 27;
-	Bodies[1] = SurfaceBody(RoundId, TEXT("Joint_Round"), FVector2D(212,38.4));
+	Bodies[1] = SurfaceBody(RoundId, TEXT("Joint_Round"), FVector2D(276,0));
 	const TArray<FAssemblyJointInstance> Sliding = AssemblyFreeRules::BuildJoints(Settings, Definitions, Bodies, Original);
 	if (!TestEqual(TEXT("A sliding surface contact keeps one constraint"), Sliding.Num(), 1)) { return false; }
 	TestTrue(TEXT("Sliding preserves persistent edge ID and customized type"), Sliding[0].InstanceId == Original[0].InstanceId && Sliding[0].Kind == EAssemblyJointKind::BreakableHinge);
 	TestTrue(TEXT("Sliding preserves both angular limits"), Sliding[0].MinAngleDegrees == -12 && Sliding[0].MaxAngleDegrees == 27);
 	const FVector2D OldBoneAnchor = Original[0].BoneA == BoneId ? Original[0].LocalAnchorA : Original[0].LocalAnchorB;
 	const FVector2D NewBoneAnchor = Sliding[0].BoneA == BoneId ? Sliding[0].LocalAnchorA : Sliding[0].LocalAnchorB;
-	TestFalse(TEXT("Constraint anchors actually update along the bone surface"), OldBoneAnchor.Equals(NewBoneAnchor, 0.001));
+	TestTrue(TEXT("The bone connection remains at the endpoint while sliding along its extension"), OldBoneAnchor.Equals(FVector2D(32,0),0.001) && NewBoneAnchor.Equals(OldBoneAnchor,0.001));
+	const FVector2D NewRoundAnchor = Sliding[0].BoneA == RoundId ? Sliding[0].LocalAnchorA : Sliding[0].LocalAnchorB;
+	TestTrue(TEXT("The connector anchor remains on its real boundary despite the tolerated axial gap"),NewRoundAnchor.Equals(FVector2D(-32,0),0.001));
 	Swap(Bodies[0], Bodies[1]);
 	const TArray<FAssemblyJointInstance> Reordered = AssemblyFreeRules::BuildJoints(Settings, Definitions, Bodies, Sliding);
 	TestTrue(TEXT("Persistent IDs and anchors do not depend on array order"), Reordered.Num() == 1 && Reordered[0].InstanceId == Sliding[0].InstanceId && Reordered[0].BoneA == Sliding[0].BoneA && Reordered[0].BoneB == Sliding[0].BoneB && Reordered[0].LocalAnchorA.Equals(Sliding[0].LocalAnchorA, 0.001) && Reordered[0].LocalAnchorB.Equals(Sliding[0].LocalAnchorB, 0.001));
@@ -280,7 +293,8 @@ bool FAssemblySurfaceSnapCandidateSafetyTest::RunTest(const FString& Parameters)
 	FAssemblyFreeSettings Settings;
 	Settings.CoreLocalPosition = FVector2D(-1000,0);
 	const FGuid Low(1,0,0,1), High(20,0,0,1);
-	TArray<FAssemblyBoneInstance> Targets = { SurfaceBody(High, TEXT("Joint_Round"), FVector2D(200,-50)), SurfaceBody(Low, TEXT("Joint_Round"), FVector2D(200,50)) };
+	// Leave enough room for the newly radial bone between both circles while retaining equal raw gaps.
+	TArray<FAssemblyBoneInstance> Targets = { SurfaceBody(High, TEXT("Joint_Round"), FVector2D(270,0)), SurfaceBody(Low, TEXT("Joint_Round"), FVector2D(130,0)) };
 	TArray<FAssemblyBoneDefinition> Definitions = { ShortSurfaceBone(), SurfaceRound() };
 	const FAssemblyPlacementResult First = AssemblyFreeRules::ResolveSurfacePlacement(Settings, Definitions, Targets, TEXT("Bone"), FVector2D(200,0), 0, FGuid(), FAssemblySurfaceSnapState());
 	if (!TestTrue(TEXT("Equidistant surfaces produce a valid snap"), First.bValid && First.SurfaceSnap.bSnapped)) { return false; }
@@ -296,7 +310,9 @@ bool FAssemblySurfaceSnapCandidateSafetyTest::RunTest(const FString& Parameters)
 	FText Reason;
 	TestTrue(TEXT("Raw pointer remains a legal free placement beside the blocker"), AssemblyFreeRules::ValidateGeometry(Settings, Definitions, Targets, TEXT("Bone"), AssemblyFreeRules::MakePlacement(FVector2D(244,0),90), FGuid(), Reason));
 	TestFalse(TEXT("The nearest contact translation would penetrate a third component"), AssemblyFreeRules::ValidateGeometry(Settings, Definitions, Targets, TEXT("Bone"), AssemblyFreeRules::MakePlacement(FVector2D(238.4,0),90), FGuid(), Reason));
-	TestTrue(TEXT("Resolver never selects a contact that penetrates the third component"), Blocked.bValid && AssemblyFreeRules::ValidateGeometry(Settings, Definitions, Targets, TEXT("Bone"), Blocked, FGuid(), Reason));
+	TestFalse(TEXT("A blocked radial contact is rejected instead of falling back to the old horizontal pose"), Blocked.bValid);
+	TestFalse(TEXT("A blocked radial contact is not shown as snapped"), Blocked.SurfaceSnap.bSnapped);
+	TestFalse(TEXT("Blocked radial contact explains the rejected preview"), Blocked.Reason.IsEmpty());
 	TestFalse(TEXT("Blocked nearest contact is not displayed as the successful result"), Blocked.LocalPosition.Equals(FVector2D(238.4,0), 0.001));
 	return true;
 }
@@ -403,14 +419,14 @@ bool FAssemblySurfaceInstalledTargetFrameTest::RunTest(const FString& Parameters
 		TestTrue(TEXT("Changing the frame does not itself move an unattached installed body"), BoneActor->GetActorTransform().Equals(OriginalWorld, 0.001));
 		TestTrue(TEXT("Changing the selected muscle key is a non-geometric notification"), T.Model->SelectMuscleKey(EAssemblyMuscleKey::W, T.Reason));
 		TestTrue(TEXT("Non-geometric model notification does not reapply a stale local pose through the new frame"), BoneActor->GetActorTransform().Equals(OriginalWorld, 0.001));
-		const FVector RawLocal3D = Frame.InverseTransformPosition(FVector(64,0,50));
+		const FVector RawLocal3D = Frame.InverseTransformPosition(FVector(138,0,0));
 		const FVector2D RawLocal(RawLocal3D.X, RawLocal3D.Z);
 		TestTrue(TEXT("Begin a new standalone joint drag"), T.Interaction->BeginBoneDrag(TEXT("Joint_Round"), FGuid(), T.Reason));
 		if (!TestTrue(TEXT("Current frame snapshot snaps to the actual visible bone surface"), T.Interaction->UpdateBoneDragAtLocalPosition(RawLocal, T.Reason))) { AddError(T.Reason.ToString()); return false; }
 		const FAssemblyPlacementResult Preview = T.Interaction->GetBoneDragPreview();
 		TestTrue(TEXT("Snap target is the existing visible bone ID"), Preview.SurfaceSnap.bSnapped && !Preview.SurfaceSnap.bCore && Preview.SurfaceSnap.TargetId == Bone);
 		const FTransform ExpectedWorld = Preview.LocalVisualTransform * T.Model->GetGridFrameTransform();
-		TestTrue(TEXT("Contact preserves the correct world-space bone midpoint"), ExpectedWorld.GetLocation().Equals(FVector(64,0,38.4), 0.001));
+		TestTrue(TEXT("Contact uses the visible bone endpoint and collinear world-space joint center"), ExpectedWorld.GetLocation().Equals(FVector(128,0,0), 0.001));
 		ANormalBone* PreviewActor = nullptr;
 		for (TActorIterator<ANormalBone> It(T.World); It; ++It)
 		{
@@ -431,7 +447,7 @@ bool FAssemblySurfaceInstalledTargetFrameTest::RunTest(const FString& Parameters
 		TestTrue(TEXT("Both current world poses are available"), T.Model->GetBoneWorldTransform(Constraint->BoneA, WorldA) && T.Model->GetBoneWorldTransform(Constraint->BoneB, WorldB));
 		const FVector AnchorA = WorldA.TransformPosition(FVector(Constraint->LocalAnchorA.X,0,Constraint->LocalAnchorA.Y));
 		const FVector AnchorB = WorldB.TransformPosition(FVector(Constraint->LocalAnchorB.X,0,Constraint->LocalAnchorB.Y));
-		TestTrue(TEXT("Constraint anchors coincide at the visible bone surface after rebasing"), AnchorA.Equals(AnchorB, 0.001) && AnchorA.Equals(FVector(64,0,6.4), 0.001));
+		TestTrue(TEXT("Constraint anchors coincide at the visible bone endpoint after rebasing"), AnchorA.Equals(AnchorB, 0.001) && AnchorA.Equals(FVector(96,0,0), 0.001));
 		TestEqual(TEXT("Frame changes and previews do not consume another bone"), T.Model->GetRemainingQuantity(TEXT("Bone")), 11);
 		TestEqual(TEXT("Only the committed joint consumes one item"), T.Model->GetRemainingQuantity(TEXT("Joint_Round")), 1);
 		TestEqual(TEXT("Existing bone and new joint each have exactly one model instance"), T.Model->GetBones().Num(), 2);
@@ -459,12 +475,12 @@ bool FAssemblySurfaceConnectedStartTest::RunTest(const FString& Parameters)
 	if (!TestTrue(TEXT("Configure full surface graph"), Model->ConfigureFreeAssembly(FAssemblyFreeSettings(), { BoneDefinition, SurfaceRound() }, { FAssemblyMuscleDefinition() }, Reason))) { return false; }
 	FGuid RootBone, Round, LeafA, LeafB;
 	if (!TestTrue(TEXT("Install root bone touching the core"), Model->TryInstallFreeBone(TEXT("Bone"), FVector2D(96,0), 0, RootBone, Reason))) { return false; }
-	const FAssemblyPlacementResult RoundPreview = Model->ResolveFreeBoneDragPlacement(TEXT("Joint_Round"), FVector2D(96,50), 0, FGuid(), FAssemblySurfaceSnapState());
-	if (!TestTrue(TEXT("Round snaps onto the root bone's middle"), RoundPreview.bValid && RoundPreview.SurfaceSnap.bSnapped && RoundPreview.SurfaceSnap.TargetId == RootBone)) { return false; }
-	if (!TestTrue(TEXT("Commit midpoint joint piece"), Model->TryInstallJointPart(TEXT("Joint_Round"), RoundPreview.LocalPosition, RoundPreview.RotationDegrees, Round, Reason))) { return false; }
+	const FAssemblyPlacementResult RoundPreview = Model->ResolveFreeBoneDragPlacement(TEXT("Joint_Round"), FVector2D(202,0), 0, FGuid(), FAssemblySurfaceSnapState());
+	if (!TestTrue(TEXT("Round snaps onto the root bone's outer endpoint"), RoundPreview.bValid && RoundPreview.SurfaceSnap.bSnapped && RoundPreview.SurfaceSnap.TargetId == RootBone && RoundPreview.LocalPosition.Equals(FVector2D(192,0),0.001))) { return false; }
+	if (!TestTrue(TEXT("Commit endpoint joint piece"), Model->TryInstallJointPart(TEXT("Joint_Round"), RoundPreview.LocalPosition, RoundPreview.RotationDegrees, Round, Reason))) { return false; }
 	for (int32 Side = 0; Side < 2; ++Side)
 	{
-		const FAssemblyPlacementResult Preview = Model->ResolveFreeBoneDragPlacement(TEXT("Bone"), FVector2D(Side == 0 ? 126 : 66,134.4), -90, FGuid(), FAssemblySurfaceSnapState());
+		const FAssemblyPlacementResult Preview = Model->ResolveFreeBoneDragPlacement(TEXT("Bone"), FVector2D(262,Side == 0 ? 70 : -70), Side == 0 ? -45 : 45, FGuid(), FAssemblySurfaceSnapState());
 		if (!TestTrue(TEXT("A leaf bone snaps to a different non-cardinal point on the circular rim"), Preview.bValid && Preview.SurfaceSnap.bSnapped && Preview.SurfaceSnap.TargetId == Round)) { return false; }
 		TestTrue(TEXT("The contact is not limited to an old circular slot"), FMath::Abs(Preview.SurfaceSnap.TargetLocalAnchor.X) > 1 && FMath::Abs(Preview.SurfaceSnap.TargetLocalAnchor.Y) > 1);
 		FGuid& Leaf = Side == 0 ? LeafA : LeafB;
@@ -535,6 +551,431 @@ bool FAssemblySurfaceNonuniformFrameTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Unsupported frame transform has a clear reason"), Preview.Reason.IsEmpty());
 	TestEqual(TEXT("Unsupported frame preview preserves stock"), T.Model->GetRemainingQuantity(TEXT("Bone")), 12);
 	TestTrue(TEXT("Unsupported frame preview installs no body"), T.Model->GetBones().IsEmpty());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblyRadialCoreQuadrantsTest, "JGD2026.Assembly.SurfaceSnap.Radial.CoreSideTopAndFourQuadrants", SurfaceSnapFlags)
+bool FAssemblyRadialCoreQuadrantsTest::RunTest(const FString& Parameters)
+{
+	UAssemblyComponent* Model = MakeSurfaceModel();
+	const TArray<FVector2D> PointerPositions = { FVector2D(74,0), FVector2D(0,48), FVector2D(-74,0), FVector2D(0,-48),
+		FVector2D(42,42), FVector2D(-42,42), FVector2D(-42,-42), FVector2D(42,-42) };
+	FText Reason;
+	for (const FVector2D Pointer : PointerPositions)
+	{
+		const FAssemblyPlacementResult Pose = Model->ResolveFreeBoneDragPlacement(TEXT("Bone"), Pointer, 0, FGuid(), FAssemblySurfaceSnapState());
+		if (!TestTrue(FString::Printf(TEXT("A horizontal bone acquires the circle near pointer %.1f, %.1f"), Pointer.X, Pointer.Y), Pose.bValid && Pose.SurfaceSnap.bSnapped && Pose.SurfaceSnap.bCore)) { continue; }
+		const FVector Axis3D = Pose.LocalVisualTransform.TransformVectorNoScale(FVector::ForwardVector);
+		const FVector2D Axis(Axis3D.X, Axis3D.Z);
+		const FVector2D Radial = Pose.LocalPosition.GetSafeNormal();
+		TestTrue(TEXT("The bone long axis passes through the core center in every quadrant"), FMath::Abs(FVector2D::CrossProduct(Axis, Radial)) < 0.001);
+		TestTrue(TEXT("Automatic rotation keeps the displayed body outside the core"), FMath::IsNearlyEqual(Pose.LocalPosition.Size(), 64.0, 0.001));
+		TestTrue(TEXT("The target anchor remains exactly on the core circumference"), FMath::IsNearlyEqual(Pose.SurfaceSnap.TargetLocalAnchor.Size(), 32.0, 0.001));
+		const FVector SourceAnchor3D = Pose.LocalVisualTransform.TransformPosition(FVector(Pose.SurfaceSnap.SourceLocalAnchor.X,0,Pose.SurfaceSnap.SourceLocalAnchor.Y));
+		TestTrue(TEXT("Both reported anchors coincide at the shown rim"), FVector2D(SourceAnchor3D.X,SourceAnchor3D.Z).Equals(Pose.SurfaceSnap.TargetLocalAnchor,0.001));
+		TestTrue(TEXT("Exactly the radial preview remains legal for an actual drop"), Model->ValidateFreeBonePlacement(TEXT("Bone"), Pose.LocalPosition, Pose.RotationDegrees, FGuid()).bValid);
+	}
+	TestEqual(TEXT("Radial preview calculations do not consume inventory"), Model->GetRemainingQuantity(TEXT("Bone")), 12);
+	TestTrue(TEXT("Radial preview calculations create no installed instances"), Model->GetBones().IsEmpty());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblyRadialFixedCircleTest, "JGD2026.Assembly.SurfaceSnap.Radial.FixedCircleAndExactCommit", SurfaceSnapFlags)
+bool FAssemblyRadialFixedCircleTest::RunTest(const FString& Parameters)
+{
+	UAssemblyComponent* Model = NewObject<UAssemblyComponent>();
+	FAssemblyFreeSettings Settings;
+	Settings.CoreLocalPosition = FVector2D(-1000,0);
+	const FAssemblyBoneDefinition Fixed = AssemblyRigidPartMetrics::MakeJointPartDefinition(EAssemblyJointPartShape::FixedRound,64.0f/640.0f);
+	FText Reason;
+	if (!TestTrue(TEXT("Configure a yellow fixed circle target"), Model->ConfigureFreeAssembly(Settings,{ShortSurfaceBone(),Fixed},{},Reason))) { return false; }
+	FGuid Target, Bone;
+	if (!TestTrue(TEXT("Stage the fixed circle without quantizing its angle"), Model->TryInstallJointPart(Fixed.TypeId,FVector2D(200,0),23.5f,Target,Reason))) { return false; }
+	const FAssemblyPlacementResult Preview = Model->ResolveFreeBoneDragPlacement(TEXT("Bone"),FVector2D(200,48),0,FGuid(),FAssemblySurfaceSnapState());
+	if (!TestTrue(TEXT("The top of a fixed round joint also acquires radial alignment"),Preview.bValid && Preview.SurfaceSnap.bSnapped && Preview.SurfaceSnap.TargetId == Target)) { return false; }
+	const FVector Axis = Preview.LocalVisualTransform.TransformVectorNoScale(FVector::ForwardVector);
+	TestTrue(TEXT("A horizontal bone becomes vertical above a fixed circular joint"),FMath::Abs(Axis.X) < 0.001 && FMath::Abs(Axis.Z) > 0.999);
+	TestTrue(TEXT("The installed target rotation does not move the circular rim"),Preview.LocalPosition.Equals(FVector2D(200,64),0.001));
+	TestTrue(TEXT("Drop commits the exact rotated preview"),Model->TryInstallFreeBone(TEXT("Bone"),Preview.LocalPosition,Preview.RotationDegrees,Bone,Reason));
+	FAssemblyBoneInstance Installed;
+	TestTrue(TEXT("The committed instance preserves preview position and angle"),Model->GetBone(Bone,Installed) && Installed.LocalVisualTransform.Equals(Preview.LocalVisualTransform,0.001));
+	TestEqual(TEXT("A successful radial drop consumes exactly one bone"),Model->GetRemainingQuantity(TEXT("Bone")),11);
+	const TArray<FAssemblyJointInstance> Edges = Model->GetJoints();
+	const FAssemblyJointInstance* Edge = Edges.FindByPredicate([=](const FAssemblyJointInstance& J) { return IsSurfacePair(J,Target,Bone); });
+	TestNotNull(TEXT("The radial drop produces a real bone-to-joint edge"),Edge);
+	if (Edge) { TestEqual(TEXT("Yellow joint preserves fixed physical semantics"),Edge->Kind,EAssemblyJointKind::Fixed); }
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblyRadialCustomContourTest, "JGD2026.Assembly.SurfaceSnap.Radial.CustomContourTrueTangent", SurfaceSnapFlags)
+bool FAssemblyRadialCustomContourTest::RunTest(const FString& Parameters)
+{
+	UAssemblyComponent* Model = NewObject<UAssemblyComponent>();
+	FAssemblyBoneDefinition Bone = ShortSurfaceBone();
+	Bone.SurfaceOutline = { FVector2D(-24,0),FVector2D(-18,-3),FVector2D(15,-8),FVector2D(24,0),FVector2D(15,10),FVector2D(-18,3) };
+	FText Reason;
+	if (!TestTrue(TEXT("Configure an asymmetric bone contour"),Model->ConfigureFreeAssembly(FAssemblyFreeSettings(),{Bone},{},Reason))) { return false; }
+	const FAssemblyPlacementResult Preview = Model->ResolveFreeBoneDragPlacement(TEXT("Bone"),FVector2D(0,48),0,FGuid(),FAssemblySurfaceSnapState());
+	if (!TestTrue(TEXT("An asymmetric bone can acquire the top of the core"),Preview.bValid && Preview.SurfaceSnap.bSnapped && Preview.SurfaceSnap.bCore)) { return false; }
+	const FVector Axis3D = Preview.LocalVisualTransform.TransformVectorNoScale(FVector::ForwardVector);
+	TestTrue(TEXT("The configured bone local X axis points through the circle center"),FMath::Abs(FVector2D::CrossProduct(FVector2D(Axis3D.X,Axis3D.Z),Preview.LocalPosition.GetSafeNormal())) < 0.001);
+	AssemblySurfaceGeometry::FShape Shape;
+	if (!TestTrue(TEXT("Build the actual custom outline at the preview pose"),AssemblySurfaceGeometry::BuildShape(Bone,Preview.LocalVisualTransform,Shape,Reason))) { return false; }
+	const AssemblySurfaceGeometry::FShape Core = AssemblySurfaceGeometry::MakeCircle(FVector2D::ZeroVector,32);
+	TestFalse(TEXT("Radial placement does not penetrate the circle with a custom contour"),AssemblySurfaceGeometry::Overlaps(Shape,Core));
+	AssemblySurfaceGeometry::FContact Contact;
+	TestTrue(TEXT("The actual contour, rather than just a width estimate, touches the rim"),AssemblySurfaceGeometry::ClosestContact(Shape,Core,Contact) && Contact.DistanceSquared < 0.000004);
+	TestTrue(TEXT("The contacted endpoint comes from the custom outline rather than nominal half-length"),FMath::IsNearlyEqual(FMath::Abs(Preview.SurfaceSnap.SourceLocalAnchor.X),24.0,0.001) && FMath::Abs(Preview.SurfaceSnap.SourceLocalAnchor.Y)<0.001);
+	TestTrue(TEXT("Custom contour radial placement passes the shared drop validator"),Model->ValidateFreeBonePlacement(TEXT("Bone"),Preview.LocalPosition,Preview.RotationDegrees,FGuid()).bValid);
+	TestEqual(TEXT("Custom contour previews preserve inventory"),Model->GetRemainingQuantity(TEXT("Bone")),12);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblyRadialOrbitLatchTest, "JGD2026.Assembly.SurfaceSnap.Radial.LongBoneOrbitKeepsEndAndReleaseThreshold", SurfaceSnapFlags)
+bool FAssemblyRadialOrbitLatchTest::RunTest(const FString& Parameters)
+{
+	UAssemblyComponent* Model = NewObject<UAssemblyComponent>();
+	FAssemblyBoneDefinition Bone = ShortSurfaceBone();
+	Bone.BoneParameters.Length = EBoneLengthTier::Long;
+	FText Reason;
+	if (!TestTrue(TEXT("Configure a long bone"),Model->ConfigureFreeAssembly(FAssemblyFreeSettings(),{Bone},{},Reason))) { return false; }
+	FAssemblyPlacementResult Pose = Model->ResolveFreeBoneDragPlacement(TEXT("Bone"),FVector2D(0,48),0,FGuid(),FAssemblySurfaceSnapState());
+	if (!TestTrue(TEXT("A horizontal long bone touching by its side acquires the top of the core"),Pose.bValid && Pose.SurfaceSnap.bSnapped)) { return false; }
+	TestTrue(TEXT("The rotated long bone clears the circle at its real half-length"),Pose.LocalPosition.Equals(FVector2D(0,96),0.001));
+	const bool bInitialEnd = Pose.SurfaceSnap.bRadialXOutward;
+	FVector PreviousAxis = Pose.LocalVisualTransform.TransformVectorNoScale(FVector::ForwardVector);
+	for (int32 Step = 1; Step <= 72; ++Step)
+	{
+		const double Radians = FMath::DegreesToRadians(90.0 + 5.0 * Step);
+		const FVector2D Radial(FMath::Cos(Radians),FMath::Sin(Radians));
+		const FAssemblyPlacementResult Next = Model->ResolveFreeBoneDragPlacement(TEXT("Bone"),Radial*48,0,FGuid(),Pose.SurfaceSnap);
+		if (!TestTrue(FString::Printf(TEXT("The latched long bone follows orbit step %d despite its unchanged free angle"),Step),Next.bValid && Next.SurfaceSnap.bSnapped && Next.SurfaceSnap.bCore)) { return false; }
+		const FVector Axis = Next.LocalVisualTransform.TransformVectorNoScale(FVector::ForwardVector);
+		TestTrue(TEXT("The same physical end remains attached around the complete circle"),Next.SurfaceSnap.bRadialXOutward == bInitialEnd);
+		TestTrue(TEXT("Orbiting by five degrees cannot flip the bone by 180 degrees"),FVector::DotProduct(PreviousAxis,Axis) > 0.99);
+		TestTrue(TEXT("The long bone center remains radial and exactly outside the circle"),Next.LocalPosition.Equals(Radial*96,0.001));
+		PreviousAxis = Axis;
+		Pose = Next;
+	}
+	const FAssemblyPlacementResult Held = Model->ResolveFreeBoneDragPlacement(TEXT("Bone"),FVector2D(0,70.3),0,FGuid(),Pose.SurfaceSnap);
+	TestTrue(TEXT("A 31.9-unit pull from the original side-contact baseline stays latched"),Held.bValid && Held.SurfaceSnap.bSnapped);
+	const FAssemblyPlacementResult Released = Model->ResolveFreeBoneDragPlacement(TEXT("Bone"),FVector2D(0,71.4),0,FGuid(),Held.SurfaceSnap);
+	TestTrue(TEXT("A 33-unit pull releases instead of comparing the old horizontal width"),Released.bValid && !Released.SurfaceSnap.bSnapped && Released.LocalPosition.Equals(FVector2D(0,71.4),0.001));
+	TestEqual(TEXT("Detaching restores the user's free horizontal angle"),Released.RotationDegrees,0.0f);
+	TestEqual(TEXT("Orbit and detach do not consume stock"),Model->GetRemainingQuantity(TEXT("Bone")),12);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblyRadialScopeTest, "JGD2026.Assembly.SurfaceSnap.Radial.NonCircularAndJointDragsKeepManualAngle", SurfaceSnapFlags)
+bool FAssemblyRadialScopeTest::RunTest(const FString& Parameters)
+{
+	UAssemblyComponent* Model = NewObject<UAssemblyComponent>();
+	FAssemblyFreeSettings Settings;
+	Settings.CoreLocalPosition = FVector2D(-1000,0);
+	const FAssemblyBoneDefinition Bar = AssemblyRigidPartMetrics::MakeJointPartDefinition(EAssemblyJointPartShape::Bar,64.0f/640.0f);
+	FText Reason;
+	if (!TestTrue(TEXT("Configure a noncircular target"),Model->ConfigureFreeAssembly(Settings,{ShortSurfaceBone(),Bar},{},Reason))) { return false; }
+	FGuid Target;
+	const double Angle = FMath::DegreesToRadians(37.25);
+	const FVector2D Axis(FMath::Cos(Angle),-FMath::Sin(Angle));
+	if (!TestTrue(TEXT("Install a yellow bar with a facing end at the same arbitrary angle"),Model->TryInstallJointPart(Bar.TypeId,FVector2D(200,0),37.25f,Target,Reason))) { return false; }
+	TestFalse(TEXT("A center-aligned bone whose flat end cuts across the bar face cannot snap through it"),Model->ResolveFreeBoneDragPlacement(TEXT("Bone"),FVector2D(264,0),0,FGuid(),FAssemblySurfaceSnapState()).bValid);
+	const FAssemblyPlacementResult NonCircle = Model->ResolveFreeBoneDragPlacement(TEXT("Bone"),FVector2D(200,0)+Axis*64,37.25f,FGuid(),FAssemblySurfaceSnapState());
+	TestTrue(TEXT("The arbitrary-angle bone still snaps to a bar surface"),NonCircle.bValid && NonCircle.SurfaceSnap.bSnapped && NonCircle.SurfaceSnap.TargetId == Target);
+	TestEqual(TEXT("Noncircular surfaces preserve the requested bone angle"),NonCircle.RotationDegrees,37.25f);
+	TestTrue(TEXT("The bar center also lies on the arbitrarily rotated bone extension"),FMath::Abs(FVector2D::CrossProduct(NonCircle.LocalPosition-FVector2D(200,0),Axis))<0.001);
+	TestFalse(TEXT("A noncircular surface cannot claim radial alignment"),NonCircle.SurfaceSnap.bRadialAligned);
+	FGuid AngledBone;
+	if (!TestTrue(TEXT("The reverse bone-to-noncircular-connector preview commits exactly"),Model->TryInstallFreeBone(TEXT("Bone"),NonCircle.LocalPosition,NonCircle.RotationDegrees,AngledBone,Reason))) { AddError(Reason.ToString()); return false; }
+	FAssemblyBoneInstance Committed;
+	TestTrue(TEXT("Installed noncircular-target bone retains the displayed arbitrary pose"),Model->GetBone(AngledBone,Committed) && Committed.LocalVisualTransform.Equals(NonCircle.LocalVisualTransform,0.001));
+	TestTrue(TEXT("Reverse dragging creates the same permitted endpoint edge"),Model->GetJoints().ContainsByPredicate([=](const FAssemblyJointInstance& J) { return IsSurfacePair(J,Target,AngledBone); }));
+	Model = MakeSurfaceModel();
+	const FAssemblyPlacementResult Joint = Model->ResolveFreeBoneDragPlacement(TEXT("Joint_Round"),FVector2D(0,74),37.25f,FGuid(),FAssemblySurfaceSnapState());
+	TestTrue(TEXT("A circular joint near the core remains a free unconnected placement"),Joint.bValid && !Joint.SurfaceSnap.bSnapped && Joint.LocalPosition.Equals(FVector2D(0,74),0.001));
+	TestEqual(TEXT("Dragging a joint part does not auto-rotate its artwork"),Joint.RotationDegrees,37.25f);
+	TestFalse(TEXT("Only ordinary bone drags activate radial alignment"),Joint.SurfaceSnap.bRadialAligned);
+	FAssemblyFreeSettings Disabled;
+	Disabled.bEnableSurfaceSnapping = false;
+	TestTrue(TEXT("Disable surface snapping"),Model->ConfigureFreeAssembly(Disabled,{ShortSurfaceBone()},{},Reason));
+	const FAssemblyPlacementResult Free = Model->ResolveFreeBoneDragPlacement(TEXT("Bone"),FVector2D(0,48),0,FGuid(),Joint.SurfaceSnap);
+	TestTrue(TEXT("Disabling snapping also disables automatic alignment"),Free.bValid && !Free.SurfaceSnap.bSnapped && Free.LocalPosition.Equals(FVector2D(0,48),0.001));
+	TestEqual(TEXT("The disabled tool keeps the original horizontal angle"),Free.RotationDegrees,0.0f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblyRadialDragRotationTest, "JGD2026.AssemblyInteraction.SurfaceSnap.Radial.ManualRotationTickDetachAndCancel", SurfaceSnapFlags)
+bool FAssemblyRadialDragRotationTest::RunTest(const FString& Parameters)
+{
+	FSurfaceDragWorld T;
+	if (!TestTrue(TEXT("Initialize radial interaction world"),T.bReady)) { return false; }
+	FGuid Installed;
+	if (!TestTrue(TEXT("Install one bone on the right side of the core"),T.Interaction->BeginBoneDrag(TEXT("Bone"),FGuid(),T.Reason)
+		&& T.Interaction->UpdateBoneDragAtLocalPosition(FVector2D(74,0),T.Reason)
+		&& T.Interaction->CommitBoneDrag(Installed,T.Reason))) { AddError(T.Reason.ToString()); return false; }
+	ANormalBone* Actor = T.Interaction->GetBoneActor(Installed);
+	if (!TestNotNull(TEXT("Installed body has a real actor"),Actor)) { return false; }
+	const FTransform Original = Actor->GetActorTransform();
+	TestTrue(TEXT("Drag an existing installed bone"),T.Interaction->BeginBoneDrag(TEXT("Bone"),Installed,T.Reason));
+	TestTrue(TEXT("Acquire the right-hand circle rim"),T.Interaction->UpdateBoneDragAtLocalPosition(FVector2D(74,0),T.Reason));
+	const bool bFirstEnd = T.Interaction->GetBoneDragPreview().SurfaceSnap.bRadialXOutward;
+	TestTrue(TEXT("Manual R-equivalent rotation remains available while latched"),T.Interaction->RotateBoneDrag(180,T.Reason));
+	const FAssemblyPlacementResult Rotated = T.Interaction->GetBoneDragPreview();
+	TestTrue(TEXT("A manual half-turn intentionally selects the opposite attachment end"),Rotated.bValid && Rotated.SurfaceSnap.bSnapped && Rotated.SurfaceSnap.bRadialXOutward != bFirstEnd);
+	for (int32 I=0;I<3;++I) { static_cast<UActorComponent*>(T.Interaction)->TickComponent(0.016f,LEVELTICK_All,nullptr); }
+	TestTrue(TEXT("Ticks never feed the automatic display angle back as another user rotation"),T.Interaction->GetBoneDragPreview().LocalVisualTransform.Equals(Rotated.LocalVisualTransform,0.001));
+	TestTrue(TEXT("Pull beyond the 32-unit release distance"),T.Interaction->UpdateBoneDragAtLocalPosition(FVector2D(97,0),T.Reason));
+	const FAssemblyPlacementResult Detached = T.Interaction->GetBoneDragPreview();
+	TestTrue(TEXT("Released preview follows the mouse and retains the manual half-turn"),Detached.bValid && !Detached.SurfaceSnap.bSnapped && Detached.LocalPosition.Equals(FVector2D(97,0),0.001) && FMath::IsNearlyEqual(FMath::Abs(Detached.RotationDegrees),180.0f,0.001f));
+	T.Interaction->CancelBoneDrag();
+	TestTrue(TEXT("Cancel restores the original installed actor and angle"),T.Interaction->GetBoneActor(Installed) == Actor && !Actor->IsHidden() && Actor->GetActorTransform().Equals(Original,0.001));
+	TestEqual(TEXT("Rotating, detaching and canceling never duplicates or consumes an installed bone"),T.Model->GetRemainingQuantity(TEXT("Bone")),11);
+	TestEqual(TEXT("Exactly one installed instance remains"),T.Model->GetBones().Num(),1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblyRadialRegisteredCircleFrameTest, "JGD2026.AssemblyInteraction.SurfaceSnap.Radial.RegisteredCirclePoseAndRotatedFrameCommit", SurfaceSnapFlags)
+bool FAssemblyRadialRegisteredCircleFrameTest::RunTest(const FString& Parameters)
+{
+	FSurfaceDragWorld T;
+	if (!TestTrue(TEXT("Initialize registered circle fixture"),T.bReady)) { return false; }
+	FGuid Round;
+	if (!TestTrue(TEXT("Install the independent round target"),T.Model->TryInstallJointPart(TEXT("Joint_Round"),FVector2D(200,0),0,Round,T.Reason))) { return false; }
+	ANormalBone* RoundActor = T.Interaction->GetBoneActor(Round);
+	USceneComponent* Source = T.Model->GetBonePoseSource(Round);
+	if (!TestNotNull(TEXT("Round target exposes a real actor"),RoundActor) || !TestNotNull(TEXT("Round target exposes a registered pose source"),Source)) { return false; }
+	const FVector Center(300,0,120);
+	const FTransform TargetWorld(FQuat(FVector::YAxisVector,0.71),Center);
+	Source->SetWorldTransform(TargetWorld);
+	const FTransform Frame(FQuat(FVector::YAxisVector,0.42),FVector(1000,0,300));
+	T.Owner->SetActorTransform(Frame);
+	const FVector Raw3D = Frame.InverseTransformPosition(Center+FVector(0,0,48));
+	TestTrue(TEXT("Begin ordinary bone drag after moving both frame and actual target pose"),T.Interaction->BeginBoneDrag(TEXT("Bone"),FGuid(),T.Reason));
+	if (!TestTrue(TEXT("Acquire the actual circle above its visible physical position"),T.Interaction->UpdateBoneDragAtLocalPosition(FVector2D(Raw3D.X,Raw3D.Z),T.Reason))) { AddError(T.Reason.ToString()); return false; }
+	const FAssemblyPlacementResult Preview = T.Interaction->GetBoneDragPreview();
+	if (!TestTrue(TEXT("The real round target, rather than its stale model position, is selected"),Preview.SurfaceSnap.bSnapped && Preview.SurfaceSnap.TargetId == Round)) { return false; }
+	const FTransform PreviewWorld = Preview.LocalVisualTransform*T.Model->GetGridFrameTransform();
+	TestTrue(TEXT("Radial placement keeps the visible center exactly one radius plus half-length above the actual target"),PreviewWorld.GetLocation().Equals(Center+FVector(0,0,64),0.001));
+	const FVector Axis = PreviewWorld.TransformVectorNoScale(FVector::ForwardVector);
+	TestTrue(TEXT("The displayed long axis points through the real world-space circle center"),FMath::Abs(Axis.X)<0.001 && FMath::Abs(Axis.Z)>0.999);
+	const FVector AnchorA = PreviewWorld.TransformPosition(FVector(Preview.SurfaceSnap.SourceLocalAnchor.X,0,Preview.SurfaceSnap.SourceLocalAnchor.Y));
+	const FVector AnchorB = TargetWorld.TransformPosition(FVector(Preview.SurfaceSnap.TargetLocalAnchor.X,0,Preview.SurfaceSnap.TargetLocalAnchor.Y));
+	TestTrue(TEXT("Both preview anchors meet on the actual rotated target's world circumference"),AnchorA.Equals(AnchorB,0.001) && AnchorA.Equals(Center+FVector(0,0,32),0.001));
+	FGuid Bone;
+	if (!TestTrue(TEXT("Commit the exact radial actor preview through the rotated frame"),T.Interaction->CommitBoneDrag(Bone,T.Reason))) { AddError(T.Reason.ToString()); return false; }
+	ANormalBone* BoneActor = T.Interaction->GetBoneActor(Bone);
+	TestTrue(TEXT("Committed bone location and angle exactly match the shown preview"),IsValid(BoneActor) && BoneActor->GetActorTransform().Equals(PreviewWorld,0.001));
+	TestTrue(TEXT("The existing target does not teleport when the new radial bone is installed"),Source->GetComponentTransform().Equals(TargetWorld,0.001));
+	const TArray<FAssemblyJointInstance> Edges = T.Model->GetJoints();
+	const FAssemblyJointInstance* Edge = Edges.FindByPredicate([=](const FAssemblyJointInstance& J) { return IsSurfacePair(J,Round,Bone); });
+	if (!TestNotNull(TEXT("Commit creates exactly the intended circle-to-bone constraint"),Edge)) { return false; }
+	FTransform WorldA,WorldB;
+	TestTrue(TEXT("Both committed actual body world poses remain available"),T.Model->GetBoneWorldTransform(Edge->BoneA,WorldA) && T.Model->GetBoneWorldTransform(Edge->BoneB,WorldB));
+	const FVector ActualA = WorldA.TransformPosition(FVector(Edge->LocalAnchorA.X,0,Edge->LocalAnchorA.Y));
+	const FVector ActualB = WorldB.TransformPosition(FVector(Edge->LocalAnchorB.X,0,Edge->LocalAnchorB.Y));
+	TestTrue(TEXT("Committed constraint anchors match the actual visible radial contact"),ActualA.Equals(ActualB,0.001) && ActualA.Equals(Center+FVector(0,0,32),0.001));
+	TestEqual(TEXT("Exactly one bone was consumed"),T.Model->GetRemainingQuantity(TEXT("Bone")),11);
+	TestEqual(TEXT("The target joint is neither duplicated nor consumed twice"),T.Model->GetRemainingQuantity(TEXT("Joint_Round")),1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblyRadialBlockedDropTest, "JGD2026.AssemblyInteraction.SurfaceSnap.Radial.BlockedAlignmentRejectsShelfAndInstalledDrop", SurfaceSnapFlags)
+bool FAssemblyRadialBlockedDropTest::RunTest(const FString& Parameters)
+{
+	FSurfaceDragWorld T;
+	if (!TestTrue(TEXT("Initialize blocked radial interaction world"),T.bReady)) { return false; }
+	FGuid Blocker,Original;
+	if (!TestTrue(TEXT("Install a blocker above the core"),T.Model->TryInstallFreeBone(TEXT("Bone"),FVector2D(0,90),0,Blocker,T.Reason))) { return false; }
+	const FVector2D Pointer(0,38.4);
+	TestTrue(TEXT("The old horizontal raw pose touches the circle without overlapping the blocker"),T.Model->ValidateFreeBonePlacement(TEXT("Bone"),Pointer,0,FGuid()).bValid);
+	TestFalse(TEXT("The requested vertical radial pose really intersects the existing blocker"),T.Model->ValidateFreeBonePlacement(TEXT("Bone"),FVector2D(0,64),90,FGuid()).bValid);
+	TestTrue(TEXT("Begin a new shelf bone"),T.Interaction->BeginBoneDrag(TEXT("Bone"),FGuid(),T.Reason));
+	TestFalse(TEXT("A blocked radial placement cannot silently fall back to a horizontal snap"),T.Interaction->UpdateBoneDragAtLocalPosition(Pointer,T.Reason));
+	TestFalse(TEXT("Blocked alignment has a clear player-facing reason"),T.Reason.IsEmpty());
+	FGuid Failed;
+	TestFalse(TEXT("Invalid shelf release is refused"),T.Interaction->CommitBoneDrag(Failed,T.Reason));
+	TestTrue(TEXT("Shelf failure keeps stock and the only original instance"),!Failed.IsValid() && T.Model->GetRemainingQuantity(TEXT("Bone")) == 11 && T.Model->GetBones().Num() == 1);
+	if (!TestTrue(TEXT("Install another freely placed bone for move rollback"),T.Model->TryInstallFreeBone(TEXT("Bone"),FVector2D(400,0),0,Original,T.Reason))) { return false; }
+	ANormalBone* OriginalActor = T.Interaction->GetBoneActor(Original);
+	if (!TestNotNull(TEXT("The moved existing bone has a real view"),OriginalActor)) { return false; }
+	const FTransform OriginalPose = OriginalActor->GetActorTransform();
+	TestTrue(TEXT("Begin moving the existing instance"),T.Interaction->BeginBoneDrag(TEXT("Bone"),Original,T.Reason));
+	TestFalse(TEXT("The same blocker also rejects an installed drag"),T.Interaction->UpdateBoneDragAtLocalPosition(Pointer,T.Reason));
+	TestFalse(TEXT("Rejected installed release cannot overwrite the original instance"),T.Interaction->CommitBoneDrag(Failed,T.Reason));
+	TestTrue(TEXT("The original bone returns to its exact visible pose"),T.Interaction->GetBoneActor(Original) == OriginalActor && !OriginalActor->IsHidden() && OriginalActor->GetActorTransform().Equals(OriginalPose,0.001));
+	TestTrue(TEXT("No inventory or instance is lost or duplicated by either rejected operation"),!Failed.IsValid() && T.Model->GetRemainingQuantity(TEXT("Bone")) == 10 && T.Model->GetBones().Num() == 2);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblyEndpointConnectorPolicyTest, "JGD2026.Assembly.SurfaceSnap.Endpoints.ConnectorPairsCannotConnectOrStart", SurfaceSnapFlags)
+bool FAssemblyEndpointConnectorPolicyTest::RunTest(const FString& Parameters)
+{
+	UAssemblyComponent* Model = MakeSurfaceModel();
+	FText Reason;
+	FGuid First, Second;
+	const FAssemblyPlacementResult NearCore = Model->ResolveFreeBoneDragPlacement(TEXT("Joint_Round"),FVector2D(74,0),12.5f,FGuid(),FAssemblySurfaceSnapState());
+	TestTrue(TEXT("A joint near the core is free and retains its manual angle"),NearCore.bValid && !NearCore.SurfaceSnap.bSnapped && NearCore.LocalPosition.Equals(FVector2D(74,0),0.001) && NearCore.RotationDegrees==12.5f);
+	if (!TestTrue(TEXT("Stage a joint tangent to the core"),Model->TryInstallJointPart(TEXT("Joint_Round"),FVector2D(64,0),0,First,Reason))) { return false; }
+	TestTrue(TEXT("Core-joint contact creates no constraint"),Model->GetJoints().IsEmpty());
+	const FAssemblyPlacementResult NearJoint = Model->ResolveFreeBoneDragPlacement(TEXT("Joint_Round"),FVector2D(138,0),27,FGuid(),FAssemblySurfaceSnapState());
+	TestTrue(TEXT("Another joint does not snap to an already installed joint"),NearJoint.bValid && !NearJoint.SurfaceSnap.bSnapped && NearJoint.RotationDegrees==27);
+	TestTrue(TEXT("Stage the second tangent joint"),Model->TryInstallJointPart(TEXT("Joint_Round"),FVector2D(128,0),0,Second,Reason));
+	TestTrue(TEXT("Neither joint-joint nor joint-core edges are generated"),Model->GetJoints().IsEmpty());
+	TestFalse(TEXT("A chain containing only connectors is not connected to the core"),Model->IsStructureConnected());
+	TestFalse(TEXT("Geometric touching cannot let a connector-only chain start Playing"),Model->TryStartPlaying(Reason));
+	TestTrue(TEXT("Rejected start retains Assembly, both instances and exact stock"),Model->GetPhase()==EAssemblyPhase::Assembly && Model->GetBones().Num()==2 && Model->GetRemainingQuantity(TEXT("Joint_Round"))==0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblyJointEndpointLatchTest, "JGD2026.Assembly.SurfaceSnap.Endpoints.JointBothEndsAngleAndRelease", SurfaceSnapFlags)
+bool FAssemblyJointEndpointLatchTest::RunTest(const FString& Parameters)
+{
+	UAssemblyComponent* Model = MakeSurfaceModel(true);
+	FText Reason;
+	FGuid Bone;
+	const FVector2D Center(200,100);
+	constexpr float BoneAngle = 37.25f;
+	const double Radians = FMath::DegreesToRadians(static_cast<double>(BoneAngle));
+	const FVector2D Axis(FMath::Cos(Radians),-FMath::Sin(Radians));
+	if (!TestTrue(TEXT("Install an arbitrarily rotated target bone"),Model->TryInstallFreeBone(TEXT("Bone"),Center,BoneAngle,Bone,Reason))) { return false; }
+	for (int32 Sign : {-1,1})
+	{
+		const FVector2D Outward = Axis*Sign;
+		const FAssemblyPlacementResult First = Model->ResolveFreeBoneDragPlacement(TEXT("Joint_Round"),Center+Outward*74,19.5f,FGuid(),FAssemblySurfaceSnapState());
+		if (!TestTrue(TEXT("Either actual bone endpoint acquires a connector"),First.bValid && First.SurfaceSnap.bSnapped && First.SurfaceSnap.TargetId==Bone)) { return false; }
+		TestTrue(TEXT("Resolved joint center is on the angled bone extension"),First.LocalPosition.Equals(Center+Outward*64,0.001));
+		TestTrue(TEXT("The selected anchor identifies the correct signed endpoint"),First.SurfaceSnap.TargetLocalAnchor.Equals(FVector2D(Sign*32,0),0.001));
+		TestEqual(TEXT("Joint artwork keeps its manual angle"),First.RotationDegrees,19.5f);
+		const FAssemblyPlacementResult Held = Model->ResolveFreeBoneDragPlacement(TEXT("Joint_Round"),Center+Outward*85,19.5f,FGuid(),First.SurfaceSnap);
+		TestTrue(TEXT("A 21-unit endpoint pull keeps the same latch and signed endpoint"),Held.bValid && Held.SurfaceSnap.bSnapped && Held.LocalPosition.Equals(First.LocalPosition,0.001) && Held.SurfaceSnap.TargetLocalAnchor.Equals(First.SurfaceSnap.TargetLocalAnchor,0.001));
+		const FAssemblyPlacementResult Released = Model->ResolveFreeBoneDragPlacement(TEXT("Joint_Round"),Center+Outward*97,19.5f,FGuid(),Held.SurfaceSnap);
+		TestTrue(TEXT("A 33-unit endpoint pull detaches and follows the pointer"),Released.bValid && !Released.SurfaceSnap.bSnapped && Released.LocalPosition.Equals(Center+Outward*97,0.001));
+	}
+	TestEqual(TEXT("All endpoint previews preserve joint inventory"),Model->GetRemainingQuantity(TEXT("Joint_Round")),2);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblyJointEndpointRegisteredPoseTest, "JGD2026.AssemblyInteraction.SurfaceSnap.Endpoints.RegisteredPosePreviewCommitAndCancel", SurfaceSnapFlags)
+bool FAssemblyJointEndpointRegisteredPoseTest::RunTest(const FString& Parameters)
+{
+	FSurfaceDragWorld T;
+	if (!TestTrue(TEXT("Initialize endpoint presenter"),T.bReady)) { return false; }
+	FGuid Bone;
+	if (!TestTrue(TEXT("Stage the actual target bone"),T.Model->TryInstallFreeBone(TEXT("Bone"),FVector2D(200,0),0,Bone,T.Reason))) { return false; }
+	ANormalBone* BoneActor = T.Interaction->GetBoneActor(Bone);
+	USceneComponent* Source = T.Model->GetBonePoseSource(Bone);
+	if (!TestNotNull(TEXT("The target exposes its actual world pose source"),Source) || !TestNotNull(TEXT("The target has an actual actor"),BoneActor)) { return false; }
+	const FTransform BoneWorld(FQuat(FVector::YAxisVector,FMath::DegreesToRadians(37.25)),FVector(300,0,120));
+	const FVector Axis = BoneWorld.TransformVectorNoScale(FVector::ForwardVector);
+	Source->SetWorldTransform(BoneWorld);
+	const FTransform Frame(FQuat(FVector::YAxisVector,0.42),FVector(1000,0,300));
+	T.Owner->SetActorTransform(Frame);
+	const FVector Raw = Frame.InverseTransformPosition(BoneWorld.GetLocation()+Axis*74);
+	TestTrue(TEXT("Begin a new connector shelf drag"),T.Interaction->BeginBoneDrag(TEXT("Joint_Round"),FGuid(),T.Reason));
+	if (!TestTrue(TEXT("Project pointer to the actual angled target endpoint"),T.Interaction->UpdateBoneDragAtLocalPosition(FVector2D(Raw.X,Raw.Z),T.Reason))) { AddError(T.Reason.ToString()); return false; }
+	TestTrue(TEXT("A connector can be rotated manually while attached to an endpoint"),T.Interaction->RotateBoneDrag(19.5f,T.Reason));
+	const FAssemblyPlacementResult Preview = T.Interaction->GetBoneDragPreview();
+	const FTransform PreviewWorld = Preview.LocalVisualTransform*Frame;
+	TestTrue(TEXT("The preview follows the current registered bone rather than stale model coordinates"),Preview.SurfaceSnap.bSnapped && Preview.SurfaceSnap.TargetId==Bone && PreviewWorld.GetLocation().Equals(BoneWorld.GetLocation()+Axis*64,0.001));
+	TestTrue(TEXT("Endpoint preview uses the true body-local endpoint"),Preview.SurfaceSnap.TargetLocalAnchor.Equals(FVector2D(32,0),0.001));
+	FGuid Joint;
+	if (!TestTrue(TEXT("Commit the exact endpoint preview"),T.Interaction->CommitBoneDrag(Joint,T.Reason))) { AddError(T.Reason.ToString()); return false; }
+	ANormalBone* JointActor = T.Interaction->GetBoneActor(Joint);
+	if (!TestNotNull(TEXT("Committed connector has a real actor"),JointActor)) { return false; }
+	TestTrue(TEXT("Actual installed transform equals the preview through a rotated frame"),JointActor->GetActorTransform().Equals(PreviewWorld,0.001));
+	TestTrue(TEXT("Installing the connector leaves the existing bone at its actual world pose"),Source->GetComponentTransform().Equals(BoneWorld,0.001));
+	const TArray<FAssemblyJointInstance> Edges = T.Model->GetJoints();
+	const FAssemblyJointInstance* Edge = Edges.FindByPredicate([=](const FAssemblyJointInstance& J) { return IsSurfacePair(J,Bone,Joint); });
+	if (!TestNotNull(TEXT("Exactly the intended bone-connector constraint exists"),Edge)) { return false; }
+	FTransform WorldA,WorldB;
+	TestTrue(TEXT("Actual body world poses are available"),T.Model->GetBoneWorldTransform(Edge->BoneA,WorldA) && T.Model->GetBoneWorldTransform(Edge->BoneB,WorldB));
+	const FVector AnchorA = WorldA.TransformPosition(FVector(Edge->LocalAnchorA.X,0,Edge->LocalAnchorA.Y));
+	const FVector AnchorB = WorldB.TransformPosition(FVector(Edge->LocalAnchorB.X,0,Edge->LocalAnchorB.Y));
+	TestTrue(TEXT("Both installed anchors coincide at the real bone endpoint"),AnchorA.Equals(AnchorB,0.001) && AnchorA.Equals(BoneWorld.GetLocation()+Axis*32,0.001));
+	const FTransform Original = JointActor->GetActorTransform();
+	TestTrue(TEXT("Begin moving the installed connector"),T.Interaction->BeginBoneDrag(TEXT("Joint_Round"),Joint,T.Reason));
+	TestTrue(TEXT("Move the connector far from all endpoints"),T.Interaction->UpdateBoneDragAtLocalPosition(FVector2D(800,400),T.Reason));
+	T.Interaction->CancelBoneDrag();
+	TestTrue(TEXT("Cancel restores the same actor and exact endpoint pose"),T.Interaction->GetBoneActor(Joint)==JointActor && !JointActor->IsHidden() && JointActor->GetActorTransform().Equals(Original,0.001));
+	TestTrue(TEXT("Preview, commit and cancellation retain one joint and correct stock"),T.Model->GetJointParts().Num()==1 && T.Model->GetRemainingQuantity(TEXT("Joint_Round"))==1 && T.Model->GetRemainingQuantity(TEXT("Bone"))==11);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblyJointEndpointBlockedTest, "JGD2026.AssemblyInteraction.SurfaceSnap.Endpoints.BlockedJointDropIsAtomic", SurfaceSnapFlags)
+bool FAssemblyJointEndpointBlockedTest::RunTest(const FString& Parameters)
+{
+	FSurfaceDragWorld T;
+	FAssemblyFreeSettings Settings;
+	Settings.CoreLocalPosition=FVector2D(-1000,0);
+	FAssemblyBoneDefinition Blocker = ShortSurfaceBone();
+	Blocker.TypeId=TEXT("SmallBlocker");
+	Blocker.SurfaceOutline={FVector2D(-2,-2),FVector2D(2,-2),FVector2D(2,2),FVector2D(-2,2)};
+	if (!TestTrue(TEXT("Configure an actual endpoint obstruction"),T.Model->ConfigureFreeAssembly(Settings,{ShortSurfaceBone(),SurfaceRound(),Blocker},{},T.Reason))) { return false; }
+	FGuid Bone,Obstacle,Original,Failed;
+	if (!TestTrue(TEXT("Install target and blocker without overlap"),T.Model->TryInstallFreeBone(TEXT("Bone"),FVector2D(200,0),0,Bone,T.Reason) && T.Model->TryInstallFreeBone(TEXT("SmallBlocker"),FVector2D(264,0),0,Obstacle,T.Reason))) { return false; }
+	TestTrue(TEXT("Begin a blocked connector shelf drop"),T.Interaction->BeginBoneDrag(TEXT("Joint_Round"),FGuid(),T.Reason));
+	TestFalse(TEXT("The endpoint candidate cannot overlap the blocker"),T.Interaction->UpdateBoneDragAtLocalPosition(FVector2D(274,0),T.Reason));
+	TestFalse(TEXT("Blocked connector release fails"),T.Interaction->CommitBoneDrag(Failed,T.Reason));
+	TestTrue(TEXT("Failed shelf drop neither creates an ID nor consumes inventory"),!Failed.IsValid() && T.Model->GetJointParts().IsEmpty() && T.Model->GetRemainingQuantity(TEXT("Joint_Round"))==2);
+	if (!TestTrue(TEXT("Install an original connector far away"),T.Model->TryInstallJointPart(TEXT("Joint_Round"),FVector2D(700,0),0,Original,T.Reason))) { return false; }
+	ANormalBone* OriginalActor = T.Interaction->GetBoneActor(Original);
+	if (!TestNotNull(TEXT("The installed connector view exists"),OriginalActor)) { return false; }
+	const FTransform OriginalPose=OriginalActor->GetActorTransform();
+	TestTrue(TEXT("Begin blocked move of the installed connector"),T.Interaction->BeginBoneDrag(TEXT("Joint_Round"),Original,T.Reason));
+	TestFalse(TEXT("Blocked move preview remains invalid"),T.Interaction->UpdateBoneDragAtLocalPosition(FVector2D(274,0),T.Reason));
+	TestFalse(TEXT("Blocked installed release fails"),T.Interaction->CommitBoneDrag(Failed,T.Reason));
+	TestTrue(TEXT("Failed installed drop restores exact actor, pose, instance and stock"),!Failed.IsValid() && T.Interaction->GetBoneActor(Original)==OriginalActor && !OriginalActor->IsHidden() && OriginalActor->GetActorTransform().Equals(OriginalPose,0.001) && T.Model->GetJointParts().Num()==1 && T.Model->GetRemainingQuantity(TEXT("Joint_Round"))==1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblyEndpointPlayingHingeTest, "JGD2026.Assembly.SurfaceSnap.Endpoints.PlayingHingeDoesNotRequireStaticCollinearity", SurfaceSnapFlags)
+bool FAssemblyEndpointPlayingHingeTest::RunTest(const FString& Parameters)
+{
+	FSurfaceDragWorld T;
+	if (!TestTrue(TEXT("Initialize runtime hinge fixture"),T.bReady)) { return false; }
+	FGuid Root,Joint,Leaf;
+	if (!TestTrue(TEXT("Install a core-bone-joint-bone endpoint chain"),T.Model->TryInstallFreeBone(TEXT("Bone"),FVector2D(64,0),0,Root,T.Reason)
+		&& T.Model->TryInstallJointPart(TEXT("Joint_Round"),FVector2D(128,0),0,Joint,T.Reason)
+		&& T.Model->TryInstallFreeBone(TEXT("Bone"),FVector2D(192,0),0,Leaf,T.Reason))) { return false; }
+	TestTrue(TEXT("The static endpoint assembly validates before Playing"),T.Model->ValidateAssembly().bValid);
+	if (!TestTrue(TEXT("Enter Playing with the connected endpoint assembly"),T.Model->TryStartPlaying(T.Reason))) { AddError(T.Reason.ToString()); return false; }
+	USceneComponent* Source=T.Model->GetBonePoseSource(Leaf);
+	if (!TestNotNull(TEXT("The leaf exposes its physical pose source"),Source)) { return false; }
+	// Rotate about the existing rim constraint, preserving that world anchor while moving off the center line.
+	Source->SetWorldTransform(AssemblyFreeRules::MakePlacement(FVector2D(160,-32),90).LocalVisualTransform);
+	TestTrue(TEXT("Physical hinge motion may move the connector center off the leaf axis while Playing"),T.Model->ValidateAssembly().bValid);
+	TestTrue(TEXT("Hinge pose updates do not alter stock, identifiers or the three constraints"),T.Model->GetRemainingQuantity(TEXT("Bone"))==10 && T.Model->GetRemainingQuantity(TEXT("Joint_Round"))==1 && T.Model->GetJoints().Num()==3);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblyEndpointPrepareRecheckTest, "JGD2026.Assembly.SurfaceSnap.Endpoints.PreparePoseChangeRevalidatesBeforePlaying", SurfaceSnapFlags)
+bool FAssemblyEndpointPrepareRecheckTest::RunTest(const FString& Parameters)
+{
+	FSurfaceDragWorld T;
+	if (!TestTrue(TEXT("Initialize preparation endpoint fixture"),T.bReady)) { return false; }
+	FGuid Bone,Joint;
+	if (!TestTrue(TEXT("Install the valid editable endpoint structure"),T.Model->TryInstallFreeBone(TEXT("Bone"),FVector2D(64,0),0,Bone,T.Reason)
+		&& T.Model->TryInstallJointPart(TEXT("Joint_Round"),FVector2D(128,0),0,Joint,T.Reason))) { return false; }
+	USceneComponent* Source=T.Model->GetBonePoseSource(Joint);
+	if (!TestNotNull(TEXT("The connector has a registered world pose"),Source)) { return false; }
+	const FTransform Before=Source->GetComponentTransform();
+	int32 Prepared=0,Aborted=0;
+	const FAssemblyLifecycleCheck Prepare=FAssemblyLifecycleCheck::CreateLambda([&](FText& OutReason)
+	{
+		++Prepared;
+		Source->SetWorldLocation(Before.GetLocation()+FVector(0,0,0.5));
+		OutReason=FText::GetEmpty();
+		return true;
+	});
+	const FAssemblyLifecycleCheck Reset=FAssemblyLifecycleCheck::CreateLambda([](FText& OutReason) { OutReason=FText::GetEmpty(); return true; });
+	const FSimpleDelegate Abort=FSimpleDelegate::CreateLambda([&]() { ++Aborted; Source->SetWorldTransform(Before); });
+	if (!TestTrue(TEXT("Bind a provider that moves the actual connector during preparation"),T.Model->RegisterLifecycleCallbacks(T.Owner,Prepare,Reset,Abort,FSimpleDelegate(),T.Reason))) { return false; }
+	TestFalse(TEXT("A previously valid structure cannot enter Playing with a newly off-axis connector center"),T.Model->TryStartPlaying(T.Reason));
+	TestFalse(TEXT("Preparation endpoint rejection gives an explicit reason"),T.Reason.IsEmpty());
+	TestTrue(TEXT("Preparation is aborted exactly once before publishing Playing"),Prepared==1 && Aborted==1 && T.Model->GetPhase()==EAssemblyPhase::Assembly);
+	TestTrue(TEXT("Failed preparation preserves all instance and constraint identities and inventory"),T.Model->GetBones().Num()==2 && T.Model->GetJoints().Num()==2 && T.Model->GetRemainingQuantity(TEXT("Bone"))==11 && T.Model->GetRemainingQuantity(TEXT("Joint_Round"))==1);
+	TestTrue(TEXT("The restored provider pose yields a valid editable structure"),Source->GetComponentTransform().Equals(Before,0.001) && T.Model->ValidateAssembly().bValid);
+	T.Model->UnregisterLifecycleCallbacksIfMatches(T.Owner);
 	return true;
 }
 

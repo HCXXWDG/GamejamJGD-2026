@@ -23,8 +23,12 @@ namespace
 	}
 	bool CanConnect(const FAssemblyBoneDefinition* A, const FAssemblyBoneDefinition* B)
 	{
-		// nullptr denotes the core, which is itself a connector. Two ordinary bones cannot connect directly.
-		return !A || !B || A->PartKind == EAssemblyRigidPartKind::JointPart || B->PartKind == EAssemblyRigidPartKind::JointPart;
+		// The spherical core is a connector too. Only bone-to-connector pairs may form an edge.
+		const bool bBoneA = A && A->PartKind == EAssemblyRigidPartKind::Bone;
+		const bool bBoneB = B && B->PartKind == EAssemblyRigidPartKind::Bone;
+		const bool bConnectorA = !A || A->PartKind == EAssemblyRigidPartKind::JointPart;
+		const bool bConnectorB = !B || B->PartKind == EAssemblyRigidPartKind::JointPart;
+		return (bBoneA && bConnectorB) || (bBoneB && bConnectorA);
 	}
 	bool ValidSettings(const FAssemblyFreeSettings& S)
 	{
@@ -44,6 +48,83 @@ namespace
 		Shape.Center += Delta;
 		for (FVector2D& P : Shape.Vertices) P += Delta;
 		return Shape;
+	}
+	// The outermost actual boundary on a ray, including collinear polygon edges. A custom
+	// outline need not pass through its nominal bounding-box end, so no stats-only anchors are used.
+	bool RayBoundary(const FShape& Shape, FVector2D Direction, FVector2D& OutPoint)
+	{
+		if (!IsFinite(Direction) || !FMath::IsNearlyEqual(Direction.SizeSquared(), 1.0, UE_KINDA_SMALL_NUMBER)) return false;
+		if (Shape.bCircle)
+		{
+			OutPoint = Shape.Center + Direction * Shape.Radius;
+			return IsFinite(OutPoint) && AssemblySurfaceGeometry::IsOnBoundary(Shape, OutPoint);
+		}
+		double Farthest = TNumericLimits<double>::Lowest();
+		bool bFound = false;
+		auto Consider = [&](double Distance)
+		{
+			if (FMath::IsFinite(Distance) && Distance > GeometryTolerance && (!bFound || Distance > Farthest))
+			{
+				Farthest = Distance;
+				bFound = true;
+			}
+		};
+		for (int32 I = 0; I < Shape.Vertices.Num(); ++I)
+		{
+			const FVector2D A = Shape.Vertices[I] - Shape.Center;
+			const FVector2D B = Shape.Vertices[(I + 1) % Shape.Vertices.Num()] - Shape.Center;
+			const FVector2D Edge = B - A;
+			const double Denominator = FVector2D::CrossProduct(Direction, Edge);
+			if (FMath::Abs(Denominator) <= UE_DOUBLE_SMALL_NUMBER)
+			{
+				if (FMath::Abs(FVector2D::CrossProduct(Direction, A)) <= GeometryTolerance)
+				{
+					Consider(FVector2D::DotProduct(Direction, A));
+					Consider(FVector2D::DotProduct(Direction, B));
+				}
+				continue;
+			}
+			const double AlongEdge = FVector2D::CrossProduct(A, Direction) / Denominator;
+			if (AlongEdge >= 0.0 && AlongEdge <= 1.0)
+				Consider(FVector2D::CrossProduct(A, Edge) / Denominator);
+		}
+		if (!bFound) return false;
+		OutPoint = Shape.Center + Direction * Farthest;
+		return IsFinite(OutPoint) && AssemblySurfaceGeometry::IsOnBoundary(Shape, OutPoint);
+	}
+	struct FBoneEnds
+	{
+		FVector2D Points[2]; // negative X, positive X
+		FVector2D Axis;
+	};
+	bool BuildBoneEnds(const FAssemblyBoneDefinition& Definition, const FTransform& Pose, FBoneEnds& OutEnds)
+	{
+		if (Definition.PartKind != EAssemblyRigidPartKind::Bone) return false;
+		FShape LocalShape;
+		FText Reason;
+		if (!AssemblySurfaceGeometry::BuildShape(Definition, FTransform::Identity, LocalShape, Reason)) return false;
+		FVector2D LocalEnds[2];
+		if (!RayBoundary(LocalShape, FVector2D(-1, 0), LocalEnds[0])
+			|| !RayBoundary(LocalShape, FVector2D(1, 0), LocalEnds[1])) return false;
+		const FVector Axis = Pose.TransformVector(FVector::XAxisVector);
+		OutEnds.Axis = FVector2D(Axis.X, Axis.Z).GetSafeNormal();
+		if (!IsFinite(OutEnds.Axis) || !FMath::IsNearlyEqual(OutEnds.Axis.SizeSquared(), 1.0, UE_KINDA_SMALL_NUMBER)) return false;
+		for (int32 End = 0; End < 2; ++End)
+		{
+			const FVector Point = Pose.TransformPosition(FVector(LocalEnds[End].X, 0, LocalEnds[End].Y));
+			OutEnds.Points[End] = FVector2D(Point.X, Point.Z);
+			if (!IsFinite(OutEnds.Points[End])) return false;
+		}
+		return true;
+	}
+	int32 PreviousEnd(const FBoneEnds& Ends, const FTransform& Pose, FVector2D LocalAnchor)
+	{
+		if (!IsFinite(LocalAnchor)) return INDEX_NONE;
+		for (int32 End = 0; End < 2; ++End)
+		{
+			if (LocalPoint(Pose, Ends.Points[End]).Equals(LocalAnchor, GeometryTolerance * 2.0)) return End;
+		}
+		return INDEX_NONE;
 	}
 	struct FSurfaceTarget
 	{
@@ -120,6 +201,51 @@ bool AssemblyFreeRules::IsJointKindAllowed(const FAssemblyBoneDefinition* A, con
 		|| (bPartB && B->JointShape == EAssemblyJointPartShape::Round);
 	return bRound ? (Kind == EAssemblyJointKind::Hinge || Kind == EAssemblyJointKind::BreakableHinge)
 		: (Kind == EAssemblyJointKind::Fixed || Kind == EAssemblyJointKind::BreakableFixed);
+}
+
+bool AssemblyFreeRules::GetEndpointConnection(const FAssemblyFreeSettings& S,
+	const FAssemblyBoneDefinition* A, const FTransform& PoseA,
+	const FAssemblyBoneDefinition* B, const FTransform& PoseB, FContact& OutContact)
+{
+	OutContact = FContact();
+	if (!ValidSettings(S) || !CanConnect(A, B)) return false;
+	FShape ShapeA, ShapeB;
+	FText Reason;
+	if (A)
+	{
+		if (!AssemblySurfaceGeometry::BuildShape(*A, PoseA, ShapeA, Reason)) return false;
+	}
+	else ShapeA = AssemblySurfaceGeometry::MakeCircle(S.CoreLocalPosition, S.CoreRadius);
+	if (B)
+	{
+		if (!AssemblySurfaceGeometry::BuildShape(*B, PoseB, ShapeB, Reason)) return false;
+	}
+	else ShapeB = AssemblySurfaceGeometry::MakeCircle(S.CoreLocalPosition, S.CoreRadius);
+	if (AssemblySurfaceGeometry::Overlaps(ShapeA, ShapeB)) return false;
+	const bool bBoneA = A && A->PartKind == EAssemblyRigidPartKind::Bone;
+	const FAssemblyBoneDefinition& BoneDefinition = bBoneA ? *A : *B;
+	const FTransform& BonePose = bBoneA ? PoseA : PoseB;
+	const FShape& BoneShape = bBoneA ? ShapeA : ShapeB;
+	const FShape& ConnectorShape = bBoneA ? ShapeB : ShapeA;
+	FBoneEnds Ends;
+	if (!BuildBoneEnds(BoneDefinition, BonePose, Ends)) return false;
+	const FVector2D ToConnector = ConnectorShape.Center - BoneShape.Center;
+	if (FMath::Abs(FVector2D::CrossProduct(Ends.Axis, ToConnector)) > GeometryTolerance) return false;
+	const int32 End = FVector2D::DotProduct(ToConnector, Ends.Axis) > 0.0 ? 1 : 0;
+	const FVector2D Outward = Ends.Axis * (End == 0 ? -1.0 : 1.0);
+	const FVector2D BonePoint = Ends.Points[End];
+	if (FVector2D::DotProduct(ConnectorShape.Center - BonePoint, Outward) <= GeometryTolerance) return false;
+	FVector2D ConnectorPoint;
+	if (!RayBoundary(ConnectorShape, -Outward, ConnectorPoint)
+		|| !AssemblySurfaceGeometry::IsOnBoundary(BoneShape, BonePoint)) return false;
+	const FVector2D Gap = ConnectorPoint - BonePoint;
+	const double DistanceSquared = Gap.SizeSquared();
+	if (!FMath::IsFinite(DistanceSquared) || FVector2D::DotProduct(Gap, Outward) < -GeometryTolerance
+		|| DistanceSquared > FMath::Square(S.ConnectionDistance + GeometryTolerance)) return false;
+	OutContact.PointA = bBoneA ? BonePoint : ConnectorPoint;
+	OutContact.PointB = bBoneA ? ConnectorPoint : BonePoint;
+	OutContact.DistanceSquared = DistanceSquared;
+	return true;
 }
 
 bool AssemblyFreeRules::ValidateConfiguration(const FAssemblyFreeSettings& S,
@@ -214,6 +340,7 @@ FAssemblyPlacementResult AssemblyFreeRules::ResolveSurfacePlacement(const FAssem
 		if (Raw.Reason.IsEmpty()) Raw.Reason = LOCTEXT("UnknownSnapPart", "零件类型或表面轮廓无效。");
 		return Raw;
 	}
+	FText SnapFailure;
 	if (S.bEnableSurfaceSnapping)
 	{
 		struct FCandidate
@@ -226,27 +353,132 @@ FAssemblyPlacementResult AssemblyFreeRules::ResolveSurfacePlacement(const FAssem
 		auto Collect = [&](const FSurfaceTarget& Target, double Threshold, TArray<FCandidate>& Out)
 		{
 			if (!CanConnect(Definition, Target.Definition)) return;
-			TArray<FContact> Contacts;
-			AssemblySurfaceGeometry::GetContactCandidates(MovingShape, Target.Shape, Contacts);
-			for (const FContact& Contact : Contacts)
+			const bool bSameTarget = PreviousSnap.bSnapped && (PreviousSnap.bCore ? Target.bCore
+				: (!Target.bCore && PreviousSnap.TargetId.IsValid() && PreviousSnap.TargetId == Target.Id));
+			auto RejectSnap = [&](const FText& Reason)
 			{
-				if (Contact.DistanceSquared > FMath::Square(Threshold + GeometryTolerance)) continue;
-				const FVector2D Translation = Contact.PointB - Contact.PointA;
-				FAssemblyPlacementResult Result = MakePlacement(RawPosition + Translation, Angle);
-				if (!Result.bValid) continue;
-				const FShape ResolvedShape = Translated(MovingShape, Translation);
-				// Even an overlap-enabled sandbox must not call penetration a snapped surface contact.
+				SnapFailure = Reason.IsEmpty()
+					? LOCTEXT("EndpointSnapBlocked", "端点吸附后的轮廓被阻挡，或连接点不在骨头端点与中心延长线上；请调整位置或角度。") : Reason;
+			};
+			auto Append = [&](FAssemblyPlacementResult& Result, double DistanceSquared, const FShape& ResolvedShape)
+			{
+				FContact Contact;
 				if (AssemblySurfaceGeometry::Overlaps(ResolvedShape, Target.Shape)
-					|| !ValidateAgainstTargets(S, ResolvedShape, Targets, Result.Reason)) continue;
-				FContact ConfirmedContact;
-				if (!AssemblySurfaceGeometry::ClosestContact(ResolvedShape, Target.Shape, ConfirmedContact)
-					|| ConfirmedContact.DistanceSquared > GeometryTolerance * GeometryTolerance * 4.0) continue;
+					|| !ValidateAgainstTargets(S, ResolvedShape, Targets, Result.Reason)
+					|| !GetEndpointConnection(S, Definition, Result.LocalVisualTransform, Target.Definition, Target.Pose, Contact)
+					|| Contact.DistanceSquared > GeometryTolerance * GeometryTolerance * 4.0)
+				{
+					RejectSnap(Result.Reason);
+					return false;
+				}
 				Result.SurfaceSnap.bSnapped = true;
 				Result.SurfaceSnap.bCore = Target.bCore;
 				Result.SurfaceSnap.TargetId = Target.Id;
-				Result.SurfaceSnap.SourceLocalAnchor = LocalPoint(Result.LocalVisualTransform, ConfirmedContact.PointA);
-				Result.SurfaceSnap.TargetLocalAnchor = Target.bCore ? ConfirmedContact.PointB - S.CoreLocalPosition : LocalPoint(Target.Pose, ConfirmedContact.PointB);
-				Out.Add({ MoveTemp(Result), Contact.DistanceSquared, Target.bCore, Target.Id });
+				Result.SurfaceSnap.SourceLocalAnchor = LocalPoint(Result.LocalVisualTransform, Contact.PointA);
+				Result.SurfaceSnap.TargetLocalAnchor = Target.bCore ? Contact.PointB - S.CoreLocalPosition : LocalPoint(Target.Pose, Contact.PointB);
+				Out.Add({ MoveTemp(Result), DistanceSquared, Target.bCore, Target.Id });
+				return true;
+			};
+			if (Definition->PartKind == EAssemblyRigidPartKind::Bone && Target.Shape.bCircle)
+			{
+				const FVector2D FromCenter = RawPosition - Target.Shape.Center;
+				const double RawRadius = FromCenter.Size();
+				if (!FMath::IsFinite(RawRadius) || RawRadius <= GeometryTolerance)
+				{
+					SnapFailure = LOCTEXT("RadialDirectionUndefined", "骨头不能在圆心位置确定朝向，请将鼠标移到圆周附近。");
+					return;
+				}
+				const FVector2D Outward = FromCenter / RawRadius;
+				const bool bRetainRadial = bSameTarget && PreviousSnap.bRadialAligned;
+				double RetainedDistanceSquared = 0.0;
+				if (bRetainRadial)
+				{
+					// Measure the original pointer, calibrated when contact was acquired. Reusing the
+					// old horizontal contour here would drop long bones while sliding to the circle top.
+					const double ContactRadius = Target.Shape.Radius + PreviousSnap.RadialPointerOffset;
+					if (!FMath::IsFinite(PreviousSnap.RadialPointerOffset) || !FMath::IsFinite(PreviousSnap.RadialInputAngle)
+						|| !FMath::IsFinite(ContactRadius) || ContactRadius < 0.0) return;
+					const double RadialGap = RawRadius - ContactRadius;
+					if (FMath::Abs(RadialGap) > Threshold + GeometryTolerance) return;
+					RetainedDistanceSquared = FMath::Square(RadialGap);
+				}
+				double CandidateDistanceSquared = RetainedDistanceSquared;
+				double PointerOffset = PreviousSnap.RadialPointerOffset;
+				if (!bRetainRadial)
+				{
+					bool bAcquired = false;
+					TArray<FContact> RawContacts;
+					AssemblySurfaceGeometry::GetContactCandidates(MovingShape, Target.Shape, RawContacts);
+					for (const FContact& Contact : RawContacts)
+					{
+						// Acquisition uses the original requested angle, so even side-first contact rotates in.
+						if (Contact.DistanceSquared > FMath::Square(Threshold + GeometryTolerance)) continue;
+						const FShape OriginalContactShape = Translated(MovingShape, Contact.PointB - Contact.PointA);
+						FContact OriginalContact;
+						if (AssemblySurfaceGeometry::Overlaps(OriginalContactShape, Target.Shape)
+							|| !AssemblySurfaceGeometry::ClosestContact(OriginalContactShape, Target.Shape, OriginalContact)
+							|| OriginalContact.DistanceSquared > GeometryTolerance * GeometryTolerance * 4.0) continue;
+						const double ContactRadius = FVector2D::Distance(OriginalContactShape.Center, Target.Shape.Center);
+						if (!FMath::IsFinite(ContactRadius)) continue;
+						CandidateDistanceSquared = Contact.DistanceSquared;
+						PointerOffset = ContactRadius - Target.Shape.Radius;
+						bAcquired = true;
+						break; // Raw contacts are sorted by distance and contact coordinates.
+					}
+					if (!bAcquired) return;
+				}
+				// The existing game plane is XZ; a positive angle around +Y turns +X towards -Z.
+				const float RadialAngle = FMath::RadiansToDegrees(FMath::Atan2(-Outward.Y, Outward.X));
+				const bool bManualAngleUnchanged = bRetainRadial
+					&& FMath::Abs(FMath::FindDeltaAngleDegrees(PreviousSnap.RadialInputAngle, Raw.RotationDegrees)) <= UE_KINDA_SMALL_NUMBER;
+				const bool bXOutward = bManualAngleUnchanged ? PreviousSnap.bRadialXOutward
+					: FMath::Abs(FMath::FindDeltaAngleDegrees(Raw.RotationDegrees, RadialAngle))
+						<= FMath::Abs(FMath::FindDeltaAngleDegrees(Raw.RotationDegrees, RadialAngle + 180.0f));
+				const float ResolvedAngle = RadialAngle + (bXOutward ? 0.0f : 180.0f);
+				const FAssemblyPlacementResult AtOrigin = MakePlacement(FVector2D::ZeroVector, ResolvedAngle);
+				FShape RotatedShape;
+				FText ShapeReason;
+				FBoneEnds Ends;
+				if (!AtOrigin.bValid || !AssemblySurfaceGeometry::BuildShape(*Definition, AtOrigin.LocalVisualTransform, RotatedShape, ShapeReason)
+					|| !BuildBoneEnds(*Definition, AtOrigin.LocalVisualTransform, Ends))
+				{
+					RejectSnap(ShapeReason);
+					return;
+				}
+				const FVector2D EndOffset = Ends.Points[bXOutward ? 0 : 1];
+				FAssemblyPlacementResult Result = MakePlacement(Target.Shape.Center + Outward * Target.Shape.Radius - EndOffset, ResolvedAngle);
+				if (!Result.bValid) { RejectSnap(Result.Reason); return; }
+				const FShape ResolvedShape = Translated(RotatedShape, Result.LocalPosition);
+				Result.SurfaceSnap.bRadialAligned = true;
+				Result.SurfaceSnap.RadialPointerOffset = PointerOffset;
+				Result.SurfaceSnap.RadialInputAngle = Raw.RotationDegrees;
+				Result.SurfaceSnap.bRadialXOutward = bXOutward;
+				Append(Result, CandidateDistanceSquared, ResolvedShape);
+				return; // A blocked or distant radial candidate never falls back to horizontal circle snapping.
+			}
+			const bool bMovingBone = Definition->PartKind == EAssemblyRigidPartKind::Bone;
+			const FAssemblyBoneDefinition& BoneDefinition = bMovingBone ? *Definition : *Target.Definition;
+			const FTransform BonePose = bMovingBone ? MakePlacement(FVector2D::ZeroVector, Angle).LocalVisualTransform : Target.Pose;
+			FBoneEnds Ends;
+			if (!BuildBoneEnds(BoneDefinition, BonePose, Ends)) return;
+			// Existing anchors identify the chosen end without adding any serialized or reflected state.
+			const int32 RetainedEnd = bSameTarget ? PreviousEnd(Ends, BonePose,
+				bMovingBone ? PreviousSnap.SourceLocalAnchor : PreviousSnap.TargetLocalAnchor) : INDEX_NONE;
+			const FShape& ConnectorShape = bMovingBone ? Target.Shape : MovingShape;
+			for (int32 End = 0; End < 2; ++End)
+			{
+				if (RetainedEnd != INDEX_NONE && End != RetainedEnd) continue;
+				const FVector2D Outward = Ends.Axis * (End == 0 ? -1.0 : 1.0);
+				FVector2D ConnectorPoint;
+				if (!RayBoundary(ConnectorShape, -Outward, ConnectorPoint)) continue;
+				const FVector2D CandidatePosition = bMovingBone ? ConnectorPoint - Ends.Points[End]
+					: Ends.Points[End] - (ConnectorPoint - ConnectorShape.Center);
+				const FVector2D Translation = CandidatePosition - RawPosition;
+				const double DistanceSquared = Translation.SizeSquared();
+				if (!FMath::IsFinite(DistanceSquared) || DistanceSquared > FMath::Square(Threshold + GeometryTolerance)) continue;
+				FAssemblyPlacementResult Result = MakePlacement(CandidatePosition, Angle);
+				if (!Result.bValid) { RejectSnap(Result.Reason); continue; }
+				Append(Result, DistanceSquared, Translated(MovingShape, Translation));
 			}
 		};
 		auto Sort = [](TArray<FCandidate>& Candidates)
@@ -280,6 +512,14 @@ FAssemblyPlacementResult AssemblyFreeRules::ResolveSurfacePlacement(const FAssem
 		Sort(Candidates);
 		if (!Candidates.IsEmpty()) return MoveTemp(Candidates[0].Placement);
 	}
+	if (!SnapFailure.IsEmpty())
+	{
+		// Do not silently commit the raw pose after an eligible aligned endpoint pose was blocked.
+		// A different successful target still wins above; distant free staging remains available.
+		Raw.bValid = false;
+		Raw.Reason = SnapFailure;
+		return Raw;
+	}
 	Raw.bValid = ValidateAgainstTargets(S, MovingShape, Targets, Raw.Reason);
 	return Raw;
 }
@@ -298,18 +538,17 @@ TArray<FAssemblyJointInstance> AssemblyFreeRules::BuildJoints(const FAssemblyFre
 		FContact Contact;
 	};
 	TArray<FConnection> Connections;
-	const double ThresholdSquared = FMath::Square(S.ConnectionDistance + GeometryTolerance);
 	for (int32 I = 0; I < Targets.Num(); ++I)
 	{
 		for (int32 K = I + 1; K < Targets.Num(); ++K)
 		{
 			const FSurfaceTarget* A = &Targets[I];
 			const FSurfaceTarget* B = &Targets[K];
-			if (!CanConnect(A->Definition, B->Definition) || AssemblySurfaceGeometry::Overlaps(A->Shape, B->Shape)) continue;
+			if (!CanConnect(A->Definition, B->Definition)) continue;
 			// Always evaluate the same pair orientation, independent of installed-array order.
 			if (!A->bCore && GuidBefore(B->Id, A->Id)) Swap(A, B);
 			FContact Contact;
-			if (AssemblySurfaceGeometry::ClosestContact(A->Shape, B->Shape, Contact) && Contact.DistanceSquared <= ThresholdSquared)
+			if (GetEndpointConnection(S, A->Definition, A->Pose, B->Definition, B->Pose, Contact))
 			{
 				Connections.Add({ A, B, Contact });
 			}
@@ -346,14 +585,7 @@ TArray<FAssemblyJointInstance> AssemblyFreeRules::BuildJoints(const FAssemblyFre
 			Joint.MaxAngleDegrees = S.DefaultJointMaxAngle;
 			const bool bPartA = C.A->Definition && C.A->Definition->PartKind == EAssemblyRigidPartKind::JointPart;
 			const bool bPartB = C.B->Definition && C.B->Definition->PartKind == EAssemblyRigidPartKind::JointPart;
-			if (bPartA && bPartB)
-			{
-				const bool bRoundA = C.A->Definition->JointShape == EAssemblyJointPartShape::Round;
-				const bool bRoundB = C.B->Definition->JointShape == EAssemblyJointPartShape::Round;
-				const FAssemblyBoneDefinition* KindSource = bRoundA != bRoundB ? (bRoundA ? C.A->Definition : C.B->Definition) : C.A->Definition;
-				Joint.Kind = KindSource->DefaultJointKind;
-			}
-			else if (bPartA) Joint.Kind = C.A->Definition->DefaultJointKind;
+			if (bPartA) Joint.Kind = C.A->Definition->DefaultJointKind;
 			else if (bPartB) Joint.Kind = C.B->Definition->DefaultJointKind;
 		}
 		Joint.BoneA = IdA;

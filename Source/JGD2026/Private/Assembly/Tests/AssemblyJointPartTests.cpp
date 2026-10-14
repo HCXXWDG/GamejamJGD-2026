@@ -167,9 +167,9 @@ bool FAssemblyJointPartNearestPortTest::RunTest(const FString& Parameters)
 		bClosestSelected |= Joint.BoneA == Closest || Joint.BoneB == Closest;
 		bNearbySelected |= Joint.BoneA == Nearby || Joint.BoneB == Nearby;
 	}
-	TestEqual(TEXT("Bar supports independent contacts across its complete surface"), BarEdges, 3);
+	TestEqual(TEXT("Bar connects only the two bones whose endpoints are collinear with its center"), BarEdges, 2);
 	TestTrue(TEXT("The nearest endpoint occupies the right slot"), bClosestSelected);
-	TestTrue(TEXT("Another nonoverlapping bone may use a different point of the same surface"), bNearbySelected);
+	TestFalse(TEXT("An off-axis nearby bone does not obtain a connector edge"), bNearbySelected);
 	TArray<FAssemblyBoneInstance> Reversed = Assembly->GetBones();
 	for (int32 I = 0, K = Reversed.Num() - 1; I < K; ++I, --K) { Swap(Reversed[I], Reversed[K]); }
 	const TArray<FAssemblyJointInstance> Stable = AssemblyFreeRules::BuildJoints(Assembly->GetFreeSettings(), Assembly->GetBoneDefinitions(), Reversed, Original);
@@ -183,16 +183,18 @@ bool FAssemblyJointPartNearestPortTest::RunTest(const FString& Parameters)
 		}));
 	}
 
-	// A purple connector supplies rotation even when the other endpoint is a fixed yellow connector.
+	// Color policy is preserved through an ordinary-bone bridge; connectors cannot connect directly.
 	FAssemblyBoneDefinition Ordinary;
+	Ordinary.InitialQuantity = 8;
 	FAssemblyBoneDefinition Round = AssemblyRigidPartMetrics::MakeJointPartDefinition(EAssemblyJointPartShape::Round, 64.0f / 640.0f);
 	FAssemblyBoneDefinition Bar = AssemblyRigidPartMetrics::MakeJointPartDefinition(EAssemblyJointPartShape::Bar, 64.0f / 640.0f);
 	TestTrue(TEXT("Configure mixed-color joint pieces"), Assembly->ConfigureFreeAssembly(FAssemblyFreeSettings(), { Ordinary, Round, Bar }, {}, Reason));
-	FGuid RoundId, BarId, LeafId;
+	FGuid RoundId, BarId, LeafId, BridgeId;
 	TestTrue(TEXT("Mixed-color root bone"), Assembly->TryInstallFreeBone(TEXT("Bone"), FVector2D(96, 0), 0, RootBone, Reason));
 	TestTrue(TEXT("Purple Round attaches to the bone"), Assembly->TryInstallJointPart(TEXT("Joint_Round"), FVector2D(192, 0), 0, RoundId, Reason));
-	TestTrue(TEXT("Yellow Bar attaches to Round"), Assembly->TryInstallJointPart(TEXT("Joint_Bar"), FVector2D(256, 0), 0, BarId, Reason));
-	TestTrue(TEXT("Leaf bone attaches to Bar"), Assembly->TryInstallFreeBone(TEXT("Bone"), FVector2D(352, 0), 0, LeafId, Reason));
+	TestTrue(TEXT("Ordinary bone bridges the two connector pieces"),Assembly->TryInstallFreeBone(TEXT("Bone"),FVector2D(288,0),0,BridgeId,Reason));
+	TestTrue(TEXT("Yellow Bar attaches to the bridge endpoint"), Assembly->TryInstallJointPart(TEXT("Joint_Bar"), FVector2D(384, 0), 0, BarId, Reason));
+	TestTrue(TEXT("Leaf bone attaches to Bar"), Assembly->TryInstallFreeBone(TEXT("Bone"), FVector2D(480, 0), 0, LeafId, Reason));
 	FGuid MixedEdge;
 	for (const FAssemblyJointInstance& Joint : Assembly->GetJoints())
 	{
@@ -203,7 +205,7 @@ bool FAssemblyJointPartNearestPortTest::RunTest(const FString& Parameters)
 			TestFalse(TEXT("Round connection never permits a fixed variant"), Assembly->IsJointKindAllowed(Joint.InstanceId, EAssemblyJointKind::Fixed));
 			TestFalse(TEXT("Round connection transaction rejects fixed"), Assembly->TrySetJointKind(Joint.InstanceId, EAssemblyJointKind::Fixed, Reason));
 		}
-		if ((Joint.BoneA == RoundId && Joint.BoneB == BarId) || (Joint.BoneA == BarId && Joint.BoneB == RoundId)) { MixedEdge = Joint.InstanceId; }
+		if ((Joint.BoneA == RoundId && Joint.BoneB == BridgeId) || (Joint.BoneA == BridgeId && Joint.BoneB == RoundId)) { MixedEdge = Joint.InstanceId; }
 		if ((Joint.BoneA == BarId && Joint.BoneB == LeafId) || (Joint.BoneA == LeafId && Joint.BoneB == BarId))
 		{
 			TestTrue(TEXT("The other yellow Bar edge stays fixed"), Joint.Kind == EAssemblyJointKind::Fixed);
@@ -223,10 +225,14 @@ bool FAssemblyJointPartNearestPortTest::RunTest(const FString& Parameters)
 			else if (Instance.InstanceId == BarId) { Instance.InstanceId = TestBarId; }
 		}
 		const TArray<FAssemblyJointInstance> Fresh = AssemblyFreeRules::BuildJoints(Assembly->GetFreeSettings(), Assembly->GetBoneDefinitions(), Renamed, {});
-		TestTrue(TEXT("Round wins activity policy regardless of relative persistent IDs"), Fresh.ContainsByPredicate([TestRoundId, TestBarId](const FAssemblyJointInstance& J)
+		TestTrue(TEXT("Round preserves activity policy regardless of relative persistent IDs"), Fresh.ContainsByPredicate([TestRoundId, BridgeId](const FAssemblyJointInstance& J)
 		{
-			return ((J.BoneA == TestRoundId && J.BoneB == TestBarId) || (J.BoneA == TestBarId && J.BoneB == TestRoundId))
+			return ((J.BoneA == TestRoundId && J.BoneB == BridgeId) || (J.BoneA == BridgeId && J.BoneB == TestRoundId))
 				&& J.Kind == EAssemblyJointKind::Hinge;
+		}));
+		TestFalse(TEXT("Persistent ID ordering cannot introduce a forbidden connector-connector edge"),Fresh.ContainsByPredicate([TestRoundId,TestBarId](const FAssemblyJointInstance& J)
+		{
+			return (J.BoneA==TestRoundId && J.BoneB==TestBarId) || (J.BoneA==TestBarId && J.BoneB==TestRoundId);
 		}));
 	}
 	const FAssemblyBoneDefinition FixedRound = AssemblyRigidPartMetrics::MakeJointPartDefinition(EAssemblyJointPartShape::FixedRound, 64.0f / 640.0f);
@@ -234,12 +240,13 @@ bool FAssemblyJointPartNearestPortTest::RunTest(const FString& Parameters)
 	FGuid FixedRoundId;
 	TestTrue(TEXT("Circular-color graph root bone"), Assembly->TryInstallFreeBone(TEXT("Bone"), FVector2D(96, 0), 0, RootBone, Reason));
 	TestTrue(TEXT("Active circular piece attaches to the root"), Assembly->TryInstallJointPart(TEXT("Joint_Round"), FVector2D(192, 0), 0, RoundId, Reason));
-	TestTrue(TEXT("Fixed circular piece uses the active piece's other slot"), Assembly->TryInstallJointPart(TEXT("Joint_FixedRound"), FVector2D(256, 0), 0, FixedRoundId, Reason));
-	TestTrue(TEXT("Leaf bone uses a fixed circular piece slot"), Assembly->TryInstallFreeBone(TEXT("Bone"), FVector2D(352, 0), 0, LeafId, Reason));
+	TestTrue(TEXT("Ordinary bone bridges the circular pieces"),Assembly->TryInstallFreeBone(TEXT("Bone"),FVector2D(288,0),0,BridgeId,Reason));
+	TestTrue(TEXT("Fixed circular piece attaches to the ordinary bridge"), Assembly->TryInstallJointPart(TEXT("Joint_FixedRound"), FVector2D(384, 0), 0, FixedRoundId, Reason));
+	TestTrue(TEXT("Leaf bone uses a fixed circular piece slot"), Assembly->TryInstallFreeBone(TEXT("Bone"), FVector2D(480, 0), 0, LeafId, Reason));
 	FGuid CircularMixedEdge, CircularFixedEdge;
 	for (const FAssemblyJointInstance& Joint : Assembly->GetJoints())
 	{
-		if ((Joint.BoneA == RoundId && Joint.BoneB == FixedRoundId) || (Joint.BoneA == FixedRoundId && Joint.BoneB == RoundId))
+		if ((Joint.BoneA == RoundId && Joint.BoneB == BridgeId) || (Joint.BoneA == BridgeId && Joint.BoneB == RoundId))
 		{
 			CircularMixedEdge = Joint.InstanceId;
 			TestTrue(TEXT("Only the purple circular piece supplies activity on the mixed-color edge"), Joint.Kind == EAssemblyJointKind::Hinge);

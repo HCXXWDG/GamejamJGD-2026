@@ -948,6 +948,15 @@ FAssemblyValidationResult UAssemblyComponent::ValidateAssemblyState(const TArray
 				Result.Reason = LOCTEXT("StaleSurfaceConnection", "关节连接已离开实际组件表面，请重新摆放连接后再开始操控。");
 				return Result;
 			}
+			AssemblySurfaceGeometry::FContact EndpointContact;
+			if (!AssemblyFreeRules::GetEndpointConnection(RoundFreeSettings, DA,
+				A ? A->LocalVisualTransform : FTransform::Identity, DB, B->LocalVisualTransform, EndpointContact)
+				|| !FVector2D(PointA.X, PointA.Z).Equals(EndpointContact.PointA, AssemblySurfaceGeometry::Tolerance * 2.0)
+				|| !FVector2D(PointB.X, PointB.Z).Equals(EndpointContact.PointB, AssemblySurfaceGeometry::Tolerance * 2.0))
+			{
+				Result.Reason = LOCTEXT("InvalidEndpointConnection", "关节只能连接骨头端点，连接件中心须位于骨头延长线上；请重新摆放后再开始操控。");
+				return Result;
+			}
 		}
 		UsedJointPairs.FindOrAdd(Joint.BoneA).Add(Joint.BoneB);
 		Ids.Add(Joint.InstanceId);

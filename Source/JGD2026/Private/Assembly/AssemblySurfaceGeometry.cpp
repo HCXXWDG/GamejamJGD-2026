@@ -6,7 +6,8 @@
 
 namespace
 {
-	using namespace AssemblySurfaceGeometry;
+	using AssemblySurfaceGeometry::FShape;
+	using AssemblySurfaceGeometry::FContact;
 	bool Finite(FVector2D P) { return FMath::IsFinite(P.X) && FMath::IsFinite(P.Y); }
 	double Cross(FVector2D A, FVector2D B) { return A.X * B.Y - A.Y * B.X; }
 	double AreaTwice(const TArray<FVector2D>& Points)
@@ -23,7 +24,7 @@ namespace
 		const double Denominator = Edge.SizeSquared();
 		return Denominator > UE_DOUBLE_SMALL_NUMBER ? A + Edge * FMath::Clamp(FVector2D::DotProduct(P - A, Edge) / Denominator, 0.0, 1.0) : A;
 	}
-	bool OnSegment(FVector2D P, FVector2D A, FVector2D B, double Epsilon = Tolerance)
+	bool OnSegment(FVector2D P, FVector2D A, FVector2D B, double Epsilon = AssemblySurfaceGeometry::Tolerance)
 	{
 		return FVector2D::DistSquared(P, NearestOnSegment(P, A, B)) <= FMath::Square(Epsilon);
 	}
@@ -52,16 +53,16 @@ namespace
 		// crossing may occur at both segment midpoints while every point is within the legal contact
 		// tolerance. Require an actual crossing of both physical half-planes before treating it as area.
 		const double RLength = R.Size(), SLength = S.Size();
-		if (RLength <= Tolerance || SLength <= Tolerance) return false;
+		if (RLength <= AssemblySurfaceGeometry::Tolerance || SLength <= AssemblySurfaceGeometry::Tolerance) return false;
 		const double SideC = Cross(C - A, R) / RLength, SideD = Cross(D - A, R) / RLength;
 		const double SideA = Cross(A - C, S) / SLength, SideB = Cross(B - C, S) / SLength;
-		auto Straddles = [](double X, double Y) { return (X > Tolerance && Y < -Tolerance) || (Y > Tolerance && X < -Tolerance); };
+		auto Straddles = [](double X, double Y) { return (X > AssemblySurfaceGeometry::Tolerance && Y < -AssemblySurfaceGeometry::Tolerance) || (Y > AssemblySurfaceGeometry::Tolerance && X < -AssemblySurfaceGeometry::Tolerance); };
 		if (!Straddles(SideC, SideD) || !Straddles(SideA, SideB)) return false;
 		const double Denominator = Cross(R, S);
 		if (FMath::Abs(Denominator) <= UE_DOUBLE_SMALL_NUMBER) return false;
 		const double T = Cross(C - A, S) / Denominator, U = Cross(C - A, R) / Denominator;
-		const double TEpsilon = Tolerance / FMath::Max(R.Size(), Tolerance);
-		const double UEpsilon = Tolerance / FMath::Max(S.Size(), Tolerance);
+		const double TEpsilon = AssemblySurfaceGeometry::Tolerance / FMath::Max(R.Size(), AssemblySurfaceGeometry::Tolerance);
+		const double UEpsilon = AssemblySurfaceGeometry::Tolerance / FMath::Max(S.Size(), AssemblySurfaceGeometry::Tolerance);
 		return T > TEpsilon && T < 1.0 - TEpsilon && U > UEpsilon && U < 1.0 - UEpsilon;
 	}
 	bool PolygonContains(const TArray<FVector2D>& Points, FVector2D P, bool bIncludeBoundary)
@@ -136,12 +137,12 @@ namespace
 		if (Shape.Vertices.Num() < 3) return false;
 		for (const FVector2D P : Shape.Vertices) if (!Finite(P)) return false;
 		const double Area = AreaTwice(Shape.Vertices);
-		return FMath::IsFinite(Area) && FMath::Abs(Area) > Tolerance * Tolerance;
+		return FMath::IsFinite(Area) && FMath::Abs(Area) > AssemblySurfaceGeometry::Tolerance * AssemblySurfaceGeometry::Tolerance;
 	}
 	bool CirclePolygonOverlap(const FShape& Circle, const FShape& Polygon)
 	{
 		if (PolygonContains(Polygon.Vertices, Circle.Center, true)) return true;
-		const double RadiusSquared = FMath::Square(FMath::Max(0.0, Circle.Radius - Tolerance));
+		const double RadiusSquared = FMath::Square(FMath::Max(0.0, Circle.Radius - AssemblySurfaceGeometry::Tolerance));
 		for (int32 I = 0; I < Polygon.Vertices.Num(); ++I)
 		{
 			if (FVector2D::DistSquared(Circle.Center, NearestOnSegment(Circle.Center, Polygon.Vertices[I], Polygon.Vertices[(I + 1) % Polygon.Vertices.Num()])) < RadiusSquared) return true;
@@ -196,7 +197,7 @@ namespace
 					FContact Contact;
 					if (!AssemblySurfaceGeometry::Overlaps(Moved, Target)
 						&& AssemblySurfaceGeometry::ClosestContact(Moved, Target, Contact)
-						&& Contact.DistanceSquared <= Tolerance * Tolerance * 4.0)
+						&& Contact.DistanceSquared <= AssemblySurfaceGeometry::Tolerance * AssemblySurfaceGeometry::Tolerance * 4.0)
 					{
 						AddContact(Contacts, Contact.PointA - Delta, Contact.PointB);
 					}
