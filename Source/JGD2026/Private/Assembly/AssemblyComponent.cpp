@@ -954,7 +954,7 @@ FAssemblyValidationResult UAssemblyComponent::ValidateAssemblyState(const TArray
 				|| !FVector2D(PointA.X, PointA.Z).Equals(EndpointContact.PointA, AssemblySurfaceGeometry::Tolerance * 2.0)
 				|| !FVector2D(PointB.X, PointB.Z).Equals(EndpointContact.PointB, AssemblySurfaceGeometry::Tolerance * 2.0))
 			{
-				Result.Reason = LOCTEXT("InvalidEndpointConnection", "关节只能连接骨头端点，连接件中心须位于骨头延长线上；请重新摆放后再开始操控。");
+				Result.Reason = LOCTEXT("InvalidEndpointConnection", "关节只能连接骨头端点；圆形连接件须径向对齐，异形关节须将端口方向与骨头轴线对齐后再开始操控。");
 				return Result;
 			}
 		}

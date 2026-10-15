@@ -100,18 +100,15 @@ namespace
 	bool BuildBoneEnds(const FAssemblyBoneDefinition& Definition, const FTransform& Pose, FBoneEnds& OutEnds)
 	{
 		if (Definition.PartKind != EAssemblyRigidPartKind::Bone) return false;
-		FShape LocalShape;
+		TArray<AssemblyRigidPartMetrics::FConnectionPort> Ports;
 		FText Reason;
-		if (!AssemblySurfaceGeometry::BuildShape(Definition, FTransform::Identity, LocalShape, Reason)) return false;
-		FVector2D LocalEnds[2];
-		if (!RayBoundary(LocalShape, FVector2D(-1, 0), LocalEnds[0])
-			|| !RayBoundary(LocalShape, FVector2D(1, 0), LocalEnds[1])) return false;
+		if (!AssemblyRigidPartMetrics::GetConnectionPorts(Definition, Ports, Reason) || Ports.Num() != 2) return false;
 		const FVector Axis = Pose.TransformVector(FVector::XAxisVector);
 		OutEnds.Axis = FVector2D(Axis.X, Axis.Z).GetSafeNormal();
 		if (!IsFinite(OutEnds.Axis) || !FMath::IsNearlyEqual(OutEnds.Axis.SizeSquared(), 1.0, UE_KINDA_SMALL_NUMBER)) return false;
 		for (int32 End = 0; End < 2; ++End)
 		{
-			const FVector Point = Pose.TransformPosition(FVector(LocalEnds[End].X, 0, LocalEnds[End].Y));
+			const FVector Point = Pose.TransformPosition(FVector(Ports[End].Point.X, 0, Ports[End].Point.Y));
 			OutEnds.Points[End] = FVector2D(Point.X, Point.Z);
 			if (!IsFinite(OutEnds.Points[End])) return false;
 		}
@@ -125,6 +122,23 @@ namespace
 			if (LocalPoint(Pose, Ends.Points[End]).Equals(LocalAnchor, GeometryTolerance * 2.0)) return End;
 		}
 		return INDEX_NONE;
+	}
+	bool WorldPort(const AssemblyRigidPartMetrics::FConnectionPort& Port, const FTransform& Pose,
+		FVector2D& OutPoint, FVector2D& OutAxis)
+	{
+		const FVector Point = Pose.TransformPosition(FVector(Port.Point.X, 0.0, Port.Point.Y));
+		const FVector Scale = Pose.GetScale3D();
+		if (Scale.X <= 0.0 || Scale.Z <= 0.0) return false;
+		// End-face normals use inverse-transpose scaling, including custom diagonal end faces.
+		const FVector Axis = Pose.GetRotation().RotateVector(FVector(Port.OutwardAxis.X / Scale.X, 0.0, Port.OutwardAxis.Y / Scale.Z));
+		OutPoint = FVector2D(Point.X, Point.Z);
+		OutAxis = FVector2D(Axis.X, Axis.Z).GetSafeNormal();
+		return IsFinite(OutPoint) && IsFinite(OutAxis) && !OutAxis.IsNearlyZero();
+	}
+	float AxisAngle(FVector2D Axis)
+	{
+		// In the established XZ plane, positive rotation about +Y turns +X towards -Z.
+		return FMath::RadiansToDegrees(FMath::Atan2(-Axis.Y, Axis.X));
 	}
 	struct FSurfaceTarget
 	{
@@ -229,6 +243,37 @@ bool AssemblyFreeRules::GetEndpointConnection(const FAssemblyFreeSettings& S,
 	const FShape& ConnectorShape = bBoneA ? ShapeB : ShapeA;
 	FBoneEnds Ends;
 	if (!BuildBoneEnds(BoneDefinition, BonePose, Ends)) return false;
+	if (!ConnectorShape.bCircle)
+	{
+		const FAssemblyBoneDefinition* ConnectorDefinition = bBoneA ? B : A;
+		const FTransform& ConnectorPose = bBoneA ? PoseB : PoseA;
+		TArray<AssemblyRigidPartMetrics::FConnectionPort> Ports;
+		if (!ConnectorDefinition || !AssemblyRigidPartMetrics::GetConnectionPorts(*ConnectorDefinition, Ports, Reason)) return false;
+		bool bFound = false;
+		for (const AssemblyRigidPartMetrics::FConnectionPort& Port : Ports)
+		{
+			FVector2D ConnectorPoint, ConnectorAxis;
+			if (!WorldPort(Port, ConnectorPose, ConnectorPoint, ConnectorAxis)) continue;
+			for (int32 End = 0; End < 2; ++End)
+			{
+				const FVector2D Outward = Ends.Axis * (End == 0 ? -1.0 : 1.0);
+				if (FVector2D::DotProduct(Outward, ConnectorAxis) >= 0.0
+					|| FMath::Abs(FVector2D::CrossProduct(Outward, ConnectorAxis)) > UE_KINDA_SMALL_NUMBER) continue;
+				const FVector2D BonePoint = Ends.Points[End], Gap = ConnectorPoint - BonePoint;
+				const double DistanceSquared = Gap.SizeSquared();
+				if (!FMath::IsFinite(DistanceSquared) || FMath::Abs(FVector2D::CrossProduct(Outward, Gap)) > GeometryTolerance
+					|| FVector2D::DotProduct(Gap, Outward) < -GeometryTolerance
+					|| DistanceSquared > FMath::Square(S.ConnectionDistance + GeometryTolerance)
+					|| !AssemblySurfaceGeometry::IsOnBoundary(BoneShape, BonePoint)) continue;
+				if (bFound && DistanceSquared >= OutContact.DistanceSquared) continue;
+				OutContact.PointA = bBoneA ? BonePoint : ConnectorPoint;
+				OutContact.PointB = bBoneA ? ConnectorPoint : BonePoint;
+				OutContact.DistanceSquared = DistanceSquared;
+				bFound = true;
+			}
+		}
+		return bFound;
+	}
 	const FVector2D ToConnector = ConnectorShape.Center - BoneShape.Center;
 	if (FMath::Abs(FVector2D::CrossProduct(Ends.Axis, ToConnector)) > GeometryTolerance) return false;
 	const int32 End = FVector2D::DotProduct(ToConnector, Ends.Axis) > 0.0 ? 1 : 0;
@@ -270,6 +315,8 @@ bool AssemblyFreeRules::ValidateConfiguration(const FAssemblyFreeSettings& S,
 	{
 		FShape Shape;
 		if (!CheckType(D.TypeId, D.InitialQuantity) || !AssemblySurfaceGeometry::BuildShape(D, FTransform::Identity, Shape, OutReason)) return false;
+		TArray<AssemblyRigidPartMetrics::FConnectionPort> Ports;
+		if (!AssemblyRigidPartMetrics::GetConnectionPorts(D, Ports, OutReason)) return false;
 	}
 	for (const FAssemblyMuscleDefinition& D : Muscles) if (!CheckType(D.TypeId, D.InitialQuantity)) return false;
 	return true;
@@ -347,6 +394,7 @@ FAssemblyPlacementResult AssemblyFreeRules::ResolveSurfacePlacement(const FAssem
 		{
 			FAssemblyPlacementResult Placement;
 			double DistanceSquared = 0.0;
+			double AngleDelta = 0.0;
 			bool bCore = false;
 			FGuid Target;
 		};
@@ -358,7 +406,7 @@ FAssemblyPlacementResult AssemblyFreeRules::ResolveSurfacePlacement(const FAssem
 			auto RejectSnap = [&](const FText& Reason)
 			{
 				SnapFailure = Reason.IsEmpty()
-					? LOCTEXT("EndpointSnapBlocked", "端点吸附后的轮廓被阻挡，或连接点不在骨头端点与中心延长线上；请调整位置或角度。") : Reason;
+					? LOCTEXT("EndpointSnapBlocked", "端点吸附后的轮廓被阻挡，或骨头轴线没有对齐关节端口；请调整位置或角度。") : Reason;
 			};
 			auto Append = [&](FAssemblyPlacementResult& Result, double DistanceSquared, const FShape& ResolvedShape)
 			{
@@ -376,7 +424,8 @@ FAssemblyPlacementResult AssemblyFreeRules::ResolveSurfacePlacement(const FAssem
 				Result.SurfaceSnap.TargetId = Target.Id;
 				Result.SurfaceSnap.SourceLocalAnchor = LocalPoint(Result.LocalVisualTransform, Contact.PointA);
 				Result.SurfaceSnap.TargetLocalAnchor = Target.bCore ? Contact.PointB - S.CoreLocalPosition : LocalPoint(Target.Pose, Contact.PointB);
-				Out.Add({ MoveTemp(Result), DistanceSquared, Target.bCore, Target.Id });
+				const double AngleDelta = FMath::Abs(FMath::FindDeltaAngleDegrees(Raw.RotationDegrees, Result.RotationDegrees));
+				Out.Add({ MoveTemp(Result), DistanceSquared, AngleDelta, Target.bCore, Target.Id });
 				return true;
 			};
 			if (Definition->PartKind == EAssemblyRigidPartKind::Bone && Target.Shape.bCircle)
@@ -458,13 +507,61 @@ FAssemblyPlacementResult AssemblyFreeRules::ResolveSurfacePlacement(const FAssem
 			}
 			const bool bMovingBone = Definition->PartKind == EAssemblyRigidPartKind::Bone;
 			const FAssemblyBoneDefinition& BoneDefinition = bMovingBone ? *Definition : *Target.Definition;
+			const FShape& ConnectorShape = bMovingBone ? Target.Shape : MovingShape;
+			if (!ConnectorShape.bCircle)
+			{
+				const FAssemblyBoneDefinition& ConnectorDefinition = bMovingBone ? *Target.Definition : *Definition;
+				TArray<AssemblyRigidPartMetrics::FConnectionPort> Ports, BonePorts;
+				FText PortReason;
+				if (!AssemblyRigidPartMetrics::GetConnectionPorts(ConnectorDefinition, Ports, PortReason)
+					|| !AssemblyRigidPartMetrics::GetConnectionPorts(BoneDefinition, BonePorts, PortReason) || BonePorts.Num() != 2)
+				{
+					RejectSnap(PortReason); return;
+				}
+				const FVector2D PreviousBoneAnchor = bMovingBone ? PreviousSnap.SourceLocalAnchor : PreviousSnap.TargetLocalAnchor;
+				const FVector2D PreviousPortAnchor = bMovingBone ? PreviousSnap.TargetLocalAnchor : PreviousSnap.SourceLocalAnchor;
+				const int32 RetainedEnd = bSameTarget ? BonePorts.IndexOfByPredicate([&](const AssemblyRigidPartMetrics::FConnectionPort& P)
+				{
+					return P.Point.Equals(PreviousBoneAnchor, GeometryTolerance * 2.0);
+				}) : INDEX_NONE;
+				const int32 RetainedPort = bSameTarget ? Ports.IndexOfByPredicate([&](const AssemblyRigidPartMetrics::FConnectionPort& P)
+				{
+					return P.Point.Equals(PreviousPortAnchor, GeometryTolerance * 2.0);
+				}) : INDEX_NONE;
+				for (int32 PortIndex = 0; PortIndex < Ports.Num(); ++PortIndex)
+				{
+					if (RetainedPort != INDEX_NONE && PortIndex != RetainedPort) continue;
+					const AssemblyRigidPartMetrics::FConnectionPort& Port = Ports[PortIndex];
+					for (int32 End = 0; End < 2; ++End)
+					{
+						if (RetainedEnd != INDEX_NONE && End != RetainedEnd) continue;
+						FVector2D FixedPoint, FixedAxis;
+						if (!WorldPort(bMovingBone ? Port : BonePorts[End], Target.Pose, FixedPoint, FixedAxis)) continue;
+						const AssemblyRigidPartMetrics::FConnectionPort& MovingPort = bMovingBone ? BonePorts[End] : Port;
+						const float ResolvedAngle = AxisAngle(-FixedAxis) - AxisAngle(MovingPort.OutwardAxis);
+						const FAssemblyPlacementResult AtOrigin = MakePlacement(FVector2D::ZeroVector, ResolvedAngle);
+						FVector2D EndOffset, UnusedAxis;
+						if (!AtOrigin.bValid || !WorldPort(MovingPort, AtOrigin.LocalVisualTransform, EndOffset, UnusedAxis)) continue;
+						const FVector2D CandidatePosition = FixedPoint - EndOffset;
+						const double DistanceSquared = FVector2D::DistSquared(CandidatePosition, RawPosition);
+						if (!FMath::IsFinite(DistanceSquared) || DistanceSquared > FMath::Square(Threshold + GeometryTolerance)) continue;
+						FAssemblyPlacementResult Result = MakePlacement(CandidatePosition, ResolvedAngle);
+						FShape ResolvedShape;
+						if (!Result.bValid || !AssemblySurfaceGeometry::BuildShape(*Definition, Result.LocalVisualTransform, ResolvedShape, Result.Reason))
+						{
+							RejectSnap(Result.Reason); continue;
+						}
+						Append(Result, DistanceSquared, ResolvedShape);
+					}
+				}
+				return; // Noncircular pieces use their end ports, never a center ray or arbitrary side.
+			}
 			const FTransform BonePose = bMovingBone ? MakePlacement(FVector2D::ZeroVector, Angle).LocalVisualTransform : Target.Pose;
 			FBoneEnds Ends;
 			if (!BuildBoneEnds(BoneDefinition, BonePose, Ends)) return;
 			// Existing anchors identify the chosen end without adding any serialized or reflected state.
 			const int32 RetainedEnd = bSameTarget ? PreviousEnd(Ends, BonePose,
 				bMovingBone ? PreviousSnap.SourceLocalAnchor : PreviousSnap.TargetLocalAnchor) : INDEX_NONE;
-			const FShape& ConnectorShape = bMovingBone ? Target.Shape : MovingShape;
 			for (int32 End = 0; End < 2; ++End)
 			{
 				if (RetainedEnd != INDEX_NONE && End != RetainedEnd) continue;
@@ -485,9 +582,14 @@ FAssemblyPlacementResult AssemblyFreeRules::ResolveSurfacePlacement(const FAssem
 		{
 			Candidates.Sort([](const FCandidate& A, const FCandidate& B)
 			{
-				if (A.DistanceSquared != B.DistanceSquared) return A.DistanceSquared < B.DistanceSquared;
+				// Symmetric ports can differ only by quaternion roundoff. Resolve such equal-distance
+				// poses by the user's angle rather than flipping between opposite ends unpredictably.
+				const double DistanceA = FMath::RoundToDouble(A.DistanceSquared / FMath::Square(GeometryTolerance));
+				const double DistanceB = FMath::RoundToDouble(B.DistanceSquared / FMath::Square(GeometryTolerance));
+				if (DistanceA != DistanceB) return DistanceA < DistanceB;
 				if (A.bCore != B.bCore) return A.bCore;
 				if (A.Target != B.Target) return GuidBefore(A.Target, B.Target);
+				if (A.AngleDelta != B.AngleDelta) return A.AngleDelta < B.AngleDelta;
 				const FVector2D PA = A.Placement.LocalPosition, PB = B.Placement.LocalPosition;
 				if (PA.X != PB.X) return PA.X < PB.X;
 				return PA.Y < PB.Y;

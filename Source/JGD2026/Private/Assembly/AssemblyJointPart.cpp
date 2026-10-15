@@ -18,8 +18,8 @@ AAssemblyJointPart::AAssemblyJointPart()
 		if (Sprite.Succeeded()) ShapeSprites.Add(static_cast<EAssemblyJointPartShape>(Index), Sprite.Object);
 	}
 	BoneSprite->SetSprite(GetSpriteForShape(PreviewShape));
-	// Joint artwork is drawn in front of bones. Physical bodies stay on the gameplay plane.
-	VisualDepthOffset = 0.75f;
+	// Category depth places joint artwork behind bones; physical bodies stay on the gameplay plane.
+	VisualDepthOffset = 0.0f;
 }
 
 UPaperSprite* AAssemblyJointPart::GetSpriteForShape(EAssemblyJointPartShape Shape) const

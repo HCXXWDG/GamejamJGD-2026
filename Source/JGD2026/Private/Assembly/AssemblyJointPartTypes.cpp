@@ -1,5 +1,6 @@
 #include "Assembly/AssemblyJointPartTypes.h"
 #include "Assembly/AssemblyTypes.h"
+#include "Assembly/AssemblySurfaceGeometry.h"
 
 #define LOCTEXT_NAMESPACE "AssemblyJointPartTypes"
 
@@ -45,6 +46,76 @@ TArray<FVector2D> AssemblyRigidPartMetrics::GetConnectionPoints(const FAssemblyB
 	}
 	if (D.PartKind != EAssemblyRigidPartKind::JointPart || !IsJointPartShapeValid(D.JointShape)) { return {}; }
 	return D.ConnectionPoints.IsEmpty() ? DefaultJointPartPorts(D.JointShape, D.JointPartSize) : D.ConnectionPoints;
+}
+
+bool AssemblyRigidPartMetrics::GetConnectionPorts(const FAssemblyBoneDefinition& D, TArray<FConnectionPort>& OutPorts, FText& OutReason)
+{
+	OutPorts.Reset();
+	AssemblySurfaceGeometry::FShape Shape;
+	if (!AssemblySurfaceGeometry::BuildShape(D, FTransform::Identity, Shape, OutReason)) return false;
+	TArray<FVector2D> Points = GetConnectionPoints(D);
+	if (D.PartKind == EAssemblyRigidPartKind::Bone)
+	{
+		// Custom bone contours can end before their nominal metrics box. Intersect each actual axial ray.
+		Points.Reset();
+		for (const double Sign : { -1.0, 1.0 })
+		{
+			double Farthest = 0.0;
+			for (int32 I = 0; I < Shape.Vertices.Num(); ++I)
+			{
+				const FVector2D A = Shape.Vertices[I], B = Shape.Vertices[(I + 1) % Shape.Vertices.Num()];
+				if (FMath::Abs(A.Y) <= AssemblySurfaceGeometry::Tolerance) Farthest = FMath::Max(Farthest, A.X * Sign);
+				if ((A.Y < 0.0 && B.Y > 0.0) || (A.Y > 0.0 && B.Y < 0.0))
+				{
+					const double X = A.X + (B.X - A.X) * (-A.Y / (B.Y - A.Y));
+					Farthest = FMath::Max(Farthest, X * Sign);
+				}
+			}
+			if (!FMath::IsFinite(Farthest) || Farthest <= AssemblySurfaceGeometry::Tolerance)
+			{
+				OutReason = LOCTEXT("MissingAxialEnd", "骨头的实际轮廓必须包含两侧有效的轴线端点。"); return false;
+			}
+			Points.Add(FVector2D(Sign * Farthest, 0.0));
+		}
+	}
+	double Winding = 0.0;
+	for (int32 I = 0; I < Shape.Vertices.Num(); ++I)
+	{
+		Winding += FVector2D::CrossProduct(Shape.Vertices[I] - Shape.Center,
+			Shape.Vertices[(I + 1) % Shape.Vertices.Num()] - Shape.Center);
+	}
+	for (const FVector2D Point : Points)
+	{
+		if (!AssemblySurfaceGeometry::IsOnBoundary(Shape, Point))
+		{
+			OutReason = LOCTEXT("PortOffBoundary", "关节连接端口必须位于实际轮廓的端面上，不能位于零件内部或空白区域。"); OutPorts.Reset(); return false;
+		}
+		FVector2D Axis = FVector2D::ZeroVector;
+		if (D.PartKind == EAssemblyRigidPartKind::Bone) Axis = FVector2D(Point.X < 0.0 ? -1.0 : 1.0, 0.0);
+		else if (Shape.bCircle) Axis = (Point - Shape.Center).GetSafeNormal();
+		else
+		{
+			for (int32 I = 0; I < Shape.Vertices.Num(); ++I)
+			{
+				const FVector2D A = Shape.Vertices[I], Edge = Shape.Vertices[(I + 1) % Shape.Vertices.Num()] - A;
+				const double Alpha = FVector2D::DotProduct(Point - A, Edge) / Edge.SizeSquared();
+				if (Alpha < 0.0 || Alpha > 1.0 || !Point.Equals(A + Edge * Alpha, AssemblySurfaceGeometry::Tolerance)) continue;
+				const FVector2D Normal = FVector2D(Edge.Y, -Edge.X).GetSafeNormal() * (Winding >= 0.0 ? 1.0 : -1.0);
+				if (!Axis.IsNearlyZero() && FVector2D::DotProduct(Axis, Normal) < 1.0 - UE_KINDA_SMALL_NUMBER)
+				{
+					OutReason = LOCTEXT("AmbiguousPortDirection", "关节端口不能位于方向不明确的轮廓拐角，请放在端面中间。"); OutPorts.Reset(); return false;
+				}
+				Axis = Normal;
+			}
+		}
+		if (!FMath::IsFinite(Axis.X) || !FMath::IsFinite(Axis.Y) || Axis.IsNearlyZero())
+		{
+			OutReason = LOCTEXT("InvalidPortDirection", "关节端口需要有效的朝外连接方向。"); OutPorts.Reset(); return false;
+		}
+		OutPorts.Add({ Point, Axis });
+	}
+	OutReason = FText::GetEmpty();
+	return !OutPorts.IsEmpty();
 }
 
 bool AssemblyRigidPartMetrics::Evaluate(const FAssemblyBoneDefinition& D, FNormalBonePhysicalStats& OutStats, FText& OutReason)

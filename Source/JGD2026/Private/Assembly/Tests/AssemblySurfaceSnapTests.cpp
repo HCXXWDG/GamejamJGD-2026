@@ -666,7 +666,7 @@ bool FAssemblyRadialOrbitLatchTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblyRadialScopeTest, "JGD2026.Assembly.SurfaceSnap.Radial.NonCircularAndJointDragsKeepManualAngle", SurfaceSnapFlags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblyRadialScopeTest, "JGD2026.Assembly.SurfaceSnap.Radial.NonCircularPortsAlignAndFreeJointDragsKeepManualAngle", SurfaceSnapFlags)
 bool FAssemblyRadialScopeTest::RunTest(const FString& Parameters)
 {
 	UAssemblyComponent* Model = NewObject<UAssemblyComponent>();
@@ -682,7 +682,10 @@ bool FAssemblyRadialScopeTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("A center-aligned bone whose flat end cuts across the bar face cannot snap through it"),Model->ResolveFreeBoneDragPlacement(TEXT("Bone"),FVector2D(264,0),0,FGuid(),FAssemblySurfaceSnapState()).bValid);
 	const FAssemblyPlacementResult NonCircle = Model->ResolveFreeBoneDragPlacement(TEXT("Bone"),FVector2D(200,0)+Axis*64,37.25f,FGuid(),FAssemblySurfaceSnapState());
 	TestTrue(TEXT("The arbitrary-angle bone still snaps to a bar surface"),NonCircle.bValid && NonCircle.SurfaceSnap.bSnapped && NonCircle.SurfaceSnap.TargetId == Target);
-	TestEqual(TEXT("Noncircular surfaces preserve the requested bone angle"),NonCircle.RotationDegrees,37.25f);
+	TestEqual(TEXT("An already aligned bone retains the requested angle"),NonCircle.RotationDegrees,37.25f);
+	const FAssemblyPlacementResult AutoAligned = Model->ResolveFreeBoneDragPlacement(TEXT("Bone"),FVector2D(200,0)+Axis*64,0,FGuid(),FAssemblySurfaceSnapState());
+	TestTrue(TEXT("A noncircular end port now rotates a nearby horizontal bone into its authored axis"),AutoAligned.bValid && AutoAligned.SurfaceSnap.bSnapped
+		&& FMath::Abs(FMath::FindDeltaAngleDegrees(AutoAligned.RotationDegrees,37.25f)) < 0.001);
 	TestTrue(TEXT("The bar center also lies on the arbitrarily rotated bone extension"),FMath::Abs(FVector2D::CrossProduct(NonCircle.LocalPosition-FVector2D(200,0),Axis))<0.001);
 	TestFalse(TEXT("A noncircular surface cannot claim radial alignment"),NonCircle.SurfaceSnap.bRadialAligned);
 	FGuid AngledBone;
@@ -976,6 +979,204 @@ bool FAssemblyEndpointPrepareRecheckTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Failed preparation preserves all instance and constraint identities and inventory"),T.Model->GetBones().Num()==2 && T.Model->GetJoints().Num()==2 && T.Model->GetRemainingQuantity(TEXT("Bone"))==11 && T.Model->GetRemainingQuantity(TEXT("Joint_Round"))==1);
 	TestTrue(TEXT("The restored provider pose yields a valid editable structure"),Source->GetComponentTransform().Equals(Before,0.001) && T.Model->ValidateAssembly().bValid);
 	T.Model->UnregisterLifecycleCallbacksIfMatches(T.Owner);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblyConnectionPortGeometryTest, "JGD2026.Assembly.SurfaceSnap.Ports.GeometryAndInvalidOverrides", SurfaceSnapFlags)
+bool FAssemblyConnectionPortGeometryTest::RunTest(const FString& Parameters)
+{
+	const int32 ExpectedCounts[] = { 4, 2, 2, 3, 4, 3, 4 };
+	for (uint8 Kind = 0; Kind <= static_cast<uint8>(EAssemblyJointPartShape::FixedRound); ++Kind)
+	{
+		const FAssemblyBoneDefinition D = AssemblyRigidPartMetrics::MakeJointPartDefinition(static_cast<EAssemblyJointPartShape>(Kind), 0.1f);
+		TArray<AssemblyRigidPartMetrics::FConnectionPort> Ports;
+		FText Reason;
+		if (!TestTrue(FString::Printf(TEXT("Shape %d exposes valid actual end ports: %s"), Kind, *Reason.ToString()),
+			AssemblyRigidPartMetrics::GetConnectionPorts(D, Ports, Reason))) return false;
+		TestEqual(TEXT("The public runtime query retains every authored end"), Ports.Num(), ExpectedCounts[Kind]);
+		AssemblySurfaceGeometry::FShape Shape;
+		if (!AssemblySurfaceGeometry::BuildShape(D, FTransform::Identity, Shape, Reason)) return false;
+		for (const AssemblyRigidPartMetrics::FConnectionPort& Port : Ports)
+		{
+			TestTrue(TEXT("The public port position lies on its actual contour"), AssemblySurfaceGeometry::IsOnBoundary(Shape, Port.Point));
+			TestTrue(TEXT("The attachment direction is a finite unit vector"), FMath::IsNearlyEqual(Port.OutwardAxis.SizeSquared(), 1.0, 0.0001));
+			TestTrue(TEXT("Stepping behind the face is material"), AssemblySurfaceGeometry::ContainsPoint(Shape, Port.Point - Port.OutwardAxis * .01));
+			TestFalse(TEXT("Stepping beyond the face is outside"), AssemblySurfaceGeometry::ContainsPoint(Shape, Port.Point + Port.OutwardAxis * .01));
+		}
+		FAssemblyBoneDefinition Reordered = D;
+		for (int32 I = 0, J = Reordered.ConnectionPoints.Num() - 1; I < J; ++I, --J) Swap(Reordered.ConnectionPoints[I], Reordered.ConnectionPoints[J]);
+		TArray<AssemblyRigidPartMetrics::FConnectionPort> ReversePorts;
+		TestTrue(TEXT("Directions follow their actual face even when configured point order changes"), AssemblyRigidPartMetrics::GetConnectionPorts(Reordered, ReversePorts, Reason));
+		for (const AssemblyRigidPartMetrics::FConnectionPort& Port : Ports)
+		{
+			TestTrue(TEXT("Reordering never changes a port's direction"), ReversePorts.ContainsByPredicate([&](const AssemblyRigidPartMetrics::FConnectionPort& Other)
+			{
+				return Other.Point.Equals(Port.Point, .0001) && Other.OutwardAxis.Equals(Port.OutwardAxis, .0001);
+			}));
+		}
+	}
+	FAssemblyBoneDefinition Invalid = AssemblyRigidPartMetrics::MakeJointPartDefinition(EAssemblyJointPartShape::Bar, .1f);
+	Invalid.ConnectionPoints = { FVector2D::ZeroVector };
+	TArray<AssemblyRigidPartMetrics::FConnectionPort> Ports;
+	FText Reason;
+	TestFalse(TEXT("An interior marker cannot become a physical end port"), AssemblyRigidPartMetrics::GetConnectionPorts(Invalid, Ports, Reason));
+	TestTrue(TEXT("A failed query returns no partial ports and a reason"), Ports.IsEmpty() && !Reason.IsEmpty());
+	UAssemblyComponent* Model = MakeSurfaceModel();
+	TestFalse(TEXT("Configuration rejects non-boundary custom ports before any drag"), Model->ConfigureFreeAssembly(FAssemblyFreeSettings(), { ShortSurfaceBone(), Invalid }, {}, Reason));
+	TestEqual(TEXT("A rejected configuration retains the old stock"), Model->GetRemainingQuantity(TEXT("Bone")), 12);
+	Invalid.ConnectionPoints = { FVector2D(-32, -16) };
+	TestFalse(TEXT("A polygon corner with two different face normals is not an unambiguous port"), AssemblyRigidPartMetrics::GetConnectionPorts(Invalid, Ports, Reason));
+	FAssemblyBoneDefinition CustomBone = ShortSurfaceBone();
+	CustomBone.SurfaceOutline = { FVector2D(-24,0), FVector2D(-18,-3), FVector2D(15,-8), FVector2D(24,0), FVector2D(15,10), FVector2D(-18,3) };
+	TestTrue(TEXT("The shared runtime query exposes custom bones' real axial ends"), AssemblyRigidPartMetrics::GetConnectionPorts(CustomBone, Ports, Reason));
+	TestTrue(TEXT("Custom axial tips are not replaced by the nominal metrics box"), Ports.Num() == 2 && Ports[0].Point.Equals(FVector2D(-24,0),.001) && Ports[1].Point.Equals(FVector2D(24,0),.001));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblyAllPortsBidirectionalSnapTest, "JGD2026.Assembly.SurfaceSnap.Ports.AllShapesBothDirectionsAndRotatedFrames", SurfaceSnapFlags)
+bool FAssemblyAllPortsBidirectionalSnapTest::RunTest(const FString& Parameters)
+{
+	for (const EAssemblyJointPartShape Kind : { EAssemblyJointPartShape::Bar, EAssemblyJointPartShape::Corner,
+		EAssemblyJointPartShape::Tee, EAssemblyJointPartShape::Cross, EAssemblyJointPartShape::Fork })
+	{
+		const FAssemblyBoneDefinition Joint = AssemblyRigidPartMetrics::MakeJointPartDefinition(Kind, .1f);
+		TArray<AssemblyRigidPartMetrics::FConnectionPort> Ports;
+		FText Reason;
+		if (!AssemblyRigidPartMetrics::GetConnectionPorts(Joint, Ports, Reason)) { AddError(Reason.ToString()); return false; }
+		for (const float GlobalAngle : { 0.0f, 37.25f })
+		{
+			for (int32 PortIndex = 0; PortIndex < Ports.Num(); ++PortIndex)
+			{
+				for (const double BoneEndSign : { -1.0, 1.0 })
+				{
+					const AssemblyRigidPartMetrics::FConnectionPort& Port = Ports[PortIndex];
+					const FString Context = FString::Printf(TEXT("Shape %d, port %d, global %.2f, bone end %.0f"), static_cast<uint8>(Kind), PortIndex, GlobalAngle, BoneEndSign);
+					FAssemblyFreeSettings Settings;
+					Settings.CoreLocalPosition = FVector2D(-1000, 0);
+					UAssemblyComponent* Model = NewObject<UAssemblyComponent>();
+					if (!Model->ConfigureFreeAssembly(Settings, { ShortSurfaceBone(), Joint }, {}, Reason)) { AddError(Reason.ToString()); return false; }
+					const FTransform TargetPose = AssemblyFreeRules::MakePlacement(FVector2D(400,200), GlobalAngle).LocalVisualTransform;
+					const FVector Point3 = TargetPose.TransformPosition(FVector(Port.Point.X,0,Port.Point.Y));
+					const FVector Axis3 = TargetPose.TransformVectorNoScale(FVector(Port.OutwardAxis.X,0,Port.OutwardAxis.Y));
+					const FVector2D Point(Point3.X,Point3.Z), Outward(Axis3.X,Axis3.Z);
+					const FVector2D BoneAxis = -Outward * BoneEndSign;
+					const float BoneAngle = FMath::RadiansToDegrees(FMath::Atan2(-BoneAxis.Y,BoneAxis.X));
+					const FVector2D BonePosition = Point + Outward * 32.0;
+					FGuid JointId;
+					if (!TestTrue(Context + TEXT(" installs the fixed target"), Model->TryInstallJointPart(Joint.TypeId,FVector2D(400,200),GlobalAngle,JointId,Reason))) return false;
+					const FAssemblyPlacementResult Preview = Model->ResolveFreeBoneDragPlacement(TEXT("Bone"),BonePosition + Outward * 5.0,BoneAngle + 23.0f,FGuid(),FAssemblySurfaceSnapState());
+					if (!TestTrue(Context + TEXT(" auto-aligns a dragged bone to the selected end"), Preview.bValid && Preview.SurfaceSnap.bSnapped && Preview.SurfaceSnap.TargetId == JointId)) { AddError(Preview.Reason.ToString()); return false; }
+					TestTrue(Context + TEXT(" preserves the selected bone end and connector port"), Preview.SurfaceSnap.SourceLocalAnchor.Equals(FVector2D(BoneEndSign*32,0),.001)
+						&& Preview.SurfaceSnap.TargetLocalAnchor.Equals(Port.Point,.001));
+					TestTrue(Context + TEXT(" puts the bone axis exactly on the port extension"), Preview.LocalPosition.Equals(BonePosition,.001)
+						&& FMath::Abs(FMath::FindDeltaAngleDegrees(Preview.RotationDegrees,BoneAngle)) < .001);
+					const FAssemblyPlacementResult HeldBone = Model->ResolveFreeBoneDragPlacement(TEXT("Bone"),BonePosition+Outward*21.0,BoneAngle+23.0f,FGuid(),Preview.SurfaceSnap);
+					TestTrue(Context + TEXT(" holds that exact port while dragging the bone"),HeldBone.bValid && HeldBone.SurfaceSnap.bSnapped
+						&& HeldBone.LocalVisualTransform.Equals(Preview.LocalVisualTransform,.001)
+						&& HeldBone.SurfaceSnap.TargetLocalAnchor.Equals(Port.Point,.001));
+					const FAssemblyPlacementResult FreeBone = Model->ResolveFreeBoneDragPlacement(TEXT("Bone"),BonePosition+Outward*33.0,BoneAngle+23.0f,FGuid(),HeldBone.SurfaceSnap);
+					TestTrue(Context + TEXT(" releases the dragged bone beyond the larger threshold"),FreeBone.bValid && !FreeBone.SurfaceSnap.bSnapped
+						&& FreeBone.LocalPosition.Equals(BonePosition+Outward*33.0,.001));
+					FGuid BoneId;
+					TestTrue(Context + TEXT(" commits the exact shown pose"), Model->TryInstallFreeBone(TEXT("Bone"),Preview.LocalPosition,Preview.RotationDegrees,BoneId,Reason));
+					TestTrue(Context + TEXT(" creates exactly the permitted pair"), Model->GetJoints().Num() == 1 && IsSurfacePair(Model->GetJoints()[0],JointId,BoneId));
+					TestTrue(Context + TEXT(" consumes only one of each stock"), Model->GetRemainingQuantity(TEXT("Bone")) == 11 && Model->GetRemainingQuantity(Joint.TypeId) == 1);
+
+					// Reverse the drag: each actual joint end aligns to either signed bone end too.
+					Model = NewObject<UAssemblyComponent>();
+					if (!Model->ConfigureFreeAssembly(Settings,{ShortSurfaceBone(),Joint},{},Reason)) { AddError(Reason.ToString()); return false; }
+					const FTransform FixedBone = AssemblyFreeRules::MakePlacement(FVector2D(400,200),GlobalAngle).LocalVisualTransform;
+					const FVector FixedEnd3 = FixedBone.TransformPosition(FVector(BoneEndSign*32,0,0));
+					const FVector FixedAxis3 = FixedBone.TransformVectorNoScale(FVector(BoneEndSign,0,0));
+					const FVector2D FixedEnd(FixedEnd3.X,FixedEnd3.Z), FixedOutward(FixedAxis3.X,FixedAxis3.Z);
+					const float JointAngle = FMath::RadiansToDegrees(FMath::Atan2(FixedOutward.Y,-FixedOutward.X))
+						- FMath::RadiansToDegrees(FMath::Atan2(-Port.OutwardAxis.Y,Port.OutwardAxis.X));
+					const FTransform AtOrigin = AssemblyFreeRules::MakePlacement(FVector2D::ZeroVector,JointAngle).LocalVisualTransform;
+					const FVector Offset3 = AtOrigin.TransformPosition(FVector(Port.Point.X,0,Port.Point.Y));
+					const FVector2D JointPosition = FixedEnd - FVector2D(Offset3.X,Offset3.Z);
+					if (!TestTrue(Context + TEXT(" installs the fixed bone"),Model->TryInstallFreeBone(TEXT("Bone"),FVector2D(400,200),GlobalAngle,BoneId,Reason))) return false;
+					const FAssemblyPlacementResult Reverse = Model->ResolveFreeBoneDragPlacement(Joint.TypeId,JointPosition + FixedOutward*5.0,JointAngle+23.0f,FGuid(),FAssemblySurfaceSnapState());
+					if (!TestTrue(Context + TEXT(" auto-aligns a dragged joint into the bone extension"),Reverse.bValid && Reverse.SurfaceSnap.bSnapped && Reverse.SurfaceSnap.TargetId == BoneId)) { AddError(Reverse.Reason.ToString()); return false; }
+					TestTrue(Context + TEXT(" reverse snapping preserves the selected port and bone end"),Reverse.SurfaceSnap.SourceLocalAnchor.Equals(Port.Point,.001)
+						&& Reverse.SurfaceSnap.TargetLocalAnchor.Equals(FVector2D(BoneEndSign*32,0),.001));
+					TestTrue(Context + TEXT(" reverse pose has matching axes and actual anchors"),Reverse.LocalPosition.Equals(JointPosition,.001)
+						&& FMath::Abs(FMath::FindDeltaAngleDegrees(Reverse.RotationDegrees,JointAngle)) < .001);
+					const FAssemblyPlacementResult HeldJoint = Model->ResolveFreeBoneDragPlacement(Joint.TypeId,JointPosition+FixedOutward*21.0,JointAngle+23.0f,FGuid(),Reverse.SurfaceSnap);
+					TestTrue(Context + TEXT(" holds that exact joint port and signed bone end"),HeldJoint.bValid && HeldJoint.SurfaceSnap.bSnapped
+						&& HeldJoint.LocalVisualTransform.Equals(Reverse.LocalVisualTransform,.001)
+						&& HeldJoint.SurfaceSnap.SourceLocalAnchor.Equals(Port.Point,.001));
+					const FAssemblyPlacementResult FreeJoint = Model->ResolveFreeBoneDragPlacement(Joint.TypeId,JointPosition+FixedOutward*33.0,JointAngle+23.0f,FGuid(),HeldJoint.SurfaceSnap);
+					TestTrue(Context + TEXT(" releases the dragged joint beyond the larger threshold"),FreeJoint.bValid && !FreeJoint.SurfaceSnap.bSnapped
+						&& FreeJoint.LocalPosition.Equals(JointPosition+FixedOutward*33.0,.001));
+					TestTrue(Context + TEXT(" reverse preview commits without changing its pose"),Model->TryInstallJointPart(Joint.TypeId,Reverse.LocalPosition,Reverse.RotationDegrees,JointId,Reason));
+					TestTrue(Context + TEXT(" reverse commit has one actual constraint"),Model->GetJoints().Num()==1 && IsSurfacePair(Model->GetJoints()[0],JointId,BoneId));
+				}
+			}
+		}
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblyPortLatchAndSidePolicyTest, "JGD2026.Assembly.SurfaceSnap.Ports.SideRejectionAndSamePortHysteresis", SurfaceSnapFlags)
+bool FAssemblyPortLatchAndSidePolicyTest::RunTest(const FString& Parameters)
+{
+	const FAssemblyBoneDefinition Bar = AssemblyRigidPartMetrics::MakeJointPartDefinition(EAssemblyJointPartShape::Bar,.1f);
+	UAssemblyComponent* Model = NewObject<UAssemblyComponent>();
+	FAssemblyFreeSettings Settings;
+	Settings.CoreLocalPosition = FVector2D(-1000,0);
+	FText Reason;
+	TestTrue(TEXT("Configure endpoint-only bar case"),Model->ConfigureFreeAssembly(Settings,{ShortSurfaceBone(),Bar},{},Reason));
+	FGuid BarId, BoneId;
+	TestTrue(TEXT("Stage the horizontal bar"),Model->TryInstallJointPart(Bar.TypeId,FVector2D(200,0),0,BarId,Reason));
+	const FAssemblyPlacementResult Side = Model->ResolveFreeBoneDragPlacement(TEXT("Bone"),FVector2D(200,53),-90,FGuid(),FAssemblySurfaceSnapState());
+	TestTrue(TEXT("A bone near the long side remains free instead of rotating into a fake central port"),Side.bValid && !Side.SurfaceSnap.bSnapped && Side.RotationDegrees == -90);
+	TestTrue(TEXT("An exact side tangent is legal free staging"),Model->TryInstallFreeBone(TEXT("Bone"),FVector2D(200,48),-90,BoneId,Reason));
+	TestTrue(TEXT("Touching the long side creates no constraint edge"),Model->GetJoints().IsEmpty());
+	TestTrue(TEXT("Remove the staged bone"),Model->TryRemoveInstance(BoneId,Reason));
+	const FAssemblyPlacementResult First = Model->ResolveFreeBoneDragPlacement(TEXT("Bone"),FVector2D(269,0),23,FGuid(),FAssemblySurfaceSnapState());
+	if (!TestTrue(TEXT("The real right port rotates a bone to a collinear pose"),First.bValid && First.SurfaceSnap.bSnapped && First.LocalPosition.Equals(FVector2D(264,0),.001))) return false;
+	const FAssemblyPlacementResult Held = Model->ResolveFreeBoneDragPlacement(TEXT("Bone"),FVector2D(285,0),23,FGuid(),First.SurfaceSnap);
+	TestTrue(TEXT("The same port and signed bone end remain latched within release distance"),Held.bValid && Held.SurfaceSnap.bSnapped
+		&& Held.SurfaceSnap.TargetLocalAnchor.Equals(First.SurfaceSnap.TargetLocalAnchor,.001)
+		&& Held.SurfaceSnap.SourceLocalAnchor.Equals(First.SurfaceSnap.SourceLocalAnchor,.001) && Held.LocalVisualTransform.Equals(First.LocalVisualTransform,.001));
+	const FAssemblyPlacementResult Released = Model->ResolveFreeBoneDragPlacement(TEXT("Bone"),FVector2D(297,0),23,FGuid(),Held.SurfaceSnap);
+	TestTrue(TEXT("Pulling beyond release distance restores free pointer and requested angle"),Released.bValid && !Released.SurfaceSnap.bSnapped
+		&& Released.LocalPosition.Equals(FVector2D(297,0),.001) && Released.RotationDegrees == 23);
+	TestTrue(TEXT("Previews never consume stock"),Model->GetRemainingQuantity(TEXT("Bone")) == 12 && Model->GetRemainingQuantity(Bar.TypeId) == 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblyPortBlockedTransactionTest, "JGD2026.AssemblyInteraction.SurfaceSnap.Ports.BlockedAlignedDropRestoresInstancesAndStock", SurfaceSnapFlags)
+bool FAssemblyPortBlockedTransactionTest::RunTest(const FString& Parameters)
+{
+	FSurfaceDragWorld T;
+	FAssemblyFreeSettings Settings;
+	Settings.CoreLocalPosition=FVector2D(-1000,0);
+	FAssemblyBoneDefinition Corner=AssemblyRigidPartMetrics::MakeJointPartDefinition(EAssemblyJointPartShape::Corner,.1f);
+	FAssemblyBoneDefinition Blocker=ShortSurfaceBone();
+	Blocker.TypeId=TEXT("PortBlocker");
+	Blocker.SurfaceOutline={FVector2D(-2,-2),FVector2D(2,-2),FVector2D(2,2),FVector2D(-2,2)};
+	if (!TestTrue(TEXT("Configure a real aligned port obstruction"),T.Model->ConfigureFreeAssembly(Settings,{ShortSurfaceBone(),Corner,Blocker},{},T.Reason))) return false;
+	FGuid Bone,Obstacle,Original,Failed;
+	if (!TestTrue(TEXT("Stage the bone and the small blocker"),T.Model->TryInstallFreeBone(TEXT("Bone"),FVector2D(200,0),0,Bone,T.Reason)
+		&& T.Model->TryInstallFreeBone(Blocker.TypeId,FVector2D(280,-16),0,Obstacle,T.Reason))) return false;
+	if (!TestTrue(TEXT("Begin a corner shelf preview"),T.Interaction->BeginBoneDrag(Corner.TypeId,FGuid(),T.Reason))) return false;
+	// Shelf previews deliberately remain invalid until a fresh pointer is supplied. Establish a
+	// clear legal pose before testing rotation, whose return value describes preview validity.
+	if (!TestTrue(TEXT("Supply a fresh pointer at an unobstructed position"),T.Interaction->UpdateBoneDragAtLocalPosition(FVector2D(600,200),T.Reason))) return false;
+	if (!TestTrue(TEXT("Rotate away from the eventual automatic alignment"),T.Interaction->RotateBoneDrag(17,T.Reason))) return false;
+	TestFalse(TEXT("Auto-aligned corner cannot cut through another body"),T.Interaction->UpdateBoneDragAtLocalPosition(FVector2D(269,-16),T.Reason));
+	TestFalse(TEXT("A blocked new drop fails atomically"),T.Interaction->CommitBoneDrag(Failed,T.Reason));
+	TestTrue(TEXT("The blocked shelf drop creates no ID or stock change"),!Failed.IsValid() && T.Model->GetJointParts().IsEmpty() && T.Model->GetRemainingQuantity(Corner.TypeId)==2);
+	if (!TestTrue(TEXT("Install an original corner away from the obstruction"),T.Model->TryInstallJointPart(Corner.TypeId,FVector2D(700,0),0,Original,T.Reason))) return false;
+	ANormalBone* OriginalActor=T.Interaction->GetBoneActor(Original);
+	if (!TestNotNull(TEXT("The original independent corner view exists"),OriginalActor)) return false;
+	const FTransform Before=OriginalActor->GetActorTransform();
+	TestTrue(TEXT("Begin moving the installed corner"),T.Interaction->BeginBoneDrag(Corner.TypeId,Original,T.Reason));
+	TestFalse(TEXT("The installed move sees the same blocked port"),T.Interaction->UpdateBoneDragAtLocalPosition(FVector2D(269,-16),T.Reason));
+	TestFalse(TEXT("The failed installed drop rolls back"),T.Interaction->CommitBoneDrag(Failed,T.Reason));
+	TestTrue(TEXT("Actor identity, original pose, visibility and inventory are restored"),!Failed.IsValid() && T.Interaction->GetBoneActor(Original)==OriginalActor
+		&& !OriginalActor->IsHidden() && OriginalActor->GetActorTransform().Equals(Before,.001) && T.Model->GetJointParts().Num()==1 && T.Model->GetRemainingQuantity(Corner.TypeId)==1);
 	return true;
 }
 

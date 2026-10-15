@@ -29,6 +29,10 @@ public:
 	// Ordered A-to-B slices of one complete muscle image. Empty keeps the repeated CurveSprite view.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Muscle|Visual")
 	TArray<TObjectPtr<UPaperSprite>> CurveSliceSprites;
+	// Keep the complete image's width/height ratio and shared centreline, including transparent
+	// margins and trimmed render geometry. Empty slice arrays still use LineWidth placeholders.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Muscle|Visual")
+	bool bUseArtworkProportions = false;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Muscle|Visual")
 	TObjectPtr<UMaterialInterface> CurveMaterial;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Muscle|Visual", meta = (ClampMin = "4", ClampMax = "64"))
@@ -49,7 +53,7 @@ public:
 	// Drawing priority only; anchors are still at their exact world positions.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Muscle|Visual")
 	int32 TranslucencySortPriority = 10;
-	// Display-only offset along the assembly plane's +Y normal; negative draws behind bones.
+	// Small display-only bias inside this muscle's ordered layer; clamped by the layer policy.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Muscle|Visual")
 	float VisualDepthOffset = -1.0f;
 

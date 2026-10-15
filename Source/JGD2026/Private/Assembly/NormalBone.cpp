@@ -146,7 +146,7 @@ bool ANormalBone::HasValidGeometry(const FNormalBonePhysicalStats& Stats) const
 {
 	const UPaperSprite* Sprite = BoneSprite->GetSprite();
 	if (!Stats.bValid || !Sprite || !FMath::IsFinite(BodyHalfThickness) || BodyHalfThickness <= 0.0f
-		|| !FMath::IsFinite(VisualDepthOffset))
+		|| !FMath::IsFinite(VisualDepthOffset) || !FMath::IsFinite(ArtworkOverlapScale) || ArtworkOverlapScale < 1.0f)
 	{
 		return false;
 	}
@@ -192,14 +192,19 @@ TArray<FIntPoint> ANormalBone::MakeRectangularBoneFootprint(const FNormalBonePar
 
 void ANormalBone::UpdateGeometry(const FNormalBonePhysicalStats& Stats)
 {
-	const FBoxSphereBounds Bounds = BoneSprite->GetSprite()->GetRenderBounds();
 	const FVector HalfSize(Stats.Length * 0.5, BodyHalfThickness, Stats.Thickness * 0.5);
 	BoneBody->SetBoxExtent(HalfSize, false);
+	RefreshVisualGeometry(Stats);
+}
+
+void ANormalBone::RefreshVisualGeometry(const FNormalBonePhysicalStats& Stats)
+{
+	const FBoxSphereBounds Bounds = BoneSprite->GetSprite()->GetRenderBounds();
 	// Sprite fitting does not scale the bone-local coordinate system used by muscles and physics.
-	const double LengthScale = HalfSize.X / Bounds.BoxExtent.X;
+	const double LengthScale = Stats.Length * 0.5 / Bounds.BoxExtent.X;
 	const double ArtworkThicknessFactor = (static_cast<uint8>(GetBoneParameters().Thickness) + 1) * 0.5;
 	FVector VisualScale(LengthScale, 1.0, bUseArtworkProportions
-		? LengthScale * ArtworkThicknessFactor : HalfSize.Z / Bounds.BoxExtent.Z);
+		? LengthScale * ArtworkThicknessFactor : Stats.Thickness * 0.5 / Bounds.BoxExtent.Z);
 	const FAssemblyBoneDefinition Definition = GetRigidPartDefinition();
 	if (Definition.PartKind == EAssemblyRigidPartKind::JointPart)
 	{
@@ -208,13 +213,24 @@ void ANormalBone::UpdateGeometry(const FNormalBonePhysicalStats& Stats)
 		const double UniformScale = Stats.Length / Canvas.X * BoneSprite->GetSprite()->GetPixelsPerUnrealUnit();
 		VisualScale = FVector(UniformScale, 1.0, UniformScale);
 	}
-	BoneSprite->SetRelativeScale3D(VisualScale);
-	double Depth = VisualDepthOffset + AssemblyRenderLayers::PreviewOffset;
-	if (IsBoneInitialized())
+	else if (bUseArtworkProportions)
 	{
-		const int32 Rank = AssemblyRenderLayers::GetRank(BoundAssembly->GetBones(), BoneData.InstanceId);
-		Depth = VisualDepthOffset - AssemblyRenderLayers::DepthStep * (Rank + 1.0);
+		VisualScale.X *= ArtworkOverlapScale;
+		VisualScale.Z *= ArtworkOverlapScale;
 	}
+	BoneSprite->SetRelativeScale3D(VisualScale);
+	AssemblyRenderLayers::FCounts Counts;
+	int32 InstanceRank = 0;
+	const UAssemblyComponent* RenderAssembly = BoundAssembly.Get();
+	if (!RenderAssembly && GetOwner()) RenderAssembly = GetOwner()->FindComponentByClass<UAssemblyComponent>();
+	if (IsValid(RenderAssembly))
+	{
+		const TArray<FAssemblyBoneInstance> Bones = RenderAssembly->GetBones();
+		Counts = { Bones.Num(), RenderAssembly->GetMuscles().Num(), RenderAssembly->GetJoints().Num() };
+		if (IsBoneInitialized()) InstanceRank = AssemblyRenderLayers::GetRank(Bones, BoneData.InstanceId);
+	}
+	const double Depth = AssemblyRenderLayers::RigidDepth(Counts, InstanceRank,
+		Definition.PartKind == EAssemblyRigidPartKind::JointPart, !IsBoneInitialized(), VisualDepthOffset);
 	BoneSprite->SetRelativeLocation(FVector(-Bounds.Origin.X * VisualScale.X, Depth, -Bounds.Origin.Z * VisualScale.Z));
 	BoneSprite->SetRelativeRotation(FRotator::ZeroRotator);
 }
@@ -223,9 +239,17 @@ void ANormalBone::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
 	const FNormalBonePhysicalStats Stats = GetPhysicalStats();
-	if (!BoneBody->IsSimulatingPhysics() && HasValidGeometry(Stats))
+	if (HasValidGeometry(Stats))
 	{
-		UpdateGeometry(Stats);
+		if (!BoneBody->IsSimulatingPhysics() && (!IsBoneInitialized()
+			|| BoundAssembly->GetPhase() == EAssemblyPhase::Assembly))
+		{
+			UpdateGeometry(Stats);
+		}
+		else
+		{
+			RefreshVisualGeometry(Stats);
+		}
 	}
 }
 
@@ -439,6 +463,10 @@ void ANormalBone::HandleAssemblyChanged()
 		Destroy();
 		return;
 	}
+	// GUID ranks and category ranges change when another part is inserted or removed.
+	// Refresh only the sprite even in Playing; never touch the simulated body here.
+	const FNormalBonePhysicalStats Stats = GetPhysicalStats();
+	if (HasValidGeometry(Stats)) RefreshVisualGeometry(Stats);
 	// Free assembly follows the registered body, including when its coordinate frame moves.
 	// A key/constraint edit must not apply an unchanged cached pose in a new frame and teleport it.
 	// Explicit RefreshAssemblyPose remains available when a caller intentionally reapplies the model.

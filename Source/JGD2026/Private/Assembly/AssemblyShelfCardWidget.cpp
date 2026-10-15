@@ -4,6 +4,7 @@
 #include "Assembly/AssemblyDragDropOperation.h"
 #include "Assembly/AssemblyInteractionComponent.h"
 #include "Assembly/AssemblyMuscle.h"
+#include "Assembly/AssemblySpriteImage.h"
 #include "Assembly/AssemblyWorkbenchComponent.h"
 #include "Assembly/NormalBone.h"
 #include "Blueprint/WidgetBlueprintLibrary.h"
@@ -11,7 +12,6 @@
 #include "Components/Border.h"
 #include "Components/HorizontalBox.h"
 #include "Components/HorizontalBoxSlot.h"
-#include "Components/Image.h"
 #include "Components/ScaleBox.h"
 #include "Components/ScaleBoxSlot.h"
 #include "Components/SizeBox.h"
@@ -42,7 +42,7 @@ void UAssemblyShelfCardWidget::BuildPlaceholder()
 	IconScale->SetStretch(EStretch::ScaleToFit);
 	IconScale->SetStretchDirection(EStretchDirection::Both);
 	IconScale->SetVisibility(ESlateVisibility::HitTestInvisible);
-	IconImage = WidgetTree->ConstructWidget<UImage>(UImage::StaticClass(), TEXT("CardIcon"));
+	IconImage = WidgetTree->ConstructWidget<UAssemblySpriteImage>(UAssemblySpriteImage::StaticClass(), TEXT("CardIcon"));
 	IconImage->SetVisibility(ESlateVisibility::Hidden);
 	UScaleBoxSlot* IconSlot = Cast<UScaleBoxSlot>(IconScale->AddChild(IconImage));
 	IconSlot->SetHorizontalAlignment(HAlign_Center);
@@ -116,8 +116,8 @@ void UAssemblyShelfCardWidget::RefreshQuantity()
 	if (IconImage && AppliedIconSprite != PresentationSprite)
 	{
 		AppliedIconSprite = PresentationSprite;
-		IconImage->SetBrushFromAtlasInterface(PresentationSprite, true);
-		IconImage->SetVisibility(PresentationSprite ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Hidden);
+		IconImage->SetSprite(PresentationSprite);
+		IconImage->SetVisibility(IconImage->HasRenderableSprite() ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Hidden);
 	}
 	if (Caption)
 	{

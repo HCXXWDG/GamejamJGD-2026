@@ -133,13 +133,16 @@ bool UAssemblyInteractionComponent::CreateCore(FText& OutReason)
 	CreatedCoreVisual->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	CreatedCoreVisual->SetCastShadow(false);
 	CreatedCoreVisual->RegisterComponent();
-	UpdateCorePlaceholder();
+	UpdateCorePlaceholder(true);
 	return true;
 }
 
-void UAssemblyInteractionComponent::UpdateCorePlaceholder()
+void UAssemblyInteractionComponent::UpdateCorePlaceholder(bool bInitialPlacement)
 {
-	if (!IsValid(CreatedCoreBody) || !BoundAssembly.IsValid() || CreatedCoreBody->IsSimulatingPhysics()) { return; }
+	// A physics provider may move the body without enabling UE's rigid-body simulation.
+	// Assembly owns its initial pose; Playing owns the actual core pose and shape.
+	if (!IsValid(CreatedCoreBody) || !BoundAssembly.IsValid() || CreatedCoreBody->IsSimulatingPhysics()
+		|| (!bInitialPlacement && BoundAssembly->GetPhase() == EAssemblyPhase::Playing)) { return; }
 	const FAssemblyFreeSettings Settings = BoundAssembly->GetFreeSettings();
 	const FTransform Frame = BoundAssembly->GetGridFrameTransform();
 	CreatedCoreBody->SetSphereRadius(Settings.CoreRadius, false);
@@ -435,7 +438,11 @@ void UAssemblyInteractionComponent::RefreshBoneDragPreview(bool bAlwaysNotify)
 		|| Previous.SurfaceSnap.RadialPointerOffset != DragSurfaceSnap.RadialPointerOffset
 		|| Previous.SurfaceSnap.RadialInputAngle != DragSurfaceSnap.RadialInputAngle
 		|| Previous.SurfaceSnap.bRadialXOutward != DragSurfaceSnap.bRadialXOutward;
-	if (bAlwaysNotify || bChanged) { OnBoneDragPreviewChanged.Broadcast(); }
+	if (bAlwaysNotify || bChanged)
+	{
+		UpdateAppearanceTransforms();
+		OnBoneDragPreviewChanged.Broadcast();
+	}
 }
 
 void UAssemblyInteractionComponent::ApplyPreview()
@@ -547,6 +554,7 @@ void UAssemblyInteractionComponent::CancelBoneDrag()
 	RawDragPosition = FVector2D::ZeroVector;
 	DragRotationDegrees = 0.0f;
 	DragSurfaceSnap = FAssemblySurfaceSnapState();
+	UpdateAppearanceTransforms();
 	if (bWasDragging) { OnBoneDragPreviewChanged.Broadcast(); }
 }
 

@@ -113,6 +113,9 @@ public:
 	UPaperSprite* GetCoreArtSprite() const;
 	UFUNCTION(BlueprintPure, Category = "Assembly|Visual")
 	UPaperSprite* GetJointArtSprite(FGuid InstanceId) const;
+	// Presentation only. The connection's kind, anchors and physics remain in the model.
+	UFUNCTION(BlueprintPure, Category = "Assembly|Visual")
+	UPaperSpriteComponent* GetConnectionPinView(FGuid ConnectionId) const;
 	// Explicitly reload a changed configuration; artwork is never resolved every frame.
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Visual")
 	void RefreshAppearance();
@@ -157,6 +160,8 @@ private:
 	UPROPERTY(Transient)
 	TMap<FGuid, TObjectPtr<UPaperSpriteComponent>> JointArtViews;
 	UPROPERTY(Transient)
+	TMap<FGuid, TObjectPtr<UPaperSpriteComponent>> ConnectionPinViews;
+	UPROPERTY(Transient)
 	TMap<FGuid, TObjectPtr<UPaperSpriteComponent>> BreakableMarkerViews;
 	UPROPERTY()
 	TObjectPtr<UStaticMesh> CorePlaceholderMesh;
@@ -182,7 +187,7 @@ private:
 
 	bool CanEdit(FText& OutReason) const;
 	bool CreateCore(FText& OutReason);
-	void UpdateCorePlaceholder();
+	void UpdateCorePlaceholder(bool bInitialPlacement = false);
 	void ResolveAppearanceData();
 	void SynchronizeAppearanceViews();
 	void UpdateAppearanceTransforms();

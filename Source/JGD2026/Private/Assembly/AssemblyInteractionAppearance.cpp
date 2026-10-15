@@ -122,7 +122,14 @@ UPaperSprite* UAssemblyInteractionComponent::GetJointArtSprite(FGuid InstanceId)
 			}
 		}
 	}
-	return nullptr;
+	UPaperSpriteComponent* Pin = GetConnectionPinView(InstanceId);
+	return Pin && Pin->IsVisible() ? Pin->GetSprite() : nullptr;
+}
+
+UPaperSpriteComponent* UAssemblyInteractionComponent::GetConnectionPinView(FGuid ConnectionId) const
+{
+	const TObjectPtr<UPaperSpriteComponent>* Pin = ConnectionPinViews.Find(ConnectionId);
+	return Pin && IsValid(Pin->Get()) ? Pin->Get() : nullptr;
 }
 
 bool UAssemblyInteractionComponent::HasJointArt(FGuid InstanceId) const
@@ -187,13 +194,16 @@ void UAssemblyInteractionComponent::SynchronizeAppearanceViews()
 	}
 
 	TSet<FGuid> JointIds;
+	TSet<FGuid> PinIds;
 	TSet<FGuid> MarkerIds;
+	const bool bHasPin = GetUsableSpriteBounds(Appearance->ConnectionPinSprite, Bounds)
+		&& IsUsableDiameter(Appearance->ConnectionPinDiameter);
 	for (const FAssemblyJointInstance& Joint : BoundAssembly->GetJoints())
 	{
 		const TObjectPtr<UPaperSprite>* Sprite = Appearance->JointSprites.Find(Joint.Kind);
 		if (!Joint.InstanceId.IsValid()) continue;
 		const bool bHasIndependentPart = BoundAssembly->IsJointPart(Joint.BoneA) || BoundAssembly->IsJointPart(Joint.BoneB);
-		if (!bHasIndependentPart && Sprite && GetUsableSpriteBounds(Sprite->Get(), Bounds)
+		if (!bHasPin && !bHasIndependentPart && Sprite && GetUsableSpriteBounds(Sprite->Get(), Bounds)
 			&& IsUsableDiameter(Appearance->JointDiameter))
 		{
 			// Independent joint parts already have their complete artwork; do not stack a legacy cap over it.
@@ -202,7 +212,15 @@ void UAssemblyInteractionComponent::SynchronizeAppearanceViews()
 			if (!IsValid(View)) { View = CreateSpriteView(GetOwner(), GetOwner()->GetRootComponent(), true); }
 			ApplySpriteStyle(View, Sprite->Get(), Appearance);
 		}
-		if (IsBreakable(Joint.Kind) && GetUsableSpriteBounds(Appearance->BreakableJointMarker, Bounds)
+		if (bHasPin)
+		{
+			PinIds.Add(Joint.InstanceId);
+			TObjectPtr<UPaperSpriteComponent>& Pin = ConnectionPinViews.FindOrAdd(Joint.InstanceId);
+			if (!IsValid(Pin)) { Pin = CreateSpriteView(GetOwner(), GetOwner()->GetRootComponent(), true); }
+			ApplySpriteStyle(Pin, Appearance->ConnectionPinSprite, Appearance, true);
+		}
+		if (IsBreakable(Joint.Kind) && (!bHasPin || Appearance->BreakableJointMarker != Appearance->ConnectionPinSprite)
+			&& GetUsableSpriteBounds(Appearance->BreakableJointMarker, Bounds)
 			&& IsUsableDiameter(Appearance->BreakableMarkerDiameter))
 		{
 			MarkerIds.Add(Joint.InstanceId);
@@ -219,6 +237,10 @@ void UAssemblyInteractionComponent::SynchronizeAppearanceViews()
 	{
 		if (!MarkerIds.Contains(It.Key())) { DestroySpriteView(It.Value()); It.RemoveCurrent(); }
 	}
+	for (auto It = ConnectionPinViews.CreateIterator(); It; ++It)
+	{
+		if (!PinIds.Contains(It.Key())) { DestroySpriteView(It.Value()); It.RemoveCurrent(); }
+	}
 	UpdateAppearanceTransforms();
 }
 
@@ -226,11 +248,13 @@ void UAssemblyInteractionComponent::UpdateAppearanceTransforms()
 {
 	if (!BoundAssembly.IsValid() || !IsValid(LoadedAppearanceData)) { return; }
 	const UAssemblyAppearanceData* Appearance = LoadedAppearanceData;
+	const AssemblyRenderLayers::FCounts Counts { BoundAssembly->GetBones().Num(),
+		BoundAssembly->GetMuscles().Num(), BoundAssembly->GetJoints().Num() };
 	UPrimitiveComponent* Core = GetCoreBody();
 	if (IsValid(CoreArtView))
 	{
 		FTransform Relative;
-		const FVector Center(0.0, Appearance->PlaneDepthOffset, 0.0);
+		const FVector Center(0.0, AssemblyRenderLayers::CoreDepth(Counts, Appearance->PlaneDepthOffset), 0.0);
 		const bool bValid = IsValid(Core) && FMath::IsFinite(Appearance->PlaneDepthOffset)
 			&& MakeSpriteTransform(CoreArtView->GetSprite(), BoundAssembly->GetFreeSettings().CoreRadius * 2.0f,
 				FQuat::Identity, Center, Relative);
@@ -249,32 +273,43 @@ void UAssemblyInteractionComponent::UpdateAppearanceTransforms()
 	for (const FAssemblyJointInstance& Joint : BoundAssembly->GetJoints())
 	{
 		TObjectPtr<UPaperSpriteComponent>* View = JointArtViews.Find(Joint.InstanceId);
+		TObjectPtr<UPaperSpriteComponent>* Pin = ConnectionPinViews.Find(Joint.InstanceId);
 		TObjectPtr<UPaperSpriteComponent>* Marker = BreakableMarkerViews.Find(Joint.InstanceId);
-		if (!View && !Marker) { continue; }
+		if (!View && !Pin && !Marker) { continue; }
 		FVector A, B;
 		FTransform BonePose;
-		if (!GetJointWorldAnchors(Joint, A, B) || !BoundAssembly->GetBoneWorldTransform(Joint.BoneB, BonePose))
+		const bool bHiddenByDrag = bDragging && DragExistingId.IsValid()
+			&& (Joint.BoneA == DragExistingId || Joint.BoneB == DragExistingId);
+		if (bHiddenByDrag || !GetJointWorldAnchors(Joint, A, B)
+			|| !BoundAssembly->GetBoneWorldTransform(Joint.BoneB, BonePose))
 		{
 			if (View && IsValid(View->Get())) { View->Get()->SetVisibility(false, false); }
+			if (Pin && IsValid(Pin->Get())) { Pin->Get()->SetVisibility(false, false); }
 			if (Marker && IsValid(Marker->Get())) { Marker->Get()->SetVisibility(false, false); }
 			continue;
 		}
 		const FQuat Rotation = BonePose.GetRotation();
 		const FVector JointCenter = (A + B) * 0.5;
 		const int32 Rank = AssemblyRenderLayers::GetRank(BoundAssembly->GetJoints(), Joint.InstanceId);
-		const double InstanceDepth = Rank * AssemblyRenderLayers::DepthStep;
+		if (Pin)
+		{
+			SetSpritePose(Pin->Get(), Appearance->ConnectionPinDiameter, Rotation,
+				JointCenter + Rotation.RotateVector(FVector(0.0,
+					AssemblyRenderLayers::ConnectionPinDepth(Counts, Rank, Appearance->PlaneDepthOffset), 0.0)));
+		}
 		if (View)
 		{
 			// Masked Sprite materials use the depth buffer, so separate overlapping visual layers.
 			SetSpritePose(View->Get(), Appearance->JointDiameter, Rotation,
-				JointCenter + Rotation.RotateVector(FVector(0.0, Appearance->PlaneDepthOffset + 0.1f + InstanceDepth, 0.0)));
+				JointCenter + Rotation.RotateVector(FVector(0.0,
+					AssemblyRenderLayers::OverlayDepth(Counts, Rank, false, Appearance->PlaneDepthOffset), 0.0)));
 		}
 		if (Marker)
 		{
 			const double Offset = Appearance->JointDiameter * 0.35;
 			SetSpritePose(Marker->Get(), Appearance->BreakableMarkerDiameter, Rotation,
-				JointCenter + Rotation.RotateVector(FVector(Offset, Appearance->PlaneDepthOffset + 0.2f
-					+ BoundAssembly->GetJoints().Num() * AssemblyRenderLayers::DepthStep + InstanceDepth, Offset)));
+				JointCenter + Rotation.RotateVector(FVector(Offset,
+					AssemblyRenderLayers::OverlayDepth(Counts, Rank, true, Appearance->PlaneDepthOffset), Offset)));
 		}
 	}
 }
@@ -287,5 +322,7 @@ void UAssemblyInteractionComponent::DestroyAppearanceViews()
 	JointArtViews.Reset();
 	for (const auto& Item : BreakableMarkerViews) { DestroySpriteView(Item.Value); }
 	BreakableMarkerViews.Reset();
+	for (const auto& Item : ConnectionPinViews) { DestroySpriteView(Item.Value); }
+	ConnectionPinViews.Reset();
 	if (IsValid(CreatedCoreVisual)) { CreatedCoreVisual->SetVisibility(true, false); }
 }

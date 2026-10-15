@@ -87,7 +87,8 @@ struct JGD2026_API FAssemblyBoneDefinition
 	// Full body width and height in the existing local XZ plane, independent of texture pixels.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|JointPart")
 	FVector2D JointPartSize = FVector2D(64.0, 64.0);
-	// Legacy marker positions for Blueprint compatibility; free surface connections no longer use slots.
+	// Non-circular joint ports in body-local XZ units; directions come from their actual end faces.
+	// Round parts keep continuous radial connections; these points are only optional markers there.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|JointPart")
 	TArray<FVector2D> ConnectionPoints;
 	// Optional simple closed polygon in body-local XZ units. Empty uses the standard shape.

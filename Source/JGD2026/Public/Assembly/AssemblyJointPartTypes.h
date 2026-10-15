@@ -24,6 +24,15 @@ struct FAssemblyBoneDefinition;
 /** Shared body metrics and attachment points. Artwork never scales either the actor or its local anchor frame. */
 namespace AssemblyRigidPartMetrics
 {
+	/** Body-local XZ attachment position and the unit axis pointing out of its end face. */
+	struct FConnectionPort
+	{
+		FVector2D Point = FVector2D::ZeroVector;
+		FVector2D OutwardAxis = FVector2D::ZeroVector;
+	};
+	// Runtime geometry only. Custom ports must lie on an unambiguous actual boundary end face.
+	// Ordinary bones expose their two true axial ends; circular pieces expose their authored markers.
+	JGD2026_API bool GetConnectionPorts(const FAssemblyBoneDefinition& Definition, TArray<FConnectionPort>& OutPorts, FText& OutReason);
 	JGD2026_API bool Evaluate(const FAssemblyBoneDefinition& Definition, FNormalBonePhysicalStats& OutStats, FText& OutReason);
 	JGD2026_API TArray<FVector2D> GetConnectionPoints(const FAssemblyBoneDefinition& Definition);
 	JGD2026_API FVector2D GetJointArtworkPixelSize(EAssemblyJointPartShape Shape);

@@ -18,6 +18,11 @@ public:
 	TObjectPtr<UPaperSprite> CoreSprite;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Appearance")
 	TMap<EAssemblyJointKind, TObjectPtr<UPaperSprite>> JointSprites;
+	// One visual pin per actual connection; this does not imply that it is breakable.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Appearance")
+	TObjectPtr<UPaperSprite> ConnectionPinSprite;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Appearance", meta = (ClampMin = "0.01"))
+	float ConnectionPinDiameter = 16.0f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Appearance")
 	TObjectPtr<UPaperSprite> BreakableJointMarker;
 	// Longest displayed dimension in Unreal units. This never changes a joint's physical limits or pick radius.

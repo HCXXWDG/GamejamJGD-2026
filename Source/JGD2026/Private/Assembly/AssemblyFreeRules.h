@@ -12,7 +12,8 @@ namespace AssemblyFreeRules
 	bool IsJointKindValid(EAssemblyJointKind Kind);
 	bool IsJointKindAllowed(const FAssemblyBoneDefinition* PartA, const FAssemblyBoneDefinition* PartB, EAssemblyJointKind Kind);
 	// Exactly one ordinary bone and one connector (nullptr = core). Points retain parameter order.
-	// The connector center must lie beyond a true bone end on its long axis; both anchors are boundaries.
+	// Circular connectors align radially; noncircular end-port axes oppose the true bone-end axis.
+	// Both anchors remain on the actual body boundary.
 	bool GetEndpointConnection(const FAssemblyFreeSettings& Settings,
 		const FAssemblyBoneDefinition* PartA, const FTransform& PoseA,
 		const FAssemblyBoneDefinition* PartB, const FTransform& PoseB,

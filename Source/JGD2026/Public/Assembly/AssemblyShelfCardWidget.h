@@ -8,7 +8,7 @@
 class UAssemblyWorkbenchComponent;
 class UTextBlock;
 class UBorder;
-class UImage;
+class UAssemblySpriteImage;
 class UPaperSprite;
 
 /** A replaceable 64-unit shelf card. It never changes stock before a successful world drop. */
@@ -56,7 +56,7 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UBorder> Background;
 	UPROPERTY(Transient)
-	TObjectPtr<UImage> IconImage;
+	TObjectPtr<UAssemblySpriteImage> IconImage;
 	UPROPERTY(Transient)
 	TObjectPtr<UPaperSprite> AppliedIconSprite;
 	FName TypeId;
