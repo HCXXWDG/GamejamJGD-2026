@@ -21,6 +21,10 @@ public:
 	UAssemblyWorkbenchComponent();
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Selection", meta = (ClampMin = "1"))
 	float MusclePickRadiusPixels = 12.0f;
+	// World-unit tolerance outside a bone's contour. Keeps the chosen inner/outer side;
+	// this does not change the bone's physical shape or installed attachment coordinates.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Muscles", meta = (ClampMin = "0"))
+	float MuscleEndpointSnapDistance = 8.0f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Selection", meta = (ClampMin = "1"))
 	float JointPickRadiusPixels = 12.0f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Drag", meta = (ClampMin = "0"))

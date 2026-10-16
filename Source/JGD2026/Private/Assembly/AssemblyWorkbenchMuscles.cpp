@@ -72,7 +72,7 @@ bool UAssemblyWorkbenchComponent::BeginMusclePlacement(FName TypeId, FGuid Exist
 	{
 		ClearSelection();
 	}
-	LastMessage = LOCTEXT("ChooseFirstAnchor", "点击骨头上的第一连接点；Esc 或右键取消。");
+	LastMessage = LOCTEXT("ChooseFirstAnchor", "点击骨头内侧或外侧的第一连接点；靠近轮廓可吸附。Esc 或右键取消。");
 	OutReason = FText::GetEmpty();
 	OnWorkbenchChanged.Broadcast();
 	return true;
@@ -88,8 +88,8 @@ bool UAssemblyWorkbenchComponent::UpdateMusclePreview(FText& OutReason)
 		if (IsValid(MusclePreviewActor)) { MusclePreviewActor->SetPreviewValid(false); }
 		return false;
 	}
-	const bool bOnBone = Assembly->FindBoneAtWorldPosition(PointerWorld, CandidateEndpoint)
-		&& !Assembly->IsJointPart(CandidateEndpoint.BoneId);
+	const bool bOnBone = Assembly->FindMuscleEndpointAtWorldPosition(
+		PointerWorld, CandidateEndpoint, MuscleEndpointSnapDistance);
 	if (!bOnBone) { CandidateEndpoint = FAssemblyMuscleEndpoint(); }
 	if (Tool == EAssemblyWorkbenchTool::MuscleFirst)
 	{
@@ -132,6 +132,12 @@ bool UAssemblyWorkbenchComponent::UpdateMusclePreview(FText& OutReason)
 		// Equal anchors are invalid. A small visible stub shows that first-click state without
 		// changing either stored endpoint or the model's validation result.
 		FVector WorldB = PointerWorld;
+		if (bOnBone && !Assembly->GetEndpointWorldPosition(CandidateEndpoint, WorldB))
+		{
+			WorldB = PointerWorld;
+			MusclePreview.bValid = false;
+			MusclePreview.Reason = LOCTEXT("SecondAnchorGone", "第二连接点的骨头已失效，请重新选择。");
+		}
 		if (FVector::DistSquared(WorldA, WorldB) <= UE_KINDA_SMALL_NUMBER)
 		{
 			WorldB = WorldA + Assembly->GetGridFrameTransform().TransformVectorNoScale(FVector::XAxisVector).GetSafeNormal()
@@ -158,14 +164,14 @@ bool UAssemblyWorkbenchComponent::UpdateMusclePreview(FText& OutReason)
 bool UAssemblyWorkbenchComponent::CaptureFirstEndpoint(FText& OutReason)
 {
 	if (!CanEdit(OutReason)) { return Fail(OutReason, OutReason); }
-	if (!bPointerValid || !Assembly->FindBoneAtWorldPosition(PointerWorld, FirstEndpoint)
-		|| Assembly->IsJointPart(FirstEndpoint.BoneId))
+	if (!bPointerValid || !Assembly->FindMuscleEndpointAtWorldPosition(
+		PointerWorld, FirstEndpoint, MuscleEndpointSnapDistance))
 	{
 		FirstEndpoint = FAssemblyMuscleEndpoint();
 		return Fail(LOCTEXT("CannotCaptureFirst", "请在骨头上点击第一连接点，核心和关节组件不能连接肌肉。"), OutReason);
 	}
 	Tool = EAssemblyWorkbenchTool::MuscleSecond;
-	LastMessage = LOCTEXT("ChooseSecondAnchor", "点击骨头上的第二连接点；同一骨头可以选两个不同位置。Esc 或右键取消。");
+	LastMessage = LOCTEXT("ChooseSecondAnchor", "点击骨头内侧或外侧的第二连接点；同一对骨头可连接多条肌肉，同一骨头可选两个不同位置。Esc 或右键取消。");
 	FText PreviewReason;
 	UpdateMusclePreview(PreviewReason);
 	OutReason = FText::GetEmpty();
