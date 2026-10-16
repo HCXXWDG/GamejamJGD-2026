@@ -18,10 +18,12 @@ public class JGD2026 : ModuleRules
 			"EnhancedInput",
 			"Paper2D",
 			"DeveloperSettings",
-			"GameplayTags"
+			"GameplayTags",
+			"UMG",
+			"SlateCore"
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[] {  });
+		PrivateDependencyModuleNames.AddRange(new string[] { "Slate" });
 		if (Target.bBuildEditor)
 		{
 			// Native PIE regression tests; never linked into the game target.

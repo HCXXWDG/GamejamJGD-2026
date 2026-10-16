@@ -47,6 +47,10 @@ struct JGD2026_API FNormalBoneParameters
 	// kg per design unit squared. 2D mass uses area, not the body's Y extrusion thickness.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bone", meta = (ClampMin = "0.0001"))
 	float StandardDensityKgPerSquareUnit = 1.0f;
+	// Optional physical height/length ratio at Medium thickness; 0 keeps the original designer baseline.
+	// Thin/Thick multiply this height by 0.5/1.5. Sprite pixels never determine runtime physics.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bone", meta = (ClampMin = "0"))
+	float BodyAspectRatio = 0.0f;
 };
 
 USTRUCT(BlueprintType)

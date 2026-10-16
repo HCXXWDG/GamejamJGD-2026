@@ -1,6 +1,9 @@
 #include "Assembly/AssemblyComponent.h"
 #include "AssemblyRules.h"
 #include "AssemblyFreeRules.h"
+#include "Assembly/AssemblyJointPartTypes.h"
+#include "Assembly/AssemblySurfaceGeometry.h"
+#include "GameFramework/Actor.h"
 
 #define LOCTEXT_NAMESPACE "AssemblyComponent"
 
@@ -10,6 +13,10 @@ UAssemblyComponent::UAssemblyComponent()
 	FAssemblyBoneDefinition Bone;
 	Bone.DisplayName = LOCTEXT("DefaultBone", "骨头");
 	DefaultBones.Add(Bone);
+	for (uint8 Shape = 0; Shape <= static_cast<uint8>(EAssemblyJointPartShape::FixedRound); ++Shape)
+	{
+		DefaultJointParts.Add(AssemblyRigidPartMetrics::MakeJointPartDefinition(static_cast<EAssemblyJointPartShape>(Shape)));
+	}
 	FAssemblyMuscleDefinition Muscle;
 	Muscle.DisplayName = LOCTEXT("DefaultMuscle", "肌肉");
 	DefaultMuscles.Add(Muscle);
@@ -32,6 +39,19 @@ void UAssemblyComponent::BeginPlay()
 void UAssemblyComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	ClearInputState();
+	{
+		TGuardValue<bool> Guard(bInLifecycleCallback, true);
+		const FSimpleDelegate Shutdown = BeforeEndPlayCallback;
+		Shutdown.ExecuteIfBound();
+	}
+	BeforePlayingCallback.Unbind();
+	BeforeResetCallback.Unbind();
+	CommitPlayingCallback.Unbind();
+	VerifyPlayingCallback.Unbind();
+	FinalizePlayingCallback.Unbind();
+	AbortPlayingCallback.Unbind();
+	BeforeEndPlayCallback.Unbind();
+	LifecycleOwner.Reset();
 	bEndingPlay = true;
 	InstalledBones.Reset();
 	InstalledMuscles.Reset();
@@ -56,12 +76,89 @@ bool UAssemblyComponent::CanMutate(FText& OutReason) const
 		OutReason = LOCTEXT("EndedAssembly", "组装组件已结束生命周期。");
 		return false;
 	}
-	if (bNotifying)
+	if (bNotifying || bInLifecycleCallback)
 	{
-		OutReason = LOCTEXT("ReentrantEdit", "不能在组装通知回调中再次修改规则数据；请在回调结束后发起操作。");
+		OutReason = LOCTEXT("ReentrantEdit", "不能在组装通知或物理生命周期回调中再次修改规则数据；请在回调结束后发起操作。");
 		return false;
 	}
 	return true;
+}
+
+bool UAssemblyComponent::RegisterLifecycleCallbacks(UObject* Owner, FAssemblyLifecycleCheck BeforePlaying,
+	FAssemblyLifecycleCheck BeforeReset, FSimpleDelegate AbortPlaying, FSimpleDelegate BeforeEndPlay, FText& OutReason)
+{
+	if (!CanMutate(OutReason)) { return false; }
+	if (!IsValid(Owner) || !BeforePlaying.IsBound() || !BeforeReset.IsBound())
+	{
+		OutReason = LOCTEXT("InvalidLifecycle", "生命周期保护需要有效拥有者和开始、重置检查。");
+		return false;
+	}
+	if (LifecycleOwner.IsValid() && LifecycleOwner.Get() != Owner)
+	{
+		OutReason = LOCTEXT("DuplicateLifecycle", "组装模型已有生命周期保护，请使用同一个物理桥。");
+		return false;
+	}
+	LifecycleOwner = Owner;
+	BeforePlayingCallback = MoveTemp(BeforePlaying);
+	BeforeResetCallback = MoveTemp(BeforeReset);
+	AbortPlayingCallback = MoveTemp(AbortPlaying);
+	BeforeEndPlayCallback = MoveTemp(BeforeEndPlay);
+	OutReason = FText::GetEmpty();
+	return true;
+}
+
+bool UAssemblyComponent::RegisterPlayingCommitCallbacks(UObject* Owner, FAssemblyLifecycleCheck Commit,
+	FAssemblyLifecycleCheck Verify, FAssemblyLifecycleCheck Finalize, FText& OutReason)
+{
+	if (!CanMutate(OutReason)) { return false; }
+	if (!IsValid(Owner) || LifecycleOwner.Get() != Owner || !Commit.IsBound() || !Verify.IsBound() || !Finalize.IsBound())
+	{
+		OutReason = LOCTEXT("InvalidPlayingCommit", "阶段提交检查必须属于当前生命周期拥有者，并提供提交、复核和最终确认。 ");
+		return false;
+	}
+	CommitPlayingCallback = MoveTemp(Commit);
+	VerifyPlayingCallback = MoveTemp(Verify);
+	FinalizePlayingCallback = MoveTemp(Finalize);
+	OutReason = FText::GetEmpty();
+	return true;
+}
+
+void UAssemblyComponent::UnregisterLifecycleCallbacksIfMatches(const UObject* Owner)
+{
+	if (LifecycleOwner.Get() != Owner) { return; }
+	LifecycleOwner.Reset();
+	BeforePlayingCallback.Unbind();
+	BeforeResetCallback.Unbind();
+	CommitPlayingCallback.Unbind();
+	VerifyPlayingCallback.Unbind();
+	FinalizePlayingCallback.Unbind();
+	AbortPlayingCallback.Unbind();
+	BeforeEndPlayCallback.Unbind();
+}
+
+bool UAssemblyComponent::RunLifecycleCheck(bool bBeforePlaying, FText& OutReason)
+{
+	if (!bBeforePlaying) { ClearInputState(); }
+	if (!IsValid(this) || bEndingPlay)
+	{
+		OutReason = LOCTEXT("LifecycleEnded", "组装生命周期已在回调中结束。");
+		return false;
+	}
+	const FAssemblyLifecycleCheck Check = bBeforePlaying ? BeforePlayingCallback : BeforeResetCallback;
+	if (!Check.IsBound()) { return true; }
+	const TWeakObjectPtr<UObject> Owner = LifecycleOwner;
+	TGuardValue<bool> Guard(bInLifecycleCallback, true);
+	const bool bAccepted = Check.Execute(OutReason);
+	if (!IsValid(this) || bEndingPlay || !Owner.IsValid() || LifecycleOwner != Owner)
+	{
+		OutReason = LOCTEXT("LifecycleChanged", "物理生命周期绑定在检查期间已结束或替换，请重新初始化。");
+		return false;
+	}
+	if (!bAccepted && OutReason.IsEmpty())
+	{
+		OutReason = LOCTEXT("LifecycleRejected", "物理组件拒绝本次阶段切换。");
+	}
+	return bAccepted;
 }
 
 bool UAssemblyComponent::CanEdit(FText& OutReason) const
@@ -83,10 +180,17 @@ bool UAssemblyComponent::CanEdit(FText& OutReason) const
 bool UAssemblyComponent::ConfigureAssembly(const FAssemblyGridSettings& Grid,
 	const TArray<FAssemblyBoneDefinition>& Bones, const TArray<FAssemblyMuscleDefinition>& Muscles, FText& OutReason)
 {
-	if (!CanMutate(OutReason) || !AssemblyRules::ValidateConfiguration(Grid, Bones, Muscles, OutReason))
+	if (!CanMutate(OutReason)) { return false; }
+	if (Bones.ContainsByPredicate([](const FAssemblyBoneDefinition& D) { return D.PartKind != EAssemblyRigidPartKind::Bone; }))
+	{
+		OutReason = LOCTEXT("JointPartsRequireFree", "独立关节零件仅支持自由组装，不能加入旧网格模式。");
+		return false;
+	}
+	if (!AssemblyRules::ValidateConfiguration(Grid, Bones, Muscles, OutReason))
 	{
 		return false;
 	}
+	if (!RunLifecycleCheck(false, OutReason)) { return false; }
 	ClearInputState();
 	RoundGrid = Grid;
 	RoundPlacementMode = EAssemblyPlacementMode::Grid;
@@ -101,6 +205,7 @@ bool UAssemblyComponent::ConfigureFreeAssembly(const FAssemblyFreeSettings& Sett
 	const TArray<FAssemblyBoneDefinition>& Bones, const TArray<FAssemblyMuscleDefinition>& Muscles, FText& OutReason)
 {
 	if (!CanMutate(OutReason) || !AssemblyFreeRules::ValidateConfiguration(Settings, Bones, Muscles, OutReason)) { return false; }
+	if (!RunLifecycleCheck(false, OutReason)) { return false; }
 	ClearInputState();
 	RoundGrid = DefaultGrid;
 	RoundFreeSettings = Settings;
@@ -122,10 +227,13 @@ bool UAssemblyComponent::EnterAssembly(FText& OutReason)
 	{
 		if (DefaultPlacementMode == EAssemblyPlacementMode::Free)
 		{
-			return ConfigureFreeAssembly(DefaultFreeSettings, DefaultBones, DefaultMuscles, OutReason);
+			TArray<FAssemblyBoneDefinition> Definitions = DefaultBones;
+			Definitions.Append(DefaultJointParts);
+			return ConfigureFreeAssembly(DefaultFreeSettings, Definitions, DefaultMuscles, OutReason);
 		}
 		return ConfigureAssembly(DefaultGrid, DefaultBones, DefaultMuscles, OutReason);
 	}
+	if (!RunLifecycleCheck(false, OutReason)) { return false; }
 	ResetRound();
 	return true;
 }
@@ -133,6 +241,25 @@ bool UAssemblyComponent::EnterAssembly(FText& OutReason)
 bool UAssemblyComponent::RestartAssembly(FText& OutReason)
 {
 	return EnterAssembly(OutReason);
+}
+
+bool UAssemblyComponent::RecoverAssemblyAfterPhysicsFailure(FText& OutReason)
+{
+	if (!CanMutate(OutReason) || !bInitialized) { return false; }
+	if (Phase == EAssemblyPhase::Assembly) { return true; }
+	TGuardValue<bool> RecoveryGuard(bRecoveringPhysicsFailure, true);
+	ClearInputState();
+	if (!IsValid(this) || !bInitialized || bEndingPlay || (GetOwner() && GetOwner()->IsActorBeingDestroyed()))
+	{
+		OutReason = LOCTEXT("PhysicsRecoveryEnded", "物理恢复期间角色或组装生命周期已结束。");
+		return false;
+	}
+	Phase = EAssemblyPhase::Assembly;
+	NotifyPhase();
+	if (!IsValid(this) || !bInitialized || bEndingPlay) { return false; }
+	NotifyChanged();
+	OutReason = FText::GetEmpty();
+	return true;
 }
 
 void UAssemblyComponent::ResetRound()
@@ -167,7 +294,15 @@ bool UAssemblyComponent::TryStartPlaying(FText& OutReason)
 	{
 		return false;
 	}
-	const FAssemblyValidationResult Validation = ValidateAssembly();
+	TArray<FAssemblyBoneInstance> EffectiveBones = InstalledBones;
+	TArray<FAssemblyJointInstance> EffectiveJoints = InstalledJoints;
+	if (RoundPlacementMode == EAssemblyPlacementMode::Free && Phase == EAssemblyPhase::Assembly)
+	{
+		if (!BuildEffectiveFreeBoneSnapshot(EffectiveBones, OutReason)) { return false; }
+		EffectiveJoints = AssemblyFreeRules::BuildJoints(RoundFreeSettings, RoundBoneDefinitions, EffectiveBones, InstalledJoints);
+	}
+	const FAssemblyValidationResult Validation = Phase == EAssemblyPhase::Playing
+		? ValidateAssembly() : ValidateAssemblyState(EffectiveBones, EffectiveJoints);
 	OutReason = Validation.Reason;
 	if (!Validation.bValid)
 	{
@@ -175,11 +310,97 @@ bool UAssemblyComponent::TryStartPlaying(FText& OutReason)
 	}
 	if (Phase == EAssemblyPhase::Playing)
 	{
+		if (VerifyPlayingCallback.IsBound())
+		{
+			const FAssemblyLifecycleCheck Verify = VerifyPlayingCallback;
+			const TWeakObjectPtr<UObject> Owner = LifecycleOwner;
+			bool bAccepted;
+			{
+				TGuardValue<bool> Guard(bInLifecycleCallback, true);
+				bAccepted = Verify.Execute(OutReason);
+			}
+			if (!bAccepted || !IsValid(this) || !bInitialized || bEndingPlay || !Owner.IsValid() || LifecycleOwner != Owner)
+			{
+				const FText Failure = OutReason.IsEmpty() ? LOCTEXT("ActivePlayingInvalid", "当前操控物理绑定或角色代理保护已失效。") : OutReason;
+				const FSimpleDelegate Shutdown = BeforeEndPlayCallback;
+				{
+					TGuardValue<bool> Guard(bInLifecycleCallback, true);
+					Shutdown.ExecuteIfBound();
+				}
+				FText RecoveryReason;
+				RecoverAssemblyAfterPhysicsFailure(RecoveryReason);
+				OutReason = Failure;
+				return false;
+			}
+		}
 		return true;
 	}
-	// Space may stay held across this transition; only muscle input becomes available.
+	const TArray<FAssemblyBoneInstance> BeforeBones = InstalledBones;
+	const TArray<FAssemblyJointInstance> BeforeJoints = InstalledJoints;
+	const TMap<FGuid, TWeakObjectPtr<USceneComponent>> BeforePoseSources = BonePoseSources;
+	const TWeakObjectPtr<USceneComponent> BeforeFrame = GridFrame;
+	const TWeakObjectPtr<UObject> TransactionOwner = LifecycleOwner;
+	const bool bHadLifecycleOwner = TransactionOwner.IsValid();
+	const FAssemblyLifecycleCheck Commit = CommitPlayingCallback;
+	const FAssemblyLifecycleCheck Verify = VerifyPlayingCallback;
+	const FAssemblyLifecycleCheck Finalize = FinalizePlayingCallback;
+	const FSimpleDelegate Abort = AbortPlayingCallback;
+	bool bPhaseWasNotified = false;
+	// Preparation consumes a consistent model snapshot. Failed preparation restores the editable data.
+	InstalledBones = MoveTemp(EffectiveBones);
+	InstalledJoints = MoveTemp(EffectiveJoints);
+	auto RestoreEditableSnapshot = [&]()
+	{
+		if (!IsValid(this) || !bInitialized || bEndingPlay || (GetOwner() && GetOwner()->IsActorBeingDestroyed())) { return; }
+		Phase = EAssemblyPhase::Assembly;
+		InstalledBones = BeforeBones;
+		InstalledJoints = BeforeJoints;
+		BonePoseSources = BeforePoseSources;
+		GridFrame = BeforeFrame;
+	};
+	auto RollBack = [&]()
+	{
+		// Phase is restored before Abort so providers observe stable editing while undoing activation.
+		if (IsValid(this) && !bEndingPlay) { Phase = EAssemblyPhase::Assembly; }
+		{
+			TGuardValue<bool> Guard(bInLifecycleCallback, true);
+			Abort.ExecuteIfBound();
+		}
+		RestoreEditableSnapshot();
+		if (bPhaseWasNotified && IsValid(this) && bInitialized && !bEndingPlay
+			&& (!GetOwner() || !GetOwner()->IsActorBeingDestroyed())) { NotifyPhase(); }
+	};
+	auto Confirm = [&](const FAssemblyLifecycleCheck& Check)
+	{
+		// Keep old native lifecycle clients compatible when they have no commit extension.
+		TGuardValue<bool> Guard(bInLifecycleCallback, true);
+		const bool bAccepted = !Check.IsBound() || Check.Execute(OutReason);
+		if (!IsValid(this) || !bInitialized || bEndingPlay || Phase != EAssemblyPhase::Playing
+			|| (bHadLifecycleOwner && (!TransactionOwner.IsValid() || LifecycleOwner != TransactionOwner))
+			|| (GetOwner() && GetOwner()->IsActorBeingDestroyed()))
+		{
+			OutReason = LOCTEXT("PlayingCommitCanceled", "操控阶段提交期间组装、角色或物理绑定已结束或替换。");
+			return false;
+		}
+		if (!bAccepted && OutReason.IsEmpty()) { OutReason = LOCTEXT("PlayingCommitRejected", "物理执行器拒绝最终操控阶段确认。"); }
+		return bAccepted;
+	};
+	if (!RunLifecycleCheck(true, OutReason)) { RollBack(); return false; }
+	// Preparation may register physical pose sources. Check those poses before committing the phase.
+	const FAssemblyValidationResult PreparedValidation = ValidateAssembly();
+	if (!PreparedValidation.bValid)
+	{
+		OutReason = PreparedValidation.Reason;
+		RollBack();
+		return false;
+	}
+	// This is provisional until activation and all phase listeners have been confirmed.
 	Phase = EAssemblyPhase::Playing;
+	if (!Confirm(Commit)) { RollBack(); return false; }
+	bPhaseWasNotified = true;
 	NotifyPhase();
+	if (!Confirm(Verify) || !Confirm(Finalize)) { RollBack(); return false; }
+	OutReason = FText::GetEmpty();
 	return true;
 }
 
@@ -190,7 +411,39 @@ FAssemblyGridSettings UAssemblyComponent::GetGridSettings() const
 
 TArray<FAssemblyBoneDefinition> UAssemblyComponent::GetBoneDefinitions() const
 {
-	return bInitialized ? RoundBoneDefinitions : DefaultBones;
+	if (bInitialized) { return RoundBoneDefinitions; }
+	TArray<FAssemblyBoneDefinition> Definitions = DefaultBones;
+	if (DefaultPlacementMode == EAssemblyPlacementMode::Free) { Definitions.Append(DefaultJointParts); }
+	return Definitions;
+}
+
+bool UAssemblyComponent::GetBoneDefinition(FName TypeId, FAssemblyBoneDefinition& OutDefinition) const
+{
+	const TArray<FAssemblyBoneDefinition> Definitions = GetBoneDefinitions();
+	const FAssemblyBoneDefinition* Found = Definitions.FindByPredicate([TypeId](const FAssemblyBoneDefinition& D) { return D.TypeId == TypeId; });
+	OutDefinition = Found ? *Found : FAssemblyBoneDefinition();
+	return Found != nullptr;
+}
+
+TArray<FAssemblyBoneDefinition> UAssemblyComponent::GetJointPartDefinitions() const
+{
+	TArray<FAssemblyBoneDefinition> Definitions = GetBoneDefinitions();
+	Definitions.RemoveAll([](const FAssemblyBoneDefinition& D) { return D.PartKind != EAssemblyRigidPartKind::JointPart; });
+	return Definitions;
+}
+
+TArray<FAssemblyBoneInstance> UAssemblyComponent::GetJointParts() const
+{
+	TArray<FAssemblyBoneInstance> Parts = InstalledBones;
+	Parts.RemoveAll([this](const FAssemblyBoneInstance& B) { return !IsJointPart(B.InstanceId); });
+	return Parts;
+}
+
+bool UAssemblyComponent::IsJointPart(FGuid Id) const
+{
+	const FAssemblyBoneInstance* B = FindBone(Id);
+	const FAssemblyBoneDefinition* D = B ? FindBoneDefinition(B->TypeId) : nullptr;
+	return D && D->PartKind == EAssemblyRigidPartKind::JointPart;
 }
 
 TArray<FAssemblyMuscleDefinition> UAssemblyComponent::GetMuscleDefinitions() const
@@ -369,9 +622,9 @@ bool UAssemblyComponent::ValidateMuscleEndpoints(const FAssemblyMuscleEndpoint& 
 	{
 		const FAssemblyBoneInstance* Bone = FindBone(Endpoint->BoneId);
 		const FAssemblyBoneDefinition* Definition = Bone ? FindBoneDefinition(Bone->TypeId) : nullptr;
-		if (!Definition)
+		if (!Definition || Definition->PartKind != EAssemblyRigidPartKind::Bone)
 		{
-			OutReason = LOCTEXT("MissingEndpointBone", "肌肉两端必须连接已安装的骨头；核心不能作为连接点。");
+			OutReason = LOCTEXT("MissingEndpointBone", "肌肉两端必须连接已安装的普通骨头；核心和独立关节零件不能作为连接点。");
 			return false;
 		}
 		const bool bOnBone = IsPointOnBoneDefinition(*Definition, Endpoint->BoneLocalPoint);
@@ -503,6 +756,21 @@ bool UAssemblyComponent::TryRemoveInstance(FGuid InstanceId, FText& OutReason)
 	{
 		return false;
 	}
+	TArray<FAssemblyBoneInstance> EffectiveBones = InstalledBones;
+	TArray<FAssemblyJointInstance> EffectiveJoints = InstalledJoints;
+	if (RoundPlacementMode == EAssemblyPlacementMode::Free)
+	{
+		if (!BuildEffectiveFreeBoneSnapshot(EffectiveBones, OutReason)) { return false; }
+		EffectiveJoints = AssemblyFreeRules::BuildJoints(RoundFreeSettings, RoundBoneDefinitions, EffectiveBones, InstalledJoints);
+	}
+	auto PreservesCurrentConnections = [&](const TArray<FAssemblyBoneInstance>& AfterBones,
+		const TArray<FAssemblyMuscleInstance>& AfterMuscles, const TArray<FAssemblyJointInstance>& AfterJoints, FGuid Removed)
+	{
+		const TSet<FGuid> Before = GetFreeCoreReachable(EffectiveBones, InstalledMuscles, EffectiveJoints);
+		const TSet<FGuid> After = GetFreeCoreReachable(AfterBones, AfterMuscles, AfterJoints);
+		for (FGuid Id : Before) { if (Id != Removed && !After.Contains(Id)) { return false; } }
+		return true;
+	};
 	const int32 MuscleIndex = InstalledMuscles.IndexOfByPredicate([InstanceId](const FAssemblyMuscleInstance& M) { return M.InstanceId == InstanceId; });
 	if (MuscleIndex != INDEX_NONE)
 	{
@@ -510,7 +778,7 @@ bool UAssemblyComponent::TryRemoveInstance(FGuid InstanceId, FText& OutReason)
 		{
 			TArray<FAssemblyMuscleInstance> Remaining = InstalledMuscles;
 			Remaining.RemoveAt(MuscleIndex);
-			if (!PreservesFreeCoreConnections(InstalledBones, Remaining, InstalledJoints))
+			if (!PreservesCurrentConnections(EffectiveBones, Remaining, EffectiveJoints, FGuid()))
 			{
 				OutReason = LOCTEXT("DisconnectingMuscle", "拆下这条肌肉会使其他骨头与核心断开。");
 				return false;
@@ -518,6 +786,11 @@ bool UAssemblyComponent::TryRemoveInstance(FGuid InstanceId, FText& OutReason)
 		}
 		++RemainingQuantities.FindChecked(InstalledMuscles[MuscleIndex].TypeId);
 		InstalledMuscles.RemoveAt(MuscleIndex);
+		if (RoundPlacementMode == EAssemblyPlacementMode::Free)
+		{
+			InstalledBones = MoveTemp(EffectiveBones);
+			InstalledJoints = MoveTemp(EffectiveJoints);
+		}
 		NotifyChanged();
 		return true;
 	}
@@ -540,25 +813,37 @@ bool UAssemblyComponent::TryRemoveInstance(FGuid InstanceId, FText& OutReason)
 	}
 	if (RoundPlacementMode == EAssemblyPlacementMode::Free && RoundFreeSettings.bRejectDisconnectingRemoval)
 	{
-		TArray<FAssemblyBoneInstance> RemainingBones = InstalledBones;
+		TArray<FAssemblyBoneInstance> RemainingBones = EffectiveBones;
 		RemainingBones.RemoveAt(BoneIndex);
-		TArray<FAssemblyJointInstance> RemainingJoints = InstalledJoints;
+		TArray<FAssemblyJointInstance> RemainingJoints = EffectiveJoints;
 		RemainingJoints.RemoveAll([InstanceId](const FAssemblyJointInstance& J) { return J.BoneA == InstanceId || J.BoneB == InstanceId; });
-		if (!PreservesFreeCoreConnections(RemainingBones, InstalledMuscles, RemainingJoints, InstanceId))
+		if (!PreservesCurrentConnections(RemainingBones, InstalledMuscles, RemainingJoints, InstanceId))
 		{
 			OutReason = LOCTEXT("DisconnectingBone", "拆下这块骨头会使其他骨头与核心断开。");
 			return false;
 		}
 	}
 	++RemainingQuantities.FindChecked(InstalledBones[BoneIndex].TypeId);
-	InstalledBones.RemoveAt(BoneIndex);
+	EffectiveBones.RemoveAt(BoneIndex);
+	InstalledBones = MoveTemp(EffectiveBones);
 	BonePoseSources.Remove(InstanceId);
-	if (RoundPlacementMode == EAssemblyPlacementMode::Free) { RebuildFreeJoints(); }
+	if (RoundPlacementMode == EAssemblyPlacementMode::Free) { RebuildFreeJoints(&InstalledBones); }
 	NotifyChanged();
 	return true;
 }
 
 FAssemblyValidationResult UAssemblyComponent::ValidateAssembly() const
+{
+	if (RoundPlacementMode != EAssemblyPlacementMode::Free) { return ValidateAssemblyState(InstalledBones, InstalledJoints); }
+	TArray<FAssemblyBoneInstance> EffectiveBones;
+	FAssemblyValidationResult Result;
+	if (!BuildEffectiveFreeBoneSnapshot(EffectiveBones, Result.Reason)) { return Result; }
+	// Validation is read-only. Playing keeps confirmed physical edges, including explicit breaks.
+	return ValidateAssemblyState(EffectiveBones, InstalledJoints);
+}
+
+FAssemblyValidationResult UAssemblyComponent::ValidateAssemblyState(const TArray<FAssemblyBoneInstance>& Bones,
+	const TArray<FAssemblyJointInstance>& Joints) const
 {
 	FAssemblyValidationResult Result;
 	if (!bInitialized)
@@ -576,7 +861,7 @@ FAssemblyValidationResult UAssemblyComponent::ValidateAssembly() const
 	}
 	TSet<FGuid> Ids;
 	TMap<FName, int32> Used;
-	for (const FAssemblyBoneInstance& Bone : InstalledBones)
+	for (const FAssemblyBoneInstance& Bone : Bones)
 	{
 		const FAssemblyBoneDefinition* Definition = FindBoneDefinition(Bone.TypeId);
 		if (!Definition || !Bone.InstanceId.IsValid() || Ids.Contains(Bone.InstanceId))
@@ -594,8 +879,8 @@ FAssemblyValidationResult UAssemblyComponent::ValidateAssembly() const
 			Result.Reason = LOCTEXT("InconsistentGeometry", "骨头旋转、占格和显示变换不一致。");
 			return Result;
 		}
-		if (RoundPlacementMode == EAssemblyPlacementMode::Free
-			&& !AssemblyFreeRules::ValidateGeometry(RoundFreeSettings, RoundBoneDefinitions, InstalledBones, Bone.TypeId, Expected, Bone.InstanceId, Result.Reason))
+		if (RoundPlacementMode == EAssemblyPlacementMode::Free && Phase == EAssemblyPhase::Assembly
+			&& !AssemblyFreeRules::ValidateGeometry(RoundFreeSettings, RoundBoneDefinitions, Bones, Bone.TypeId, Expected, Bone.InstanceId, Result.Reason))
 		{
 			return Result;
 		}
@@ -621,23 +906,59 @@ FAssemblyValidationResult UAssemblyComponent::ValidateAssembly() const
 		Ids.Add(Muscle.InstanceId);
 		++Used.FindOrAdd(Muscle.TypeId);
 	}
-	for (const FAssemblyJointInstance& Joint : InstalledJoints)
+	TMap<FGuid, TSet<FGuid>> UsedJointPairs;
+	auto ValidateRigidAnchor = [](const FAssemblyBoneDefinition& Definition, FVector2D Point)
 	{
-		const FAssemblyBoneInstance* B = FindBone(Joint.BoneB);
-		const FAssemblyBoneInstance* A = Joint.BoneA.IsValid() ? FindBone(Joint.BoneA) : nullptr;
+		AssemblySurfaceGeometry::FShape Shape;
+		FText Reason;
+		return AssemblySurfaceGeometry::BuildShape(Definition, FTransform::Identity, Shape, Reason)
+			&& AssemblySurfaceGeometry::IsOnBoundary(Shape, Point);
+	};
+	for (const FAssemblyJointInstance& Joint : Joints)
+	{
+		const FAssemblyBoneInstance* B = Bones.FindByPredicate([&Joint](const FAssemblyBoneInstance& Bone) { return Bone.InstanceId == Joint.BoneB; });
+		const FAssemblyBoneInstance* A = Joint.BoneA.IsValid()
+			? Bones.FindByPredicate([&Joint](const FAssemblyBoneInstance& Bone) { return Bone.InstanceId == Joint.BoneA; }) : nullptr;
 		const FAssemblyBoneDefinition* DB = B ? FindBoneDefinition(B->TypeId) : nullptr;
 		const FAssemblyBoneDefinition* DA = A ? FindBoneDefinition(A->TypeId) : nullptr;
 		if (!Joint.InstanceId.IsValid() || Ids.Contains(Joint.InstanceId) || !DB || (Joint.BoneA.IsValid() && !DA)
 			|| Joint.BoneA == Joint.BoneB || !AssemblyFreeRules::IsJointKindValid(Joint.Kind)
+			|| (DA && DA->PartKind == EAssemblyRigidPartKind::Bone && DB->PartKind == EAssemblyRigidPartKind::Bone)
+			|| UsedJointPairs.FindRef(Joint.BoneA).Contains(Joint.BoneB)
+			|| UsedJointPairs.FindRef(Joint.BoneB).Contains(Joint.BoneA)
+			|| !AssemblyFreeRules::IsJointKindAllowed(DA, DB, Joint.Kind)
 			|| !AssemblyFreeRules::ValidateJointLimits(Joint.MinAngleDegrees, Joint.MaxAngleDegrees)
-			|| !AssemblyFreeRules::IsPointOnBone(DB->BoneParameters, Joint.LocalAnchorB)
-			|| (DA && !AssemblyFreeRules::IsPointOnBone(DA->BoneParameters, Joint.LocalAnchorA))
+			|| !ValidateRigidAnchor(*DB, Joint.LocalAnchorB)
+			|| (DA && !ValidateRigidAnchor(*DA, Joint.LocalAnchorA))
 			|| (!DA && (!FMath::IsFinite(Joint.LocalAnchorA.X) || !FMath::IsFinite(Joint.LocalAnchorA.Y)
 				|| !FMath::IsNearlyEqual(Joint.LocalAnchorA.Size(), static_cast<double>(RoundFreeSettings.CoreRadius), 0.001))))
 		{
 			Result.Reason = LOCTEXT("InvalidJoint", "关节标识、连接点、种类或限角无效。");
 			return Result;
 		}
+		if (Phase == EAssemblyPhase::Assembly)
+		{
+			const FVector PointA = A ? A->LocalVisualTransform.TransformPosition(FVector(Joint.LocalAnchorA.X, 0.0, Joint.LocalAnchorA.Y))
+				: FVector(RoundFreeSettings.CoreLocalPosition.X + Joint.LocalAnchorA.X, 0.0,
+					RoundFreeSettings.CoreLocalPosition.Y + Joint.LocalAnchorA.Y);
+			const FVector PointB = B->LocalVisualTransform.TransformPosition(FVector(Joint.LocalAnchorB.X, 0.0, Joint.LocalAnchorB.Y));
+			if (!FMath::IsFinite(FVector::DistSquared(PointA, PointB))
+				|| FVector::DistSquared(PointA, PointB) > FMath::Square(RoundFreeSettings.ConnectionDistance + AssemblySurfaceGeometry::Tolerance))
+			{
+				Result.Reason = LOCTEXT("StaleSurfaceConnection", "关节连接已离开实际组件表面，请重新摆放连接后再开始操控。");
+				return Result;
+			}
+			AssemblySurfaceGeometry::FContact EndpointContact;
+			if (!AssemblyFreeRules::GetEndpointConnection(RoundFreeSettings, DA,
+				A ? A->LocalVisualTransform : FTransform::Identity, DB, B->LocalVisualTransform, EndpointContact)
+				|| !FVector2D(PointA.X, PointA.Z).Equals(EndpointContact.PointA, AssemblySurfaceGeometry::Tolerance * 2.0)
+				|| !FVector2D(PointB.X, PointB.Z).Equals(EndpointContact.PointB, AssemblySurfaceGeometry::Tolerance * 2.0))
+			{
+				Result.Reason = LOCTEXT("InvalidEndpointConnection", "关节只能连接骨头端点；圆形连接件须径向对齐，异形关节须将端口方向与骨头轴线对齐后再开始操控。");
+				return Result;
+			}
+		}
+		UsedJointPairs.FindOrAdd(Joint.BoneA).Add(Joint.BoneB);
 		Ids.Add(Joint.InstanceId);
 	}
 	auto CheckQuantity = [this, &Used](FName TypeId, int32 Initial)
@@ -652,7 +973,7 @@ FAssemblyValidationResult UAssemblyComponent::ValidateAssembly() const
 		Result.Reason = LOCTEXT("InvalidInventory", "库存不一致：剩余数量加安装数量必须等于初始数量。");
 		return Result;
 	}
-	if (RoundPlacementMode == EAssemblyPlacementMode::Free && Phase == EAssemblyPhase::Assembly && !IsStructureConnected())
+	if (RoundPlacementMode == EAssemblyPlacementMode::Free && Phase == EAssemblyPhase::Assembly && !IsFreeConnected(Bones, InstalledMuscles, Joints))
 	{
 		Result.Reason = LOCTEXT("DisconnectedStructure", "开始操控前，每块骨头必须通过关节或肌肉连接到核心。");
 		return Result;
@@ -663,7 +984,8 @@ FAssemblyValidationResult UAssemblyComponent::ValidateAssembly() const
 
 bool UAssemblyComponent::SetMuscleInput(EAssemblyMuscleKey Key, bool bPressed)
 {
-	if (bNotifying || !CanControlMuscles() || !AssemblyRules::IsValidKey(Key))
+	if (!AssemblyRules::IsValidKey(Key)
+		|| (bPressed && (bNotifying || bInLifecycleCallback || bEndingPlay || !CanControlMuscles())))
 	{
 		return false;
 	}
@@ -685,7 +1007,8 @@ bool UAssemblyComponent::SetMuscleInput(EAssemblyMuscleKey Key, bool bPressed)
 
 bool UAssemblyComponent::SetCoreRotationInput(bool bHeld)
 {
-	if (bNotifying || !bInitialized)
+	// Stops remain legal during callbacks and teardown, so a previously forwarded drive can be released.
+	if (bHeld && (bNotifying || bInLifecycleCallback || bEndingPlay || !bInitialized || Phase != EAssemblyPhase::Playing))
 	{
 		return false;
 	}
@@ -699,10 +1022,8 @@ bool UAssemblyComponent::SetCoreRotationInput(bool bHeld)
 
 void UAssemblyComponent::ClearInputState()
 {
-	if (bNotifying)
-	{
-		return;
-	}
+	// Release is allowed inside notifications/lifecycle callbacks. Clear every state before invoking
+	// listeners so a nested stop cannot leave later instances held or replay an outer stale press.
 	TArray<FGuid> Active;
 	for (FAssemblyMuscleInstance& Muscle : InstalledMuscles)
 	{
@@ -738,16 +1059,32 @@ void UAssemblyComponent::NotifyPhase()
 
 void UAssemblyComponent::RequestMuscleDrive(FGuid Id, bool bContracting)
 {
+	auto MatchesCurrentState = [&]()
+	{
+		if (!IsValid(this)) { return false; }
+		const FAssemblyMuscleInstance* Muscle = FindMuscle(Id);
+		return Muscle && Muscle->bContracting == bContracting
+			&& (!bContracting || (!bEndingPlay && CanControlMuscles()));
+	};
+	if (!MatchesCurrentState()) { return; }
 	TGuardValue<bool> Guard(bNotifying, true);
 	OnMuscleDriveRequestedNative.Broadcast(Id, bContracting);
-	OnMuscleDriveRequested.Broadcast(Id, bContracting);
+	// Native listeners can synchronously stop or shut down the session. Re-read the instance rather
+	// than forwarding the pre-callback edge to Blueprint/the physics bridge after it was canceled.
+	if (MatchesCurrentState()) { OnMuscleDriveRequested.Broadcast(Id, bContracting); }
 }
 
 void UAssemblyComponent::RequestCoreRotation(bool bHeld)
 {
+	auto MatchesCurrentState = [&]()
+	{
+		return IsValid(this) && bCoreRotationHeld == bHeld
+			&& (!bHeld || (!bEndingPlay && bInitialized && Phase == EAssemblyPhase::Playing));
+	};
+	if (!MatchesCurrentState()) { return; }
 	TGuardValue<bool> Guard(bNotifying, true);
 	OnCoreRotationRequestedNative.Broadcast(bHeld);
-	OnCoreRotationRequested.Broadcast(bHeld);
+	if (MatchesCurrentState()) { OnCoreRotationRequested.Broadcast(bHeld); }
 }
 
 #undef LOCTEXT_NAMESPACE

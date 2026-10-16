@@ -10,19 +10,24 @@ bool NormalBoneMetrics::Evaluate(const FNormalBoneParameters& P, FNormalBonePhys
 		|| static_cast<uint8>(P.Thickness) > static_cast<uint8>(EBoneThicknessTier::Thick)
 		|| static_cast<uint8>(P.Density) > static_cast<uint8>(EBoneDensityTier::Dense)
 		|| !FMath::IsFinite(P.UnitLength) || P.UnitLength <= 0.0f
+		|| !FMath::IsFinite(P.BodyAspectRatio) || P.BodyAspectRatio < 0.0f
 		|| !FMath::IsFinite(P.StandardDensityKgPerSquareUnit) || P.StandardDensityKgPerSquareUnit <= 0.0f)
 	{
-		OutReason = LOCTEXT("InvalidTraits", "骨头词条必须有效，单位长度与标准密度必须为正的有限数值。");
+		OutReason = LOCTEXT("InvalidTraits", "骨头词条必须有效，单位长度与标准密度必须为正的有限数值，实体宽高比必须为非负有限数值。");
 		return false;
 	}
 	const double LengthUnits = 1.0 + static_cast<uint8>(P.Length) * 0.5;
-	const double ThicknessUnits = 0.1 * (static_cast<uint8>(P.Thickness) + 1);
+	const double ThicknessUnits = P.BodyAspectRatio > 0.0f
+		? LengthUnits * P.BodyAspectRatio * (static_cast<uint8>(P.Thickness) + 1) * 0.5
+		: 0.1 * (static_cast<uint8>(P.Thickness) + 1);
 	const double DensityMultiplier = static_cast<uint8>(P.Density) + 1.0;
 	const double Length = P.UnitLength * LengthUnits;
 	const double Thickness = P.UnitLength * ThicknessUnits;
-	const double Mass = LengthUnits * ThicknessUnits * DensityMultiplier * P.StandardDensityKgPerSquareUnit;
+	const double Area = LengthUnits * ThicknessUnits;
+	const double Mass = Area * DensityMultiplier * P.StandardDensityKgPerSquareUnit;
 	if (!FMath::IsFinite(Length) || !FMath::IsFinite(Thickness) || !FMath::IsFinite(Mass)
 		|| Length > TNumericLimits<float>::Max() || Thickness > TNumericLimits<float>::Max()
+		|| !FMath::IsFinite(Area) || Area > TNumericLimits<float>::Max() || static_cast<float>(Area) <= 0.0f
 		|| Mass > TNumericLimits<float>::Max() || static_cast<float>(Mass) <= 0.0f
 		|| static_cast<float>(Length) <= UE_SMALL_NUMBER || static_cast<float>(Thickness) <= UE_SMALL_NUMBER)
 	{
@@ -33,7 +38,7 @@ bool NormalBoneMetrics::Evaluate(const FNormalBoneParameters& P, FNormalBonePhys
 	OutStats.Length = static_cast<float>(Length);
 	OutStats.Thickness = static_cast<float>(Thickness);
 	OutStats.DensityMultiplier = static_cast<float>(DensityMultiplier);
-	OutStats.AreaInSquareUnits = static_cast<float>(LengthUnits * ThicknessUnits);
+	OutStats.AreaInSquareUnits = static_cast<float>(Area);
 	OutStats.MassKg = static_cast<float>(Mass);
 	return true;
 }

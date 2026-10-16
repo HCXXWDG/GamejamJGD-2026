@@ -1,7 +1,10 @@
 #include "Assembly/AssemblyInteractionComponent.h"
 #include "Assembly/AssemblyComponent.h"
+#include "Assembly/AssemblyAppearanceData.h"
 #include "Assembly/AssemblyMuscle.h"
+#include "Assembly/AssemblyJointPart.h"
 #include "Assembly/AssemblyPhysicsBridgeComponent.h"
+#include "Assembly/AssemblySessionComponent.h"
 #include "Assembly/NormalBone.h"
 #include "Components/BoxComponent.h"
 #include "Components/SphereComponent.h"
@@ -17,8 +20,12 @@
 UAssemblyInteractionComponent::UAssemblyInteractionComponent()
 {
 	PrimaryComponentTick.bCanEverTick = true;
+	PrimaryComponentTick.TickGroup = TG_PostPhysics;
+	AppearanceData = TSoftObjectPtr<UAssemblyAppearanceData>(FSoftObjectPath(
+		TEXT("/Game/Character/Assembly/DA_AssemblyAppearance_Default.DA_AssemblyAppearance_Default")));
 	BoneActorClass = ANormalBone::StaticClass();
 	MuscleActorClass = AAssemblyMuscle::StaticClass();
+	JointPartActorClass = AAssemblyJointPart::StaticClass();
 	PhysicsBridgeClass = UAssemblyPhysicsBridgeComponent::StaticClass();
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> Sphere(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
 	CorePlaceholderMesh = Sphere.Object;
@@ -35,7 +42,9 @@ UPrimitiveComponent* UAssemblyInteractionComponent::GetCoreBody() const
 void UAssemblyInteractionComponent::BeginPlay()
 {
 	Super::BeginPlay();
-	if (bAutoInitialize && GetOwner())
+	// A session suspends the character proxy before it initializes the physical bridge.
+	// Standalone presentation keeps its automatic entry; explicit Blueprint calls still work.
+	if (bAutoInitialize && GetOwner() && !GetOwner()->FindComponentByClass<UAssemblySessionComponent>())
 	{
 		UAssemblyComponent* Assembly = GetOwner()->FindComponentByClass<UAssemblyComponent>();
 		if (IsValid(Assembly) && Assembly->IsInitialized())
@@ -50,8 +59,14 @@ void UAssemblyInteractionComponent::BeginPlay()
 void UAssemblyInteractionComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+	if (bClearInteractionPending && (!BoundBridge.IsValid() || !BoundBridge->IsPhysicsLifecycleBusy()))
+	{
+		ClearInteraction();
+		return;
+	}
 	// Component BeginPlay ordering is unspecified; wait for the model instead of resetting it here.
-	if (bAutoInitialize && !bAutoInitializeAttempted && !BoundAssembly.IsValid() && GetOwner())
+	if (bAutoInitialize && !bAutoInitializeAttempted && !BoundAssembly.IsValid() && GetOwner()
+		&& !GetOwner()->FindComponentByClass<UAssemblySessionComponent>())
 	{
 		UAssemblyComponent* Assembly = GetOwner()->FindComponentByClass<UAssemblyComponent>();
 		if (IsValid(Assembly) && Assembly->IsInitialized())
@@ -62,18 +77,26 @@ void UAssemblyInteractionComponent::TickComponent(float DeltaTime, ELevelTick Ti
 		}
 	}
 	UpdateCorePlaceholder();
-	// Re-evaluate when Space/physics moves the assembly frame; do not quantize the cursor to cells.
-	if (bDragging && bHasPointerPosition && BoundAssembly.IsValid())
+	UpdateAppearanceTransforms();
+	// Re-evaluate a changed assembly frame; do not quantize the cursor to cells.
+	if (bDragging)
 	{
-		DragPreview = BoundAssembly->ValidateFreeBonePlacement(DragTypeId, DragPreview.LocalPosition, DragPreview.RotationDegrees, DragExistingId);
-		ApplyPreview();
+		FText Reason;
+		if (!CanEdit(Reason)) { CancelBoneDrag(); }
+		else if (bHasPointerPosition) { RefreshBoneDragPreview(false); }
 	}
 }
 
 bool UAssemblyInteractionComponent::CanEdit(FText& OutReason) const
 {
 	OutReason = FText::GetEmpty();
-	if (!BoundAssembly.IsValid() || !BoundAssembly->IsInitialized())
+	if (bClearingInteraction || bClearInteractionPending)
+	{
+		OutReason = LOCTEXT("EditingWhileClearing", "展示组件正在结束物理生命周期，请等待当前操作结束。");
+		return false;
+	}
+	if (!BoundAssembly.IsValid() || !BoundAssembly->IsInitialized() || BoundAssembly->IsEndingPlay()
+		|| !IsValid(GetOwner()) || GetOwner()->IsActorBeingDestroyed())
 	{
 		OutReason = LOCTEXT("NotInitialized", "请先初始化 AssemblyInteractionComponent 和 AssemblyComponent。");
 		return false;
@@ -110,13 +133,16 @@ bool UAssemblyInteractionComponent::CreateCore(FText& OutReason)
 	CreatedCoreVisual->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	CreatedCoreVisual->SetCastShadow(false);
 	CreatedCoreVisual->RegisterComponent();
-	UpdateCorePlaceholder();
+	UpdateCorePlaceholder(true);
 	return true;
 }
 
-void UAssemblyInteractionComponent::UpdateCorePlaceholder()
+void UAssemblyInteractionComponent::UpdateCorePlaceholder(bool bInitialPlacement)
 {
-	if (!IsValid(CreatedCoreBody) || !BoundAssembly.IsValid() || CreatedCoreBody->IsSimulatingPhysics()) { return; }
+	// A physics provider may move the body without enabling UE's rigid-body simulation.
+	// Assembly owns its initial pose; Playing owns the actual core pose and shape.
+	if (!IsValid(CreatedCoreBody) || !BoundAssembly.IsValid() || CreatedCoreBody->IsSimulatingPhysics()
+		|| (!bInitialPlacement && BoundAssembly->GetPhase() == EAssemblyPhase::Playing)) { return; }
 	const FAssemblyFreeSettings Settings = BoundAssembly->GetFreeSettings();
 	const FTransform Frame = BoundAssembly->GetGridFrameTransform();
 	CreatedCoreBody->SetSphereRadius(Settings.CoreRadius, false);
@@ -127,6 +153,11 @@ void UAssemblyInteractionComponent::UpdateCorePlaceholder()
 bool UAssemblyInteractionComponent::InitializeInteraction(UAssemblyComponent* Assembly, FText& OutReason)
 {
 	OutReason = FText::GetEmpty();
+	if (bClearingInteraction || bClearInteractionPending)
+	{
+		OutReason = LOCTEXT("InteractionClearing", "展示组件正在结束物理生命周期，请在回调结束后重新初始化。");
+		return false;
+	}
 	if (!IsValid(Assembly) || !Assembly->IsInitialized() || !GetWorld() || !GetOwner()
 		|| Assembly->GetWorld() != GetWorld()
 		|| (IsValid(ExistingCoreBody) && ExistingCoreBody->GetWorld() != GetWorld()))
@@ -134,14 +165,31 @@ bool UAssemblyInteractionComponent::InitializeInteraction(UAssemblyComponent* As
 		OutReason = LOCTEXT("InvalidModel", "请在有世界的角色组件上提供已初始化的 AssemblyComponent。");
 		return false;
 	}
-	if (BoundAssembly.Get() == Assembly) { return SynchronizeViews(OutReason); }
+	if (BoundAssembly.Get() == Assembly)
+	{
+		if (!SynchronizeViews(OutReason)) { return false; }
+		return !BoundBridge.IsValid() || BoundBridge->IsBridgeInitialized()
+			|| BoundBridge->InitializeBridge(Assembly, GetCoreBody(), OutReason);
+	}
 	ClearInteraction();
+	if (BoundAssembly.IsValid())
+	{
+		OutReason = LOCTEXT("InteractionBusy", "物理回调尚未结束，旧展示组件无法立即关闭。");
+		return false;
+	}
 	BoundAssembly = Assembly;
 	SpawnOwnerTransform = GetOwner()->GetActorTransform();
 	if (!CreateCore(OutReason)) { ClearInteraction(); return false; }
+	ResolveAppearanceData();
 	Assembly->OnAssemblyChanged.AddUniqueDynamic(this, &UAssemblyInteractionComponent::HandleAssemblyChanged);
 	Assembly->OnAssemblyReset.AddUniqueDynamic(this, &UAssemblyInteractionComponent::HandleAssemblyReset);
 	Assembly->OnPhaseChanged.AddUniqueDynamic(this, &UAssemblyInteractionComponent::HandlePhaseChanged);
+	// The lifecycle provider must see registered view bodies even when binding during Playing.
+	if (!SynchronizeViews(OutReason))
+	{
+		ClearInteraction();
+		return false;
+	}
 	if (bAutoCreatePhysicsBridge)
 	{
 		UAssemblyPhysicsBridgeComponent* Bridge = GetOwner()->FindComponentByClass<UAssemblyPhysicsBridgeComponent>();
@@ -167,11 +215,6 @@ bool UAssemblyInteractionComponent::InitializeInteraction(UAssemblyComponent* As
 			return false;
 		}
 	}
-	if (!SynchronizeViews(OutReason))
-	{
-		ClearInteraction();
-		return false;
-	}
 	return true;
 }
 
@@ -187,10 +230,24 @@ AAssemblyMuscle* UAssemblyInteractionComponent::GetMuscleActor(FGuid InstanceId)
 	return Actor && IsValid(Actor->Get()) ? Actor->Get() : nullptr;
 }
 
+AAssemblyJointPart* UAssemblyInteractionComponent::GetJointPartActor(FGuid InstanceId) const
+{
+	return Cast<AAssemblyJointPart>(GetBoneActor(InstanceId));
+}
+
+UPaperSprite* UAssemblyInteractionComponent::GetJointPartArtSprite(FName TypeId) const
+{
+	FAssemblyBoneDefinition Definition;
+	if (!BoundAssembly.IsValid() || !JointPartActorClass
+		|| !BoundAssembly->GetBoneDefinition(TypeId, Definition)
+		|| Definition.PartKind != EAssemblyRigidPartKind::JointPart) return nullptr;
+	return JointPartActorClass->GetDefaultObject<AAssemblyJointPart>()->GetSpriteForShape(Definition.JointShape);
+}
+
 ANormalBone* UAssemblyInteractionComponent::SpawnBoneView(FGuid InstanceId, FText& OutReason)
 {
 	if (ANormalBone* Existing = GetBoneActor(InstanceId)) { return Existing; }
-	if (!BoneActorClass || !BoundAssembly.IsValid() || !GetWorld())
+	if (!BoundAssembly.IsValid() || !GetWorld())
 	{
 		OutReason = LOCTEXT("MissingBoneClass", "没有可用的骨头 Actor 类。");
 		return nullptr;
@@ -202,8 +259,13 @@ ANormalBone* UAssemblyInteractionComponent::SpawnBoneView(FGuid InstanceId, FTex
 	}
 	FAssemblyBoneInstance Instance;
 	if (!BoundAssembly->GetBone(InstanceId, Instance)) { return nullptr; }
+	FAssemblyBoneDefinition Definition;
+	if (!BoundAssembly->GetBoneDefinition(Instance.TypeId, Definition)) return nullptr;
+	const TSubclassOf<ANormalBone> ActorClass = Definition.PartKind == EAssemblyRigidPartKind::JointPart
+		? TSubclassOf<ANormalBone>(JointPartActorClass.Get()) : BoneActorClass;
+	if (!ActorClass) { OutReason = LOCTEXT("MissingRigidClass", "缺少此刚体组件的 Actor 类。"); return nullptr; }
 	const FTransform Pose = Instance.LocalVisualTransform * BoundAssembly->GetGridFrameTransform();
-	ANormalBone* Bone = GetWorld()->SpawnActorDeferred<ANormalBone>(BoneActorClass, Pose, GetOwner(), nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+	ANormalBone* Bone = GetWorld()->SpawnActorDeferred<ANormalBone>(ActorClass, Pose, GetOwner(), nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
 	if (!Bone) { OutReason = LOCTEXT("BoneSpawnFailed", "创建骨头外观失败，安装库存已恢复。"); return nullptr; }
 	Bone->FinishSpawning(Pose);
 	if (!Bone->InitializeBone(BoundAssembly.Get(), InstanceId, OutReason)) { Bone->Destroy(); return nullptr; }
@@ -270,6 +332,7 @@ bool UAssemblyInteractionComponent::SynchronizeViews(FText& OutReason)
 		if (!BoundAssembly->GetBone(DragExistingId, Instance)) { CancelBoneDrag(); }
 	}
 	UpdateCorePlaceholder();
+	SynchronizeAppearanceViews();
 	RequestPhysicsSnapshot();
 	OnViewsChanged.Broadcast();
 	return bSuccess;
@@ -287,6 +350,8 @@ bool UAssemblyInteractionComponent::BeginBoneDrag(FName TypeId, FGuid ExistingId
 		return false;
 	}
 	FAssemblyBoneInstance Existing;
+	FVector2D StartPosition = BoundAssembly->GetFreeSettings().CoreLocalPosition;
+	float StartAngle = 0.0f;
 	if (ExistingId.IsValid())
 	{
 		ANormalBone* Bone = GetBoneActor(ExistingId);
@@ -296,14 +361,28 @@ bool UAssemblyInteractionComponent::BeginBoneDrag(FName TypeId, FGuid ExistingId
 			OutReason = LOCTEXT("CannotMoveBone", "无法拖动此骨头：实例类型不匹配，或姿态已由物理程序接管。");
 			return false;
 		}
+		FTransform WorldPose;
+		if (!BoundAssembly->GetBoneWorldTransform(ExistingId, WorldPose))
+		{
+			OutReason = LOCTEXT("InvalidDraggedPose", "骨头当前姿态无效，无法开始拖动。");
+			return false;
+		}
+		const FTransform LocalPose = WorldPose.GetRelativeTransform(BoundAssembly->GetGridFrameTransform());
+		const FVector LocalAxis = LocalPose.GetRotation().RotateVector(FVector::XAxisVector);
+		StartPosition = FVector2D(LocalPose.GetLocation().X, LocalPose.GetLocation().Z);
+		// Positive rotation around local Y maps +X towards -Z in the existing XZ game plane.
+		StartAngle = FMath::RadiansToDegrees(FMath::Atan2(-LocalAxis.Z, LocalAxis.X));
 	}
-	if (!BoneActorClass || !GetWorld()) { OutReason = LOCTEXT("NoPreviewClass", "请配置骨头预览 Actor 类。"); return false; }
-	PreviewActor = GetWorld()->SpawnActorDeferred<ANormalBone>(BoneActorClass, FTransform::Identity, GetOwner(), nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+	const TSubclassOf<ANormalBone> ActorClass = Definition->PartKind == EAssemblyRigidPartKind::JointPart
+		? TSubclassOf<ANormalBone>(JointPartActorClass.Get()) : BoneActorClass;
+	if (!ActorClass || !GetWorld()) { OutReason = LOCTEXT("NoPreviewClass", "请配置此组件的预览 Actor 类。"); return false; }
+	PreviewActor = GetWorld()->SpawnActorDeferred<ANormalBone>(ActorClass, FTransform::Identity, GetOwner(), nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
 	if (!PreviewActor) { OutReason = LOCTEXT("NoPreview", "无法创建骨头预览。"); return false; }
 	PreviewActor->PreviewParameters = Definition->BoneParameters;
 	PreviewActor->FinishSpawning(FTransform::Identity);
 	PreviewActor->SetActorEnableCollision(false);
-	if (!PreviewActor->GetBoneSprite()->GetSprite() || !PreviewActor->GetPhysicalStats().bValid)
+	if (!PreviewActor->ApplyRigidPartDefinition(*Definition, OutReason)
+		|| !PreviewActor->GetBoneSprite()->GetSprite() || !PreviewActor->GetPhysicalStats().bValid)
 	{
 		PreviewActor->Destroy(); PreviewActor = nullptr;
 		OutReason = LOCTEXT("InvalidPreview", "骨头预览 Sprite 或参数无效，请检查 BoneActorClass。");
@@ -313,16 +392,57 @@ bool UAssemblyInteractionComponent::BeginBoneDrag(FName TypeId, FGuid ExistingId
 	bHasPointerPosition = ExistingId.IsValid();
 	DragTypeId = TypeId;
 	DragExistingId = ExistingId;
+	RawDragPosition = StartPosition;
+	DragRotationDegrees = StartAngle;
+	DragSurfaceSnap = FAssemblySurfaceSnapState();
 	if (ANormalBone* Bone = GetBoneActor(ExistingId))
 	{
 		bDraggedActorWasHidden = Bone->IsHidden();
 		Bone->SetActorHiddenInGame(true);
 	}
-	const FVector2D Position = ExistingId.IsValid() ? Existing.LocalPosition : BoundAssembly->GetFreeSettings().CoreLocalPosition;
-	DragPreview = BoundAssembly->ValidateFreeBonePlacement(TypeId, Position, ExistingId.IsValid() ? Existing.RotationDegrees : 0.0f, ExistingId);
-	ApplyPreview();
-	OnBoneDragPreviewChanged.Broadcast();
+	RefreshBoneDragPreview();
 	return true;
+}
+
+void UAssemblyInteractionComponent::RefreshBoneDragPreview(bool bAlwaysNotify)
+{
+	if (!bDragging || !BoundAssembly.IsValid()) { return; }
+	const FAssemblyPlacementResult Previous = DragPreview;
+	if (bHasPointerPosition)
+	{
+		DragPreview = BoundAssembly->ResolveFreeBoneDragPlacement(DragTypeId, RawDragPosition,
+			DragRotationDegrees, DragExistingId, DragSurfaceSnap);
+	}
+	else
+	{
+		// A shelf drag must receive a fresh pointer, and a lost projection cannot reuse a valid old drop.
+		// Even its invalid display pose must stay unsnapped until a pointer actually exists.
+		DragPreview = BoundAssembly->ValidateFreeBonePlacement(DragTypeId, RawDragPosition,
+			DragRotationDegrees, DragExistingId);
+		DragPreview.bValid = false;
+		DragPreview.SurfaceSnap = FAssemblySurfaceSnapState();
+		DragPreview.Reason = Previous.Reason.IsEmpty()
+			? LOCTEXT("MissingDragPointer", "请将鼠标移到组装场景中，获得有效的摆放位置。") : Previous.Reason;
+	}
+	DragSurfaceSnap = DragPreview.SurfaceSnap;
+	ApplyPreview();
+	const bool bChanged = Previous.bValid != DragPreview.bValid
+		|| !Previous.Reason.EqualTo(DragPreview.Reason)
+		|| !Previous.LocalVisualTransform.Equals(DragPreview.LocalVisualTransform)
+		|| Previous.SurfaceSnap.bSnapped != DragSurfaceSnap.bSnapped
+		|| Previous.SurfaceSnap.bCore != DragSurfaceSnap.bCore
+		|| Previous.SurfaceSnap.TargetId != DragSurfaceSnap.TargetId
+		|| Previous.SurfaceSnap.SourceLocalAnchor != DragSurfaceSnap.SourceLocalAnchor
+		|| Previous.SurfaceSnap.TargetLocalAnchor != DragSurfaceSnap.TargetLocalAnchor
+		|| Previous.SurfaceSnap.bRadialAligned != DragSurfaceSnap.bRadialAligned
+		|| Previous.SurfaceSnap.RadialPointerOffset != DragSurfaceSnap.RadialPointerOffset
+		|| Previous.SurfaceSnap.RadialInputAngle != DragSurfaceSnap.RadialInputAngle
+		|| Previous.SurfaceSnap.bRadialXOutward != DragSurfaceSnap.bRadialXOutward;
+	if (bAlwaysNotify || bChanged)
+	{
+		UpdateAppearanceTransforms();
+		OnBoneDragPreviewChanged.Broadcast();
+	}
 }
 
 void UAssemblyInteractionComponent::ApplyPreview()
@@ -341,11 +461,24 @@ bool UAssemblyInteractionComponent::UpdateBoneDragFromMouse(APlayerController* P
 		|| !BoundAssembly->RayToAssemblyPlane(Origin, Direction, LocalPosition))
 	{
 		OutReason = LOCTEXT("MouseOffPlane", "鼠标无法投射到当前组装平面。");
-		bHasPointerPosition = false;
-		if (bDragging) { DragPreview.bValid = false; DragPreview.Reason = OutReason; ApplyPreview(); OnBoneDragPreviewChanged.Broadcast(); }
+		InvalidateBoneDragPreview(OutReason);
 		return false;
 	}
 	return UpdateBoneDragAtLocalPosition(LocalPosition, OutReason);
+}
+
+void UAssemblyInteractionComponent::InvalidateBoneDragPreview(FText Reason)
+{
+	bHasPointerPosition = false;
+	DragSurfaceSnap = FAssemblySurfaceSnapState();
+	if (bDragging)
+	{
+		DragPreview.bValid = false;
+		DragPreview.SurfaceSnap = FAssemblySurfaceSnapState();
+		DragPreview.Reason = Reason;
+		ApplyPreview();
+		OnBoneDragPreviewChanged.Broadcast();
+	}
 }
 
 bool UAssemblyInteractionComponent::UpdateBoneDragAtLocalPosition(FVector2D LocalPosition, FText& OutReason)
@@ -353,10 +486,15 @@ bool UAssemblyInteractionComponent::UpdateBoneDragAtLocalPosition(FVector2D Loca
 	if (!CanEdit(OutReason)) { return false; }
 	if (!bDragging) { OutReason = LOCTEXT("NoActiveDrag", "请先从组件展示栏开始拖动骨头。"); return false; }
 	bHasPointerPosition = FMath::IsFinite(LocalPosition.X) && FMath::IsFinite(LocalPosition.Y);
-	DragPreview = BoundAssembly->ValidateFreeBonePlacement(DragTypeId, LocalPosition, DragPreview.RotationDegrees, DragExistingId);
+	if (!bHasPointerPosition)
+	{
+		OutReason = LOCTEXT("InvalidDragPosition", "骨头位置必须是有限数值。");
+		InvalidateBoneDragPreview(OutReason);
+		return false;
+	}
+	RawDragPosition = LocalPosition;
+	RefreshBoneDragPreview();
 	OutReason = DragPreview.Reason;
-	ApplyPreview();
-	OnBoneDragPreviewChanged.Broadcast();
 	return DragPreview.bValid;
 }
 
@@ -365,10 +503,9 @@ bool UAssemblyInteractionComponent::RotateBoneDrag(float DeltaDegrees, FText& Ou
 	if (!CanEdit(OutReason)) { return false; }
 	if (!bDragging) { OutReason = LOCTEXT("NoRotateDrag", "请先开始拖动骨头再旋转。"); return false; }
 	if (!FMath::IsFinite(DeltaDegrees)) { OutReason = LOCTEXT("InvalidAngle", "旋转角度必须是有限值。"); return false; }
-	DragPreview = BoundAssembly->ValidateFreeBonePlacement(DragTypeId, DragPreview.LocalPosition, DragPreview.RotationDegrees + DeltaDegrees, DragExistingId);
+	DragRotationDegrees = FMath::Fmod(DragRotationDegrees + FMath::Fmod(DeltaDegrees, 360.0f), 360.0f);
+	RefreshBoneDragPreview();
 	OutReason = DragPreview.Reason;
-	ApplyPreview();
-	OnBoneDragPreviewChanged.Broadcast();
 	return DragPreview.bValid;
 }
 
@@ -414,6 +551,10 @@ void UAssemblyInteractionComponent::CancelBoneDrag()
 	DragTypeId = NAME_None;
 	DragExistingId.Invalidate();
 	DragPreview = FAssemblyPlacementResult();
+	RawDragPosition = FVector2D::ZeroVector;
+	DragRotationDegrees = 0.0f;
+	DragSurfaceSnap = FAssemblySurfaceSnapState();
+	UpdateAppearanceTransforms();
 	if (bWasDragging) { OnBoneDragPreviewChanged.Broadcast(); }
 }
 
@@ -427,6 +568,14 @@ bool UAssemblyInteractionComponent::InstallMuscleAtWorldPoints(FName TypeId, FVe
 		OutReason = LOCTEXT("MuscleOffBone", "肌肉的两端都必须落在骨头上，圆球核心不能作为肌肉连接点。");
 		return false;
 	}
+	return InstallMuscleAtEndpoints(TypeId, EndpointA, EndpointB, OutInstanceId, OutReason);
+}
+
+bool UAssemblyInteractionComponent::InstallMuscleAtEndpoints(FName TypeId, const FAssemblyMuscleEndpoint& EndpointA,
+	const FAssemblyMuscleEndpoint& EndpointB, FGuid& OutInstanceId, FText& OutReason)
+{
+	OutInstanceId.Invalidate();
+	if (!CanEdit(OutReason)) { return false; }
 	{
 		TGuardValue<bool> Guard(bSuppressSynchronization, true);
 		if (!BoundAssembly->TryInstallMuscle(TypeId, EndpointA, EndpointB, OutInstanceId, OutReason)) { return false; }
@@ -474,6 +623,7 @@ void UAssemblyInteractionComponent::HandleAssemblyChanged()
 
 void UAssemblyInteractionComponent::DestroyViews()
 {
+	DestroyAppearanceViews();
 	for (const auto& Item : MuscleViews) { if (IsValid(Item.Value)) { Item.Value->ClearAssemblyBinding(); Item.Value->Destroy(); } }
 	MuscleViews.Reset();
 	for (const auto& Item : BoneViews) { if (IsValid(Item.Value)) { Item.Value->ClearAssemblyBinding(); Item.Value->Destroy(); } }
@@ -493,6 +643,7 @@ void UAssemblyInteractionComponent::HandleAssemblyReset()
 		}
 	}
 	UpdateCorePlaceholder();
+	SynchronizeAppearanceViews();
 	RequestPhysicsSnapshot();
 	OnViewsChanged.Broadcast();
 }
@@ -504,6 +655,17 @@ void UAssemblyInteractionComponent::HandlePhaseChanged(EAssemblyPhase Phase)
 
 void UAssemblyInteractionComponent::ClearInteraction()
 {
+	if (bClearingInteraction) { return; }
+	if (BoundBridge.IsValid() && BoundBridge->IsPhysicsLifecycleBusy())
+	{
+		// A provider must finish its synchronous work before its body endpoints disappear.
+		bClearInteractionPending = true;
+		// The drag preview is not a registered physical body; release its latch immediately.
+		CancelBoneDrag();
+		return;
+	}
+	TGuardValue<bool> ClearingGuard(bClearingInteraction, true);
+	bClearInteractionPending = false;
 	CancelBoneDrag();
 	if (BoundAssembly.IsValid())
 	{
@@ -511,21 +673,22 @@ void UAssemblyInteractionComponent::ClearInteraction()
 		BoundAssembly->OnAssemblyReset.RemoveDynamic(this, &UAssemblyInteractionComponent::HandleAssemblyReset);
 		BoundAssembly->OnPhaseChanged.RemoveDynamic(this, &UAssemblyInteractionComponent::HandlePhaseChanged);
 	}
-	DestroyViews();
-	if (bOwnsBridge && BoundBridge.IsValid()) { BoundBridge->ClearBridge(); BoundBridge->DestroyComponent(); }
-	// A synchronous message callback may have rebound a reused bridge to another model.
-	else if (BoundBridge.IsValid() && BoundAssembly.IsValid()
-		&& BoundBridge->GetPhysicsContext().Assembly == BoundAssembly.Get())
+	// Both owned and reused bridges release this binding's constraints while endpoints still exist.
+	// Never clear a reused bridge which has already moved to another assembly.
+	if (BoundBridge.IsValid() && (bOwnsBridge || (BoundAssembly.IsValid()
+		&& BoundBridge->GetPhysicsContext().Assembly == BoundAssembly.Get())))
 	{
-		if (CreatedCoreBody) { BoundBridge->SetCoreBody(IsValid(ExistingCoreBody) ? ExistingCoreBody.Get() : nullptr); }
-		BoundBridge->RequestPhysicsRebuild();
+		BoundBridge->ClearBridge();
+		if (bOwnsBridge && BoundBridge.IsValid()) { BoundBridge->DestroyComponent(); }
 	}
+	DestroyViews();
 	BoundBridge.Reset();
 	bOwnsBridge = false;
 	if (IsValid(CreatedCoreVisual)) { CreatedCoreVisual->DestroyComponent(); }
 	CreatedCoreVisual = nullptr;
 	if (IsValid(CreatedCoreBody)) { CreatedCoreBody->DestroyComponent(); }
 	CreatedCoreBody = nullptr;
+	LoadedAppearanceData = nullptr;
 	BoundAssembly.Reset();
 }
 

@@ -8,6 +8,19 @@
 
 class UJGDMessageSubsystem;
 
+/** Retains the original destination and payload while a drive broadcast is being fanned out. */
+USTRUCT()
+struct FAssemblyQueuedDriveMessage
+{
+	GENERATED_BODY()
+	UPROPERTY(Transient)
+	TObjectPtr<UJGDMessageSubsystem> Bus;
+	UPROPERTY(Transient)
+	FGameplayTag Channel;
+	UPROPERTY(Transient)
+	FInstancedStruct Payload;
+};
+
 /** Typed GameplayTags adapter. Owns no movement, physics, input assets or widgets. */
 UCLASS(BlueprintType, Blueprintable, ClassGroup = (Assembly), meta = (BlueprintSpawnableComponent))
 class JGD2026_API UAssemblyPhysicsBridgeComponent : public UActorComponent
@@ -15,6 +28,39 @@ class JGD2026_API UAssemblyPhysicsBridgeComponent : public UActorComponent
 	GENERATED_BODY()
 public:
 	UAssemblyPhysicsBridgeComponent();
+	// False keeps the existing visual prototype usable before a physical executor is delivered.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Physics|Lifecycle")
+	bool bRequirePhysicsLifecycleProvider = false;
+	// Null restores unique automatic discovery on the owner and its components.
+	UFUNCTION(BlueprintCallable, Category = "Assembly|Physics|Lifecycle")
+	bool SetPhysicsLifecycleProvider(UObject* Provider, FText& OutReason);
+	UFUNCTION(BlueprintPure, Category = "Assembly|Physics|Lifecycle")
+	UObject* GetPhysicsLifecycleProvider() const;
+	UFUNCTION(BlueprintPure, Category = "Assembly|Physics|Lifecycle")
+	bool HasPhysicsLifecycleProvider() const;
+	UFUNCTION(BlueprintPure, Category = "Assembly|Physics|Lifecycle")
+	bool IsPhysicsLifecycleBusy() const { return bLifecycleBusy; }
+	UFUNCTION(BlueprintPure, Category = "Assembly|Physics|Lifecycle")
+	bool IsPhysicsLifecycleShutdown() const
+	{
+		return bLifecycleShutdown && !bLifecycleBusy && !bClearing
+			&& !bLifecycleShutdownPending && !bClearBridgePending;
+	}
+	UFUNCTION(BlueprintCallable, Category = "Assembly|Physics|Lifecycle")
+	bool PrepareForPlaying(FText& OutReason);
+	// Native model transaction: Apply once, verify after all phase listeners, then release the abort token.
+	bool CommitPreparedPlaying(FText& OutReason);
+	bool ValidateCommittedPlaying(FText& OutReason);
+	bool FinalizePreparedPlaying(FText& OutReason);
+	UFUNCTION(BlueprintCallable, Category = "Assembly|Physics|Lifecycle")
+	bool StopBeforeReset(FText& OutReason);
+	UFUNCTION(BlueprintCallable, Category = "Assembly|Physics|Lifecycle")
+	void AbortPreparedPlaying();
+	// Reapply Assembly mode, or prepare/reapply Playing after a session resumes.
+	UFUNCTION(BlueprintCallable, Category = "Assembly|Physics|Lifecycle")
+	bool RefreshPhysicsLifecycle(FText& OutReason);
+	UFUNCTION(BlueprintCallable, Category = "Assembly|Physics|Lifecycle")
+	void ShutdownPhysicsLifecycle();
 	// One active bridge per model. Initializing the same binding repeatedly is safe.
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Physics")
 	bool InitializeBridge(UAssemblyComponent* Assembly, UPrimitiveComponent* InCoreBody, FText& OutReason);
@@ -44,6 +90,17 @@ private:
 	TWeakObjectPtr<UPrimitiveComponent> CoreBody;
 	UPROPERTY(Transient)
 	TWeakObjectPtr<UJGDMessageSubsystem> MessageBus;
+	UPROPERTY(Transient)
+	TWeakObjectPtr<UObject> PhysicsLifecycleProvider;
+	UPROPERTY(Transient)
+	TWeakObjectPtr<UObject> PreparedProvider;
+	UPROPERTY(Transient)
+	FAssemblyPhysicsSnapshotMessage PreparedSnapshot;
+	// References to the editable views before an executor replaces any pose registration.
+	UPROPERTY(Transient)
+	FAssemblyPhysicsSnapshotMessage BeforePreparationSnapshot;
+	UPROPERTY(Transient)
+	FAssemblyPhysicsSnapshotMessage LastLifecycleSnapshot;
 	FGuid SourceId;
 	int32 RoundGeneration = 0;
 	int64 Revision = 0;
@@ -51,6 +108,15 @@ private:
 	bool bClearing = false;
 	bool bRebuildPending = false;
 	bool bCoreWasHeld = false;
+	bool bExplicitLifecycleProvider = false;
+	bool bLifecycleBusy = false;
+	bool bLifecycleShutdown = false;
+	bool bHasPreparedPlaying = false;
+	bool bPreparedPlayingApplied = false;
+	bool bPlayingPhaseCommitted = false;
+	bool bLifecycleShutdownPending = false;
+	bool bClearBridgePending = false;
+	bool bAbortPlayingPending = false;
 	FJGDMessageListenerHandle JointBrokenListener;
 	// Retained only while driving; ClearBridge must release every emitted held intent.
 	UPROPERTY(Transient)
@@ -58,13 +124,33 @@ private:
 	UPROPERTY(Transient)
 	TArray<FAssemblyPhysicsJointBrokenMessage> PendingJointConfirmations;
 	TSet<FGuid> OutstandingJointBreaks;
+	// These survive ClearBridge until the outer broadcast unwinds. Nested stop must reach every
+	// listener after the old press, even when that listener has already cleared the current binding.
+	UPROPERTY(Transient)
+	TArray<FAssemblyQueuedDriveMessage> QueuedDriveMessages;
+	int32 DriveDispatchDepth = 0;
+	bool bDrainingDriveMessages = false;
 
 	FAssemblyPhysicsBonePose MakeBonePose(FGuid BoneId) const;
 	bool IsCurrentContext(const FAssemblyPhysicsContext& Context) const;
 	void BroadcastSnapshot(FGameplayTag Channel, bool bClearState = false);
 	void BroadcastMuscleRequest(const FAssemblyPhysicsMuscleDriveMessage& Request);
 	void BroadcastCoreRequest(bool bHeld);
+	void DispatchDriveMessage(UJGDMessageSubsystem* Bus, FGameplayTag Channel, const FInstancedStruct& Payload);
+	void DrainDriveMessages();
 	void UnbindModel();
+	bool ResolvePhysicsLifecycleProvider(FText& OutReason);
+	bool HasSessionLifecycleOwnership() const;
+	bool ValidatePhysicalBodies(const FAssemblyPhysicsSnapshotMessage& Snapshot, FText& OutReason) const;
+	bool IsLifecycleBindingCurrent(const FAssemblyPhysicsContext& Context, const UObject* Provider) const;
+	bool ApplyPhysicsPhase(FText& OutReason);
+	bool EnsureFormalProxyReady(const FAssemblyPhysicsSnapshotMessage& Snapshot, FText& OutReason);
+	bool ValidateFormalProxyReady(const FAssemblyPhysicsSnapshotMessage& Snapshot, FText& OutReason) const;
+	void AbortPreparedState();
+	void RestorePreparationPoseSources(const FAssemblyPhysicsSnapshotMessage& BeforePreparation);
+	void ReleaseHeldPhysicsIntents();
+	bool ReplayHeldPhysicsIntents(const FAssemblyPhysicsContext& Binding, FText& OutReason);
+	void FlushDeferredLifecycleActions();
 	UFUNCTION()
 	void HandleAssemblyChanged();
 	UFUNCTION()

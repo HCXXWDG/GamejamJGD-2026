@@ -1,6 +1,8 @@
 #include "Assembly/NormalBone.h"
 #include "Assembly/AssemblyComponent.h"
+#include "Assembly/AssemblyJointPartTypes.h"
 #include "AssemblyRules.h"
+#include "AssemblyRenderLayers.h"
 #include "Components/BoxComponent.h"
 #include "PaperSprite.h"
 #include "PaperSpriteComponent.h"
@@ -78,8 +80,56 @@ FNormalBonePhysicalStats ANormalBone::GetPhysicalStats() const
 {
 	FNormalBonePhysicalStats Stats;
 	FText Reason;
-	NormalBoneMetrics::Evaluate(GetBoneParameters(), Stats, Reason);
+	AssemblyRigidPartMetrics::Evaluate(GetRigidPartDefinition(), Stats, Reason);
 	return Stats;
+}
+
+FAssemblyBoneDefinition ANormalBone::GetRigidPartDefinition() const
+{
+	FAssemblyBoneDefinition Definition = bHasAppliedDefinition ? AppliedDefinition : FAssemblyBoneDefinition();
+	Definition.BoneParameters = GetBoneParameters();
+	return Definition;
+}
+
+bool ANormalBone::ApplyRigidPartDefinition(const FAssemblyBoneDefinition& Definition, FText& OutReason)
+{
+	OutReason = FText::GetEmpty();
+	if (IsBoneInitialized() && !bApplyingModelDefinition)
+	{
+		OutReason = LOCTEXT("ModelOwnsDefinition", "已安装组件的几何由组装模型管理；此接口仅用于未安装的预览。");
+		return false;
+	}
+	if (BoneBody->IsSimulatingPhysics()
+		|| (IsBoneInitialized() && BoundAssembly->GetPhase() != EAssemblyPhase::Assembly))
+	{
+		OutReason = LOCTEXT("CannotEditGeometry", "物理模拟或操控期间不能修改刚体几何。");
+		return false;
+	}
+	FNormalBonePhysicalStats Stats;
+	if (!AssemblyRigidPartMetrics::Evaluate(Definition, Stats, OutReason) || !HasValidGeometry(Stats))
+	{
+		if (OutReason.IsEmpty()) OutReason = LOCTEXT("InvalidPartArt", "组件 Sprite 或几何尺寸无效。");
+		return false;
+	}
+	AppliedDefinition = Definition;
+	bHasAppliedDefinition = true;
+	PreviewParameters = Definition.BoneParameters;
+	UpdateGeometry(Stats);
+	return true;
+}
+
+bool ANormalBone::ApplyModelDefinition(UAssemblyComponent* Assembly, FGuid InstanceId, FText& OutReason)
+{
+	FAssemblyBoneInstance Instance;
+	FAssemblyBoneDefinition Definition;
+	if (!IsValid(Assembly) || !Assembly->GetBone(InstanceId, Instance)
+		|| !Assembly->GetBoneDefinition(Instance.TypeId, Definition))
+	{
+		OutReason = LOCTEXT("MissingRigidDefinition", "找不到刚体实例或其类型定义。");
+		return false;
+	}
+	TGuardValue<bool> ApplyGuard(bApplyingModelDefinition, true);
+	return ApplyRigidPartDefinition(Definition, OutReason);
 }
 
 FText ANormalBone::GetBoneDisplayName() const
@@ -95,7 +145,8 @@ FIntPoint ANormalBone::GetRequiredGridSize(float GridCellSize) const
 bool ANormalBone::HasValidGeometry(const FNormalBonePhysicalStats& Stats) const
 {
 	const UPaperSprite* Sprite = BoneSprite->GetSprite();
-	if (!Stats.bValid || !Sprite || !FMath::IsFinite(BodyHalfThickness) || BodyHalfThickness <= 0.0f)
+	if (!Stats.bValid || !Sprite || !FMath::IsFinite(BodyHalfThickness) || BodyHalfThickness <= 0.0f
+		|| !FMath::IsFinite(VisualDepthOffset) || !FMath::IsFinite(ArtworkOverlapScale) || ArtworkOverlapScale < 1.0f)
 	{
 		return false;
 	}
@@ -141,13 +192,46 @@ TArray<FIntPoint> ANormalBone::MakeRectangularBoneFootprint(const FNormalBonePar
 
 void ANormalBone::UpdateGeometry(const FNormalBonePhysicalStats& Stats)
 {
-	const FBoxSphereBounds Bounds = BoneSprite->GetSprite()->GetRenderBounds();
 	const FVector HalfSize(Stats.Length * 0.5, BodyHalfThickness, Stats.Thickness * 0.5);
 	BoneBody->SetBoxExtent(HalfSize, false);
+	RefreshVisualGeometry(Stats);
+}
+
+void ANormalBone::RefreshVisualGeometry(const FNormalBonePhysicalStats& Stats)
+{
+	const FBoxSphereBounds Bounds = BoneSprite->GetSprite()->GetRenderBounds();
 	// Sprite fitting does not scale the bone-local coordinate system used by muscles and physics.
-	const FVector VisualScale(HalfSize.X / Bounds.BoxExtent.X, 1.0, HalfSize.Z / Bounds.BoxExtent.Z);
+	const double LengthScale = Stats.Length * 0.5 / Bounds.BoxExtent.X;
+	const double ArtworkThicknessFactor = (static_cast<uint8>(GetBoneParameters().Thickness) + 1) * 0.5;
+	FVector VisualScale(LengthScale, 1.0, bUseArtworkProportions
+		? LengthScale * ArtworkThicknessFactor : Stats.Thickness * 0.5 / Bounds.BoxExtent.Z);
+	const FAssemblyBoneDefinition Definition = GetRigidPartDefinition();
+	if (Definition.PartKind == EAssemblyRigidPartKind::JointPart)
+	{
+		// Use the authored canvas, not trimmed render bounds: all shapes share one pixel scale.
+		const FVector2D Canvas = AssemblyRigidPartMetrics::GetJointArtworkPixelSize(Definition.JointShape);
+		const double UniformScale = Stats.Length / Canvas.X * BoneSprite->GetSprite()->GetPixelsPerUnrealUnit();
+		VisualScale = FVector(UniformScale, 1.0, UniformScale);
+	}
+	else if (bUseArtworkProportions)
+	{
+		VisualScale.X *= ArtworkOverlapScale;
+		VisualScale.Z *= ArtworkOverlapScale;
+	}
 	BoneSprite->SetRelativeScale3D(VisualScale);
-	BoneSprite->SetRelativeLocation(FVector(-Bounds.Origin.X * VisualScale.X, 0.0, -Bounds.Origin.Z * VisualScale.Z));
+	AssemblyRenderLayers::FCounts Counts;
+	int32 InstanceRank = 0;
+	const UAssemblyComponent* RenderAssembly = BoundAssembly.Get();
+	if (!RenderAssembly && GetOwner()) RenderAssembly = GetOwner()->FindComponentByClass<UAssemblyComponent>();
+	if (IsValid(RenderAssembly))
+	{
+		const TArray<FAssemblyBoneInstance> Bones = RenderAssembly->GetBones();
+		Counts = { Bones.Num(), RenderAssembly->GetMuscles().Num(), RenderAssembly->GetJoints().Num() };
+		if (IsBoneInitialized()) InstanceRank = AssemblyRenderLayers::GetRank(Bones, BoneData.InstanceId);
+	}
+	const double Depth = AssemblyRenderLayers::RigidDepth(Counts, InstanceRank,
+		Definition.PartKind == EAssemblyRigidPartKind::JointPart, !IsBoneInitialized(), VisualDepthOffset);
+	BoneSprite->SetRelativeLocation(FVector(-Bounds.Origin.X * VisualScale.X, Depth, -Bounds.Origin.Z * VisualScale.Z));
 	BoneSprite->SetRelativeRotation(FRotator::ZeroRotator);
 }
 
@@ -155,9 +239,17 @@ void ANormalBone::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
 	const FNormalBonePhysicalStats Stats = GetPhysicalStats();
-	if (!BoneBody->IsSimulatingPhysics() && HasValidGeometry(Stats))
+	if (HasValidGeometry(Stats))
 	{
-		UpdateGeometry(Stats);
+		if (!BoneBody->IsSimulatingPhysics() && (!IsBoneInitialized()
+			|| BoundAssembly->GetPhase() == EAssemblyPhase::Assembly))
+		{
+			UpdateGeometry(Stats);
+		}
+		else
+		{
+			RefreshVisualGeometry(Stats);
+		}
 	}
 }
 
@@ -204,7 +296,7 @@ bool ANormalBone::ReadAssemblyData(UAssemblyComponent* Assembly, FGuid InstanceI
 	OutCellSize = Assembly->GetGridSettings().CellSize;
 	OutPose = OutBone.LocalVisualTransform * Assembly->GetGridFrameTransform();
 	FNormalBonePhysicalStats Stats;
-	if (!NormalBoneMetrics::Evaluate(OutParameters, Stats, OutReason))
+	if (!AssemblyRigidPartMetrics::Evaluate(*Definition, Stats, OutReason))
 	{
 		return false;
 	}
@@ -229,7 +321,7 @@ bool ANormalBone::InitializeBone(UAssemblyComponent* Assembly, FGuid InstanceId,
 		OutReason = LOCTEXT("AlreadyBound", "此 Actor 已绑定另一骨头实例；重新使用前请调用 ClearAssemblyBinding。");
 		return false;
 	}
-	if (!CanApplyPose(Assembly, InstanceId, OutReason))
+	if (!CanApplyPose(Assembly, InstanceId, OutReason) || !ApplyModelDefinition(Assembly, InstanceId, OutReason))
 	{
 		return false;
 	}
@@ -258,7 +350,7 @@ bool ANormalBone::InitializeBone(UAssemblyComponent* Assembly, FGuid InstanceId,
 bool ANormalBone::RefreshAssemblyPose(FText& OutReason)
 {
 	UAssemblyComponent* Assembly = BoundAssembly.Get();
-	if (!CanApplyPose(Assembly, BoneData.InstanceId, OutReason))
+	if (!CanApplyPose(Assembly, BoneData.InstanceId, OutReason) || !ApplyModelDefinition(Assembly, BoneData.InstanceId, OutReason))
 	{
 		return false;
 	}
@@ -313,7 +405,8 @@ bool ANormalBone::TryMakeMuscleEndpoint(FVector2D LocalPoint, FAssemblyMuscleEnd
 	OutEndpoint = FAssemblyMuscleEndpoint();
 	FAssemblyBoneInstance Current;
 	const FNormalBonePhysicalStats Stats = GetPhysicalStats();
-	if (!IsBoneInitialized() || !BoundAssembly->GetBone(BoneData.InstanceId, Current) || !Stats.bValid
+	if (!IsBoneInitialized() || GetRigidPartDefinition().PartKind != EAssemblyRigidPartKind::Bone
+		|| !BoundAssembly->GetBone(BoneData.InstanceId, Current) || !Stats.bValid
 		|| !FMath::IsFinite(LocalPoint.X) || !FMath::IsFinite(LocalPoint.Y)
 		|| FMath::Abs(LocalPoint.X) > Stats.Length * 0.5 + UE_KINDA_SMALL_NUMBER
 		|| FMath::Abs(LocalPoint.Y) > Stats.Thickness * 0.5 + UE_KINDA_SMALL_NUMBER
@@ -368,6 +461,18 @@ void ANormalBone::HandleAssemblyChanged()
 	{
 		ClearAssemblyBinding();
 		Destroy();
+		return;
+	}
+	// GUID ranks and category ranges change when another part is inserted or removed.
+	// Refresh only the sprite even in Playing; never touch the simulated body here.
+	const FNormalBonePhysicalStats Stats = GetPhysicalStats();
+	if (HasValidGeometry(Stats)) RefreshVisualGeometry(Stats);
+	// Free assembly follows the registered body, including when its coordinate frame moves.
+	// A key/constraint edit must not apply an unchanged cached pose in a new frame and teleport it.
+	// Explicit RefreshAssemblyPose remains available when a caller intentionally reapplies the model.
+	if (BoundAssembly->GetPlacementMode() == EAssemblyPlacementMode::Free
+		&& Current.LocalVisualTransform.Equals(BoneData.LocalVisualTransform, UE_KINDA_SMALL_NUMBER))
+	{
 		return;
 	}
 	FText Reason;

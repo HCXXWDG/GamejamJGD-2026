@@ -24,6 +24,22 @@ public:
 	FNormalBoneParameters PreviewParameters;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Bone|Body", meta = (ClampMin = "0.01"))
 	float BodyHalfThickness = 4.0f;
+	// Artwork is authored for Medium thickness. Thin/Thick apply 0.5/1.5 to its visual width.
+	// This changes only the sprite; physical dimensions and bone-local anchors retain their definitions.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Bone|Visual")
+	bool bUseArtworkProportions = false;
+	// Ordinary bones may cover the seam at a joint using an artwork rim. Uniform XZ only:
+	// the physical body, attachment anchors and the model's no-overlap rules stay unchanged.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Bone|Visual", meta = (ClampMin = "1.0", ClampMax = "2.0"))
+	float ArtworkOverlapScale = 1.0f;
+	// Local +Y is toward the side-view camera. Only the Sprite moves; the body and anchors stay put.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bone|Visual")
+	float VisualDepthOffset = 0.0f;
+	// Applies a rigid-part definition without installing it or consuming stock.
+	UFUNCTION(BlueprintCallable, Category = "Bone|Assembly")
+	virtual bool ApplyRigidPartDefinition(const FAssemblyBoneDefinition& Definition, FText& OutReason);
+	UFUNCTION(BlueprintPure, Category = "Bone|Assembly")
+	FAssemblyBoneDefinition GetRigidPartDefinition() const;
 
 	// Call only after TryInstallBone succeeds. This never consumes inventory or creates a model instance.
 	UFUNCTION(BlueprintCallable, Category = "Bone|Assembly")
@@ -90,14 +106,20 @@ private:
 	TArray<FIntPoint> Footprint;
 	UPROPERTY(Transient)
 	FNormalBoneParameters InstalledParameters;
+	UPROPERTY(Transient)
+	FAssemblyBoneDefinition AppliedDefinition;
+	bool bHasAppliedDefinition = false;
+	bool bApplyingModelDefinition = false;
 	float CellSize = 64.0f;
 
 	bool CanApplyPose(UAssemblyComponent* Assembly, FGuid InstanceId, FText& OutReason) const;
+	bool ApplyModelDefinition(UAssemblyComponent* Assembly, FGuid InstanceId, FText& OutReason);
 	bool ReadAssemblyData(UAssemblyComponent* Assembly, FGuid InstanceId, FAssemblyBoneInstance& OutBone,
 		TArray<FIntPoint>& OutFootprint, FNormalBoneParameters& OutParameters, float& OutCellSize,
 		FTransform& OutPose, FText& OutReason) const;
 	bool HasValidGeometry(const FNormalBonePhysicalStats& Stats) const;
 	void UpdateGeometry(const FNormalBonePhysicalStats& Stats);
+	void RefreshVisualGeometry(const FNormalBonePhysicalStats& Stats);
 	UFUNCTION()
 	void HandleAssemblyChanged();
 	UFUNCTION()

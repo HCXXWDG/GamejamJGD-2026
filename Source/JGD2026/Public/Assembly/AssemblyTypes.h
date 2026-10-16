@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Assembly/NormalBoneTypes.h"
+#include "Assembly/AssemblyJointPartTypes.h"
 #include "AssemblyTypes.generated.h"
 
 UENUM(BlueprintType)
@@ -24,6 +25,11 @@ struct JGD2026_API FAssemblyFreeSettings
 	float CoreRadius = 32.0f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly", meta = (ClampMin = "0"))
 	float ConnectionDistance = 16.0f;
+	// Drag acquisition uses ConnectionDistance; a larger release distance prevents contact jitter.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Snap")
+	bool bEnableSurfaceSnapping = true;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Snap", meta = (ClampMin = "0"))
+	float SnapReleaseDistance = 32.0f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly")
 	bool bAllowBoneOverlap = false;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly")
@@ -73,6 +79,24 @@ struct JGD2026_API FAssemblyBoneDefinition
 	// Unrotated, four-connected shape. Normalized internally to a top-left origin.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly")
 	TArray<FIntPoint> Footprint = { FIntPoint(0, 0), FIntPoint(1, 0) };
+	// Independent joint pieces share the rigid instance/pose path; Joints remains the constraint-edge list.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly")
+	EAssemblyRigidPartKind PartKind = EAssemblyRigidPartKind::Bone;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|JointPart")
+	EAssemblyJointPartShape JointShape = EAssemblyJointPartShape::Round;
+	// Full body width and height in the existing local XZ plane, independent of texture pixels.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|JointPart")
+	FVector2D JointPartSize = FVector2D(64.0, 64.0);
+	// Non-circular joint ports in body-local XZ units; directions come from their actual end faces.
+	// Round parts keep continuous radial connections; these points are only optional markers there.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|JointPart")
+	TArray<FVector2D> ConnectionPoints;
+	// Optional simple closed polygon in body-local XZ units. Empty uses the standard shape.
+	// No repeated closing vertex. This is assembly geometry, independent of texture resolution.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Surface")
+	TArray<FVector2D> SurfaceOutline;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|JointPart")
+	EAssemblyJointKind DefaultJointKind = EAssemblyJointKind::Hinge;
 };
 
 USTRUCT(BlueprintType)
@@ -168,6 +192,34 @@ struct JGD2026_API FAssemblyJointInstance
 	float MaxAngleDegrees = 60.0f;
 };
 
+/** Drag-only latch. Invalid TargetId is the core only when bSnapped and bCore are true. */
+USTRUCT(BlueprintType)
+struct JGD2026_API FAssemblySurfaceSnapState
+{
+	GENERATED_BODY()
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly|Snap")
+	bool bSnapped = false;
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly|Snap")
+	bool bCore = false;
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly|Snap")
+	FGuid TargetId;
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly|Snap")
+	FVector2D SourceLocalAnchor = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly|Snap")
+	FVector2D TargetLocalAnchor = FVector2D::ZeroVector;
+	// Drag-only calibration: radial bone alignment must not overwrite the unsnapped pointer or angle.
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly|Snap")
+	bool bRadialAligned = false;
+	// Pointer contact radius minus target circle radius; retained while sliding around this circle.
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly|Snap")
+	double RadialPointerOffset = 0.0;
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly|Snap")
+	float RadialInputAngle = 0.0f;
+	// Preserve the contacted end while the user moves around the circle without manually rotating.
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly|Snap")
+	bool bRadialXOutward = true;
+};
+
 USTRUCT(BlueprintType)
 struct JGD2026_API FAssemblyPlacementResult
 {
@@ -189,6 +241,8 @@ struct JGD2026_API FAssemblyPlacementResult
 	TArray<FIntPoint> OccupiedCells;
 	UPROPERTY(BlueprintReadOnly, Category = "Assembly")
 	FTransform LocalVisualTransform = FTransform::Identity;
+	UPROPERTY(BlueprintReadOnly, Category = "Assembly|Snap")
+	FAssemblySurfaceSnapState SurfaceSnap;
 };
 
 USTRUCT(BlueprintType)
