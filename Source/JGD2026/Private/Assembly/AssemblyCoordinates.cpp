@@ -1,4 +1,5 @@
 #include "Assembly/AssemblyComponent.h"
+#include "Assembly/AssemblySurfaceGeometry.h"
 #include "AssemblyRules.h"
 #include "AssemblyFreeRules.h"
 #include "Components/SceneComponent.h"
@@ -237,6 +238,73 @@ bool UAssemblyComponent::FindBoneAtWorldPosition(FVector WorldPosition, FAssembl
 		}
 	}
 	return false;
+}
+
+bool UAssemblyComponent::FindMuscleEndpointAtWorldPosition(FVector WorldPosition,
+	FAssemblyMuscleEndpoint& OutEndpoint, float MaxSurfaceDistance) const
+{
+	OutEndpoint = FAssemblyMuscleEndpoint();
+	if (!bInitialized || WorldPosition.ContainsNaN() || !FMath::IsFinite(MaxSurfaceDistance) || MaxSurfaceDistance < 0.0f)
+	{
+		return false;
+	}
+	const double LimitSquared = FMath::Square(static_cast<double>(MaxSurfaceDistance));
+	double BestDistanceSquared = LimitSquared;
+	bool bFoundNearby = false;
+	for (int32 Index = InstalledBones.Num() - 1; Index >= 0; --Index)
+	{
+		const FAssemblyBoneInstance& Bone = InstalledBones[Index];
+		const FAssemblyBoneDefinition* Definition = FindBoneDefinition(Bone.TypeId);
+		FTransform Transform;
+		if (!Definition || Definition->PartKind != EAssemblyRigidPartKind::Bone
+			|| !GetBoneWorldTransform(Bone.InstanceId, Transform))
+		{
+			continue;
+		}
+		const FVector Local = Transform.InverseTransformPosition(WorldPosition);
+		const FVector2D Point(Local.X, Local.Z);
+		if (Local.ContainsNaN()) { continue; }
+		if (IsPointOnBoneDefinition(*Definition, Point))
+		{
+			// Every exact hit wins over every nearby contour, even when the latter was
+			// installed more recently. Reverse iteration resolves exact ties consistently.
+			OutEndpoint.BoneId = Bone.InstanceId;
+			OutEndpoint.BoneLocalPoint = Point;
+			return true;
+		}
+		if (MaxSurfaceDistance == 0.0f) { continue; }
+
+		AssemblySurfaceGeometry::FShape Shape;
+		FText ShapeReason;
+		if (!AssemblySurfaceGeometry::BuildShape(*Definition, FTransform::Identity, Shape, ShapeReason)) { continue; }
+		// Ignore visual depth just as the exact 2D hit test does. Measure in the actual
+		// world plane so nonuniformly scaled or physics-driven bodies keep the same margin.
+		const FVector PlanarWorldPoint = Transform.TransformPosition(FVector(Point.X, 0.0, Point.Y));
+		for (int32 Edge = 0; Edge < Shape.Vertices.Num(); ++Edge)
+		{
+			const FVector2D A = Shape.Vertices[Edge];
+			const FVector2D B = Shape.Vertices[(Edge + 1) % Shape.Vertices.Num()];
+			const FVector WorldA = Transform.TransformPosition(FVector(A.X, 0.0, A.Y));
+			const FVector WorldB = Transform.TransformPosition(FVector(B.X, 0.0, B.Y));
+			const FVector Delta = WorldB - WorldA;
+			const double LengthSquared = Delta.SizeSquared();
+			if (!FMath::IsFinite(LengthSquared) || LengthSquared <= UE_DOUBLE_SMALL_NUMBER) { continue; }
+			const double Alpha = FMath::Clamp(FVector::DotProduct(PlanarWorldPoint - WorldA, Delta) / LengthSquared, 0.0, 1.0);
+			const FVector2D Candidate = A + (B - A) * Alpha;
+			const double DistanceSquared = FVector::DistSquared(PlanarWorldPoint, WorldA + Delta * Alpha);
+			if (!FMath::IsFinite(DistanceSquared) || DistanceSquared > LimitSquared
+				|| (bFoundNearby && DistanceSquared + UE_DOUBLE_SMALL_NUMBER >= BestDistanceSquared)
+				|| !IsPointOnBoneDefinition(*Definition, Candidate))
+			{
+				continue;
+			}
+			BestDistanceSquared = DistanceSquared;
+			bFoundNearby = true;
+			OutEndpoint.BoneId = Bone.InstanceId;
+			OutEndpoint.BoneLocalPoint = Candidate;
+		}
+	}
+	return bFoundNearby;
 }
 
 #undef LOCTEXT_NAMESPACE

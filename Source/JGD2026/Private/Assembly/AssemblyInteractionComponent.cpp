@@ -563,9 +563,10 @@ bool UAssemblyInteractionComponent::InstallMuscleAtWorldPoints(FName TypeId, FVe
 	OutInstanceId.Invalidate();
 	if (!CanEdit(OutReason)) { return false; }
 	FAssemblyMuscleEndpoint EndpointA, EndpointB;
-	if (!BoundAssembly->FindBoneAtWorldPosition(WorldA, EndpointA) || !BoundAssembly->FindBoneAtWorldPosition(WorldB, EndpointB))
+	if (!BoundAssembly->FindMuscleEndpointAtWorldPosition(WorldA, EndpointA)
+		|| !BoundAssembly->FindMuscleEndpointAtWorldPosition(WorldB, EndpointB))
 	{
-		OutReason = LOCTEXT("MuscleOffBone", "肌肉的两端都必须落在骨头上，圆球核心不能作为肌肉连接点。");
+		OutReason = LOCTEXT("MuscleOffBone", "肌肉的两端都必须落在骨头上，可选择内侧或外侧的不同位置；核心和关节不能作为肌肉连接点。");
 		return false;
 	}
 	return InstallMuscleAtEndpoints(TypeId, EndpointA, EndpointB, OutInstanceId, OutReason);
@@ -595,7 +596,8 @@ bool UAssemblyInteractionComponent::MoveMuscleAtWorldPoints(FGuid InstanceId, FV
 {
 	if (!CanEdit(OutReason)) { return false; }
 	FAssemblyMuscleEndpoint EndpointA, EndpointB;
-	if (!BoundAssembly->FindBoneAtWorldPosition(WorldA, EndpointA) || !BoundAssembly->FindBoneAtWorldPosition(WorldB, EndpointB))
+	if (!BoundAssembly->FindMuscleEndpointAtWorldPosition(WorldA, EndpointA)
+		|| !BoundAssembly->FindMuscleEndpointAtWorldPosition(WorldB, EndpointB))
 	{
 		OutReason = LOCTEXT("MoveMuscleOffBone", "移动失败：肌肉的两端都必须落在骨头上。");
 		return false;

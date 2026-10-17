@@ -478,9 +478,9 @@ FText UAssemblyHUDWidget::GetDefaultMessage() const
 		case EAssemblyWorkbenchTool::JointPart:
 			return Text(TEXT("关节只吸附骨头两端，中心对齐骨头延长线；不连接其他关节或核心。R 旋转，滚轮微调；松开安装，Esc 或右键取消。"));
 		case EAssemblyWorkbenchTool::MuscleFirst:
-			return Text(TEXT("在骨头上选择肌肉第一连接点；从组件栏拖出时，在骨头上松开。Esc 或右键取消。"));
+			return Text(TEXT("在骨头内侧或外侧选择第一连接点；从组件栏拖出时，在骨头上松开。靠近边缘会吸附到骨头轮廓。Esc 或右键取消。"));
 		case EAssemblyWorkbenchTool::MuscleSecond:
-			return Text(TEXT("点击骨头上的第二连接点；同一骨头可选两个不同位置。Esc 或右键取消。"));
+			return Text(TEXT("点击骨头内侧或外侧的第二连接点。同一对骨头可连接多条肌肉，各自保留连接位置和键位。Esc 或右键取消。"));
 		default: break;
 		}
 		if (const UAssemblyComponent* Model = ActiveWorkbench->GetAssemblyComponent())

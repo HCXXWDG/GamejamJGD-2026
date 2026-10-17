@@ -240,6 +240,12 @@ public:
 	bool GetEndpointWorldPosition(const FAssemblyMuscleEndpoint& Endpoint, FVector& OutWorldPosition) const;
 	UFUNCTION(BlueprintPure, Category = "Assembly|Coordinates")
 	bool FindBoneAtWorldPosition(FVector WorldPosition, FAssemblyMuscleEndpoint& OutEndpoint) const;
+	// Muscle-only hit test: joint artwork cannot hide an underlying bone. Exact interior
+	// points retain both local coordinates; an optional world-unit margin projects only
+	// to the real body contour, never to the bone centerline or its rigid connection ports.
+	UFUNCTION(BlueprintPure, Category = "Assembly|Coordinates")
+	bool FindMuscleEndpointAtWorldPosition(FVector WorldPosition, FAssemblyMuscleEndpoint& OutEndpoint,
+		float MaxSurfaceDistance = 0.0f) const;
 
 protected:
 	virtual void BeginPlay() override;
