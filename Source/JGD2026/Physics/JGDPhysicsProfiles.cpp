@@ -3,6 +3,7 @@
 #include "Physics/JGDPhysicsProfiles.h"
 
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Components/PrimitiveComponent.h"
 
 void FJGDCharacterPhysicsSettings::ApplyTo(UCharacterMovementComponent& MovementComponent) const
 {
@@ -29,4 +30,23 @@ void FJGDCharacterPhysicsSettings::ApplyTo(UCharacterMovementComponent& Movement
 	{
 		MovementComponent.SnapUpdatedComponentToPlane();
 	}
+}
+
+void UJGDPhysicsRigidBodyProfile::ApplyTo(UPrimitiveComponent& Body) const
+{
+	Body.SetEnableGravity(bEnableGravity);
+	Body.SetLinearDamping(FMath::Max(0.0f, LinearDamping));
+	Body.SetAngularDamping(FMath::Max(0.0f, AngularDamping));
+}
+
+bool UJGDAssemblyPhysicsDriveProfile::HasValidParameters() const
+{
+	return FMath::IsFinite(MuscleStiffness) && MuscleStiffness >= 0.0f
+		&& FMath::IsFinite(MuscleDamping) && MuscleDamping >= 0.0f
+		&& FMath::IsFinite(MuscleMaxForce) && MuscleMaxForce >= 0.0f
+		&& FMath::IsFinite(MuscleContractionRatio)
+		&& MuscleContractionRatio >= 0.0f && MuscleContractionRatio <= 0.95f
+		&& FMath::IsFinite(JointBreakForce) && JointBreakForce >= 0.0f
+		&& FMath::IsFinite(JointBreakTorque) && JointBreakTorque >= 0.0f
+		&& FMath::IsFinite(CoreRotationTorque) && CoreRotationTorque >= 0.0f;
 }

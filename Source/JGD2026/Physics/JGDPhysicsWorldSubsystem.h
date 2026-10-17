@@ -12,6 +12,7 @@
 class ACharacter;
 class AJGDPhysicsProfileVolume;
 class UJGDMessageSubsystem;
+class UPrimitiveComponent;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(
 	FJGDCharacterPhysicsProfileChanged,
@@ -26,6 +27,19 @@ struct FJGDCharacterPhysicsRegistration
 	TArray<TWeakObjectPtr<AJGDPhysicsProfileVolume>> ActiveVolumes;
 	TStrongObjectPtr<UJGDCharacterPhysicsProfile> AppliedProfile;
 	bool bHasAppliedProfile = false;
+};
+
+struct FJGDRigidBodyPhysicsRegistration
+{
+	FGuid RegistrationId;
+	TWeakObjectPtr<UPrimitiveComponent> Body;
+	TStrongObjectPtr<UJGDPhysicsRigidBodyProfile> BaseProfile;
+	TArray<TWeakObjectPtr<AJGDPhysicsProfileVolume>> ActiveVolumes;
+	TStrongObjectPtr<UJGDPhysicsRigidBodyProfile> AppliedProfile;
+	bool bHasAppliedProfile = false;
+	bool bOriginalGravityEnabled = true;
+	float OriginalLinearDamping = 0.0f;
+	float OriginalAngularDamping = 0.0f;
 };
 
 /** Coordinates world defaults and event-driven character profile changes. */
@@ -52,6 +66,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "JGD|Physics", meta = (DefaultToSelf = "Character"))
 	void RefreshCharacterProfile(ACharacter* Character);
 
+	bool RegisterRigidBody(UPrimitiveComponent* Body, const FGuid& RegistrationId,
+		UJGDPhysicsRigidBodyProfile* BaseProfile, FText& OutReason);
+	void UnregisterRigidBody(UPrimitiveComponent* Body, const FGuid& RegistrationId);
+	void UnregisterRigidBodiesOwnedBy(const FGuid& RegistrationId);
+	bool SetRigidBodyBaseProfile(UPrimitiveComponent* Body, UJGDPhysicsRigidBodyProfile* BaseProfile);
+	void RefreshRigidBodyProfile(UPrimitiveComponent* Body);
+	UJGDPhysicsRigidBodyProfile* GetResolvedRigidBodyProfile(UPrimitiveComponent* Body) const;
+	bool IsRigidBodyRegistered(const UPrimitiveComponent* Body) const;
+
 	UFUNCTION(BlueprintPure, Category = "JGD|Physics", meta = (DefaultToSelf = "Character"))
 	UJGDCharacterPhysicsProfile* GetResolvedCharacterProfile(ACharacter* Character) const;
 
@@ -61,6 +84,8 @@ public:
 	void NotifyCharacterEnteredVolume(ACharacter* Character, AJGDPhysicsProfileVolume* Volume);
 	void NotifyCharacterLeftVolume(ACharacter* Character, AJGDPhysicsProfileVolume* Volume);
 	void NotifyVolumeRemoved(AJGDPhysicsProfileVolume* Volume);
+	void NotifyRigidBodiesEnteredVolume(AActor* Actor, AJGDPhysicsProfileVolume* Volume);
+	void NotifyRigidBodiesLeftVolume(AActor* Actor, AJGDPhysicsProfileVolume* Volume);
 
 	UPROPERTY(BlueprintAssignable, Category = "JGD|Physics")
 	FJGDCharacterPhysicsProfileChanged OnCharacterPhysicsProfileChanged;
@@ -73,6 +98,11 @@ private:
 	void ApplyResolvedProfile(ACharacter& Character, FJGDCharacterPhysicsRegistration& Registration);
 	void RebuildActiveVolumes(ACharacter& Character, FJGDCharacterPhysicsRegistration& Registration);
 	void RefreshAllCharacters();
+	void RefreshAllRigidBodies();
+	UJGDPhysicsRigidBodyProfile* ResolveRigidBodyProfile(const FJGDRigidBodyPhysicsRegistration& Registration) const;
+	void ApplyResolvedRigidBodyProfile(FJGDRigidBodyPhysicsRegistration& Registration);
+	void RestoreRigidBodySettings(FJGDRigidBodyPhysicsRegistration& Registration);
+	void RebuildRigidBodyActiveVolumes(FJGDRigidBodyPhysicsRegistration& Registration);
 	void SubscribeToRequests();
 	void UnsubscribeFromRequests();
 	void ResetRuntimeState();
@@ -83,14 +113,24 @@ private:
 
 	UFUNCTION()
 	void HandleSetCharacterBaseProfileRequest(FGameplayTag Channel, const FInstancedStruct& Message);
+	UFUNCTION()
+	void HandleRegisterRigidBodyRequest(FGameplayTag Channel, const FInstancedStruct& Message);
+	UFUNCTION()
+	void HandleUnregisterRigidBodyRequest(FGameplayTag Channel, const FInstancedStruct& Message);
+	UFUNCTION()
+	void HandleSetRigidBodyBaseProfileRequest(FGameplayTag Channel, const FInstancedStruct& Message);
 
 	UPROPERTY(Transient)
 	TObjectPtr<UJGDPhysicsWorldProfile> CurrentWorldProfile;
 
 	TMap<TWeakObjectPtr<ACharacter>, FJGDCharacterPhysicsRegistration> RegisteredCharacters;
+	TMap<TWeakObjectPtr<UPrimitiveComponent>, FJGDRigidBodyPhysicsRegistration> RegisteredRigidBodies;
 	TWeakObjectPtr<UJGDMessageSubsystem> MessageSubsystem;
 	FJGDMessageListenerHandle ApplyWorldProfileListener;
 	FJGDMessageListenerHandle SetCharacterBaseProfileListener;
+	FJGDMessageListenerHandle RegisterRigidBodyListener;
+	FJGDMessageListenerHandle UnregisterRigidBodyListener;
+	FJGDMessageListenerHandle SetRigidBodyBaseProfileListener;
 
 	// Preserve transition order if a synchronous listener applies another profile.
 	UPROPERTY(Transient)

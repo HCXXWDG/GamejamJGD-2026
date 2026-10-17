@@ -6,6 +6,8 @@
 #include "GameFramework/Character.h"
 #include "BaseCharacter.generated.h"
 
+class UAssemblySessionComponent;
+
 UCLASS()
 class JGD2026_API ABaseCharacter : public ACharacter
 {
@@ -16,8 +18,16 @@ public:
 	ABaseCharacter();
 
 protected:
+	virtual void PostInitializeComponents() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	// Called when the game starts or when spawned
 	virtual void BeginPlay() override;
+	UFUNCTION()
+	void HandleAssemblySessionChanged();
+
+private:
+	TWeakObjectPtr<UAssemblySessionComponent> PhysicsBootstrapSession;
+	bool bBindingAssemblyPhysicsExecutor = false;
 
 public:	
 	// Called every frame

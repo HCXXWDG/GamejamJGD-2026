@@ -5,6 +5,7 @@
 #include "JGD2026.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Components/PrimitiveComponent.h"
 #include "GameFramework/WorldSettings.h"
 #include "MessageBus/JGDMessageSubsystem.h"
 #include "Physics/JGD2DPhysicsParticipantComponent.h"
@@ -53,6 +54,11 @@ void UJGDPhysicsWorldSubsystem::ResetRuntimeState()
 {
 	bWorldEnded = true;
 	RegisteredCharacters.Empty();
+	for (TPair<TWeakObjectPtr<UPrimitiveComponent>, FJGDRigidBodyPhysicsRegistration>& Pair : RegisteredRigidBodies)
+	{
+		RestoreRigidBodySettings(Pair.Value);
+	}
+	RegisteredRigidBodies.Empty();
 	CurrentWorldProfile = nullptr;
 	bHasCapturedOriginalWorldGravity = false;
 	bHasAppliedWorldProfile = false;
@@ -75,6 +81,12 @@ void UJGDPhysicsWorldSubsystem::SubscribeToRequests()
 	ApplyWorldProfileListener = Bus->RegisterListener(JGDPhysicsMessageTags::ApplyWorldProfile(), Delegate);
 	Delegate.BindDynamic(this, &ThisClass::HandleSetCharacterBaseProfileRequest);
 	SetCharacterBaseProfileListener = Bus->RegisterListener(JGDPhysicsMessageTags::SetCharacterBaseProfile(), Delegate);
+	Delegate.BindDynamic(this, &ThisClass::HandleRegisterRigidBodyRequest);
+	RegisterRigidBodyListener = Bus->RegisterListener(JGDPhysicsMessageTags::RegisterRigidBody(), Delegate);
+	Delegate.BindDynamic(this, &ThisClass::HandleUnregisterRigidBodyRequest);
+	UnregisterRigidBodyListener = Bus->RegisterListener(JGDPhysicsMessageTags::UnregisterRigidBody(), Delegate);
+	Delegate.BindDynamic(this, &ThisClass::HandleSetRigidBodyBaseProfileRequest);
+	SetRigidBodyBaseProfileListener = Bus->RegisterListener(JGDPhysicsMessageTags::SetRigidBodyBaseProfile(), Delegate);
 	bAcceptMessageRequests = true;
 }
 
@@ -86,10 +98,66 @@ void UJGDPhysicsWorldSubsystem::UnsubscribeFromRequests()
 	{
 		Bus->UnregisterListener(ApplyWorldProfileListener);
 		Bus->UnregisterListener(SetCharacterBaseProfileListener);
+		Bus->UnregisterListener(RegisterRigidBodyListener);
+		Bus->UnregisterListener(UnregisterRigidBodyListener);
+		Bus->UnregisterListener(SetRigidBodyBaseProfileListener);
 	}
 	ApplyWorldProfileListener.Invalidate();
 	SetCharacterBaseProfileListener.Invalidate();
+	RegisterRigidBodyListener.Invalidate();
+	UnregisterRigidBodyListener.Invalidate();
+	SetRigidBodyBaseProfileListener.Invalidate();
 	MessageSubsystem.Reset();
+}
+
+void UJGDPhysicsWorldSubsystem::HandleRegisterRigidBodyRequest(FGameplayTag Channel, const FInstancedStruct& Message)
+{
+	if (!bAcceptMessageRequests)
+	{
+		return;
+	}
+	const FJGDRegisterRigidBodyPhysicsRequest* Request = Message.GetPtr<FJGDRegisterRigidBodyPhysicsRequest>();
+	if (!Request || !IsValid(Request->TargetWorld) || Request->TargetWorld != GetWorld()
+		|| !IsValid(Request->Body) || !Request->RegistrationId.IsValid()
+		|| (Request->BaseProfile && !IsValid(Request->BaseProfile)))
+	{
+		UE_LOG(LogJGDPhysics, Warning, TEXT("Physics rigid-body registration request is invalid."));
+		return;
+	}
+	FText Reason;
+	RegisterRigidBody(Request->Body, Request->RegistrationId, Request->BaseProfile, Reason);
+}
+
+void UJGDPhysicsWorldSubsystem::HandleUnregisterRigidBodyRequest(FGameplayTag Channel, const FInstancedStruct& Message)
+{
+	if (!bAcceptMessageRequests)
+	{
+		return;
+	}
+	const FJGDUnregisterRigidBodyPhysicsRequest* Request = Message.GetPtr<FJGDUnregisterRigidBodyPhysicsRequest>();
+	if (!Request || !IsValid(Request->TargetWorld) || Request->TargetWorld != GetWorld()
+		|| !IsValid(Request->Body) || !Request->RegistrationId.IsValid())
+	{
+		UE_LOG(LogJGDPhysics, Warning, TEXT("Physics rigid-body unregistration request is invalid."));
+		return;
+	}
+	UnregisterRigidBody(Request->Body, Request->RegistrationId);
+}
+
+void UJGDPhysicsWorldSubsystem::HandleSetRigidBodyBaseProfileRequest(FGameplayTag Channel, const FInstancedStruct& Message)
+{
+	if (!bAcceptMessageRequests)
+	{
+		return;
+	}
+	const FJGDSetRigidBodyBasePhysicsProfileRequest* Request = Message.GetPtr<FJGDSetRigidBodyBasePhysicsProfileRequest>();
+	if (!Request || !IsValid(Request->TargetWorld) || Request->TargetWorld != GetWorld()
+		|| !IsValid(Request->Body) || (Request->BaseProfile && !IsValid(Request->BaseProfile)))
+	{
+		UE_LOG(LogJGDPhysics, Warning, TEXT("Physics rigid-body profile request is invalid."));
+		return;
+	}
+	SetRigidBodyBaseProfile(Request->Body, Request->BaseProfile);
 }
 
 void UJGDPhysicsWorldSubsystem::HandleApplyWorldProfileRequest(FGameplayTag Channel, const FInstancedStruct& Message)
@@ -225,6 +293,115 @@ void UJGDPhysicsWorldSubsystem::RefreshCharacterProfile(ACharacter* Character)
 	}
 }
 
+bool UJGDPhysicsWorldSubsystem::RegisterRigidBody(
+	UPrimitiveComponent* Body, const FGuid& RegistrationId,
+	UJGDPhysicsRigidBodyProfile* BaseProfile, FText& OutReason)
+{
+	OutReason = FText::GetEmpty();
+	if (bWorldEnded || !IsValid(Body) || Body->GetWorld() != GetWorld() || !Body->IsRegistered()
+		|| !RegistrationId.IsValid() || (BaseProfile && !IsValid(BaseProfile)))
+	{
+		OutReason = FText::FromString(TEXT("刚体或注册参数无效，或刚体不属于当前世界。"));
+		return false;
+	}
+
+	if (FJGDRigidBodyPhysicsRegistration* Existing = RegisteredRigidBodies.Find(Body))
+	{
+		if (Existing->RegistrationId != RegistrationId)
+		{
+			OutReason = FText::FromString(TEXT("该刚体已由其他物理所有者注册。"));
+			return false;
+		}
+		Existing->BaseProfile.Reset(BaseProfile);
+		ApplyResolvedRigidBodyProfile(*Existing);
+		return true;
+	}
+
+	FJGDRigidBodyPhysicsRegistration& Registration = RegisteredRigidBodies.Add(Body);
+	Registration.RegistrationId = RegistrationId;
+	Registration.Body = Body;
+	Registration.BaseProfile.Reset(BaseProfile);
+	Registration.bOriginalGravityEnabled = Body->IsGravityEnabled();
+	Registration.OriginalLinearDamping = Body->GetLinearDamping();
+	Registration.OriginalAngularDamping = Body->GetAngularDamping();
+	RebuildRigidBodyActiveVolumes(Registration);
+	ApplyResolvedRigidBodyProfile(Registration);
+	return true;
+}
+
+void UJGDPhysicsWorldSubsystem::UnregisterRigidBody(UPrimitiveComponent* Body, const FGuid& RegistrationId)
+{
+	if (!Body)
+	{
+		return;
+	}
+	FJGDRigidBodyPhysicsRegistration* Registration = RegisteredRigidBodies.Find(Body);
+	if (!Registration || Registration->RegistrationId != RegistrationId)
+	{
+		return;
+	}
+	RestoreRigidBodySettings(*Registration);
+	RegisteredRigidBodies.Remove(Body);
+}
+
+void UJGDPhysicsWorldSubsystem::UnregisterRigidBodiesOwnedBy(const FGuid& RegistrationId)
+{
+	if (!RegistrationId.IsValid())
+	{
+		return;
+	}
+	TArray<TWeakObjectPtr<UPrimitiveComponent>> Bodies;
+	RegisteredRigidBodies.GenerateKeyArray(Bodies);
+	for (const TWeakObjectPtr<UPrimitiveComponent>& WeakBody : Bodies)
+	{
+		FJGDRigidBodyPhysicsRegistration* Registration = RegisteredRigidBodies.Find(WeakBody);
+		if (Registration && Registration->RegistrationId == RegistrationId)
+		{
+			RestoreRigidBodySettings(*Registration);
+			RegisteredRigidBodies.Remove(WeakBody);
+		}
+	}
+}
+
+bool UJGDPhysicsWorldSubsystem::SetRigidBodyBaseProfile(
+	UPrimitiveComponent* Body, UJGDPhysicsRigidBodyProfile* BaseProfile)
+{
+	if (bWorldEnded || !IsValid(Body) || (BaseProfile && !IsValid(BaseProfile)))
+	{
+		return false;
+	}
+	FJGDRigidBodyPhysicsRegistration* Registration = RegisteredRigidBodies.Find(Body);
+	if (!Registration)
+	{
+		return false;
+	}
+	Registration->BaseProfile.Reset(BaseProfile);
+	ApplyResolvedRigidBodyProfile(*Registration);
+	return true;
+}
+
+void UJGDPhysicsWorldSubsystem::RefreshRigidBodyProfile(UPrimitiveComponent* Body)
+{
+	if (FJGDRigidBodyPhysicsRegistration* Registration = RegisteredRigidBodies.Find(Body))
+	{
+		ApplyResolvedRigidBodyProfile(*Registration);
+	}
+}
+
+UJGDPhysicsRigidBodyProfile* UJGDPhysicsWorldSubsystem::GetResolvedRigidBodyProfile(UPrimitiveComponent* Body) const
+{
+	if (const FJGDRigidBodyPhysicsRegistration* Registration = RegisteredRigidBodies.Find(Body))
+	{
+		return ResolveRigidBodyProfile(*Registration);
+	}
+	return CurrentWorldProfile ? CurrentWorldProfile->DefaultRigidBodyProfile.Get() : nullptr;
+}
+
+bool UJGDPhysicsWorldSubsystem::IsRigidBodyRegistered(const UPrimitiveComponent* Body) const
+{
+	return Body && RegisteredRigidBodies.Contains(Body);
+}
+
 UJGDCharacterPhysicsProfile* UJGDPhysicsWorldSubsystem::GetResolvedCharacterProfile(ACharacter* Character) const
 {
 	if (const FJGDCharacterPhysicsRegistration* Registration = RegisteredCharacters.Find(Character))
@@ -280,6 +457,7 @@ void UJGDPhysicsWorldSubsystem::ApplyWorldProfile(UJGDPhysicsWorldProfile* World
 	}
 
 	RefreshAllCharacters();
+	RefreshAllRigidBodies();
 	if (bProfileChanged)
 	{
 		PendingProfileNotifications.Add(FInstancedStruct::Make(Notification));
@@ -366,6 +544,70 @@ void UJGDPhysicsWorldSubsystem::NotifyVolumeRemoved(AJGDPhysicsProfileVolume* Vo
 		if (RemovedCount > 0)
 		{
 			ApplyResolvedProfile(*Character, *Registration);
+		}
+	}
+
+	TArray<TWeakObjectPtr<UPrimitiveComponent>> Bodies;
+	RegisteredRigidBodies.GenerateKeyArray(Bodies);
+	for (const TWeakObjectPtr<UPrimitiveComponent>& WeakBody : Bodies)
+	{
+		UPrimitiveComponent* Body = WeakBody.Get();
+		FJGDRigidBodyPhysicsRegistration* Registration = RegisteredRigidBodies.Find(WeakBody);
+		if (!IsValid(Body) || !Registration)
+		{
+			RegisteredRigidBodies.Remove(WeakBody);
+			continue;
+		}
+		const int32 RemovedCount = Registration->ActiveVolumes.RemoveAll(
+			[Volume](const TWeakObjectPtr<AJGDPhysicsProfileVolume>& Item)
+			{
+				return !Item.IsValid() || Item.Get() == Volume;
+			});
+		if (RemovedCount > 0)
+		{
+			ApplyResolvedRigidBodyProfile(*Registration);
+		}
+	}
+}
+
+void UJGDPhysicsWorldSubsystem::NotifyRigidBodiesEnteredVolume(AActor* Actor, AJGDPhysicsProfileVolume* Volume)
+{
+	if (bWorldEnded || !IsValid(Actor) || !IsValid(Volume)
+		|| Actor->GetWorld() != GetWorld() || Volume->GetWorld() != GetWorld())
+	{
+		return;
+	}
+	TArray<TWeakObjectPtr<UPrimitiveComponent>> Bodies;
+	RegisteredRigidBodies.GenerateKeyArray(Bodies);
+	for (const TWeakObjectPtr<UPrimitiveComponent>& WeakBody : Bodies)
+	{
+		UPrimitiveComponent* Body = WeakBody.Get();
+		FJGDRigidBodyPhysicsRegistration* Registration = RegisteredRigidBodies.Find(WeakBody);
+		if (IsValid(Body) && Registration && Body->GetOwner() == Actor)
+		{
+			Registration->ActiveVolumes.AddUnique(Volume);
+			ApplyResolvedRigidBodyProfile(*Registration);
+		}
+	}
+}
+
+void UJGDPhysicsWorldSubsystem::NotifyRigidBodiesLeftVolume(AActor* Actor, AJGDPhysicsProfileVolume* Volume)
+{
+	if (!IsValid(Actor) || !Volume)
+	{
+		return;
+	}
+	TArray<TWeakObjectPtr<UPrimitiveComponent>> Bodies;
+	RegisteredRigidBodies.GenerateKeyArray(Bodies);
+	for (const TWeakObjectPtr<UPrimitiveComponent>& WeakBody : Bodies)
+	{
+		UPrimitiveComponent* Body = WeakBody.Get();
+		FJGDRigidBodyPhysicsRegistration* Registration = RegisteredRigidBodies.Find(WeakBody);
+		if (IsValid(Body) && Registration && Body->GetOwner() == Actor)
+		{
+			Registration->ActiveVolumes.RemoveAll([Volume](const TWeakObjectPtr<AJGDPhysicsProfileVolume>& Item)
+				{ return !Item.IsValid() || Item.Get() == Volume; });
+			ApplyResolvedRigidBodyProfile(*Registration);
 		}
 	}
 }
@@ -471,6 +713,113 @@ void UJGDPhysicsWorldSubsystem::RefreshAllCharacters()
 		if (FJGDCharacterPhysicsRegistration* Registration = RegisteredCharacters.Find(WeakCharacter))
 		{
 			ApplyResolvedProfile(*Character, *Registration);
+		}
+	}
+}
+
+void UJGDPhysicsWorldSubsystem::RefreshAllRigidBodies()
+{
+	TArray<TWeakObjectPtr<UPrimitiveComponent>> Bodies;
+	RegisteredRigidBodies.GenerateKeyArray(Bodies);
+	for (const TWeakObjectPtr<UPrimitiveComponent>& WeakBody : Bodies)
+	{
+		UPrimitiveComponent* Body = WeakBody.Get();
+		if (!IsValid(Body))
+		{
+			RegisteredRigidBodies.Remove(WeakBody);
+			continue;
+		}
+		if (FJGDRigidBodyPhysicsRegistration* Registration = RegisteredRigidBodies.Find(WeakBody))
+		{
+			ApplyResolvedRigidBodyProfile(*Registration);
+		}
+	}
+}
+
+UJGDPhysicsRigidBodyProfile* UJGDPhysicsWorldSubsystem::ResolveRigidBodyProfile(
+	const FJGDRigidBodyPhysicsRegistration& Registration) const
+{
+	UJGDPhysicsRigidBodyProfile* ResolvedProfile = nullptr;
+	int32 BestPriority = TNumericLimits<int32>::Lowest();
+	for (const TWeakObjectPtr<AJGDPhysicsProfileVolume>& WeakVolume : Registration.ActiveVolumes)
+	{
+		const AJGDPhysicsProfileVolume* Volume = WeakVolume.Get();
+		if (Volume && Volume->RigidBodyProfile && Volume->Priority >= BestPriority)
+		{
+			BestPriority = Volume->Priority;
+			ResolvedProfile = Volume->RigidBodyProfile;
+		}
+	}
+	if (ResolvedProfile)
+	{
+		return ResolvedProfile;
+	}
+	if (UJGDPhysicsRigidBodyProfile* BaseProfile = Registration.BaseProfile.Get())
+	{
+		return BaseProfile;
+	}
+	return CurrentWorldProfile ? CurrentWorldProfile->DefaultRigidBodyProfile.Get() : nullptr;
+}
+
+void UJGDPhysicsWorldSubsystem::RebuildRigidBodyActiveVolumes(FJGDRigidBodyPhysicsRegistration& Registration)
+{
+	Registration.ActiveVolumes.Reset();
+	UPrimitiveComponent* Body = Registration.Body.Get();
+	AActor* Owner = IsValid(Body) ? Body->GetOwner() : nullptr;
+	AJGDPhysicsProfileVolume* CurrentVolume = IsValid(Owner) ? Cast<AJGDPhysicsProfileVolume>(Owner->GetPhysicsVolume()) : nullptr;
+	if (IsValid(CurrentVolume) && CurrentVolume->GetWorld() == GetWorld())
+	{
+		Registration.ActiveVolumes.Add(CurrentVolume);
+	}
+}
+
+void UJGDPhysicsWorldSubsystem::RestoreRigidBodySettings(FJGDRigidBodyPhysicsRegistration& Registration)
+{
+	if (UPrimitiveComponent* Body = Registration.Body.Get(); IsValid(Body))
+	{
+		Body->SetEnableGravity(Registration.bOriginalGravityEnabled);
+		Body->SetLinearDamping(Registration.OriginalLinearDamping);
+		Body->SetAngularDamping(Registration.OriginalAngularDamping);
+	}
+	Registration.AppliedProfile.Reset();
+	Registration.bHasAppliedProfile = false;
+}
+
+void UJGDPhysicsWorldSubsystem::ApplyResolvedRigidBodyProfile(FJGDRigidBodyPhysicsRegistration& Registration)
+{
+	UPrimitiveComponent* Body = Registration.Body.Get();
+	if (!IsValid(Body))
+	{
+		return;
+	}
+	UJGDPhysicsRigidBodyProfile* PreviousProfile = Registration.AppliedProfile.Get();
+	UJGDPhysicsRigidBodyProfile* NewProfile = ResolveRigidBodyProfile(Registration);
+	if (NewProfile)
+	{
+		NewProfile->ApplyTo(*Body);
+	}
+	else
+	{
+		// Built-in gameplay rigid-body defaults apply while registered. Unregister restores the
+		// captured pre-registration values independently of Profile resolution.
+		Body->SetEnableGravity(true);
+		Body->SetLinearDamping(0.01f);
+		Body->SetAngularDamping(0.0f);
+	}
+	const bool bProfileChanged = !Registration.bHasAppliedProfile || PreviousProfile != NewProfile;
+	Registration.AppliedProfile.Reset(NewProfile);
+	Registration.bHasAppliedProfile = true;
+	if (bProfileChanged)
+	{
+		FJGDRigidBodyPhysicsProfileChangedMessage Notification;
+		Notification.World = GetWorld();
+		Notification.Body = Body;
+		Notification.RegistrationId = Registration.RegistrationId;
+		Notification.PreviousProfile = PreviousProfile;
+		Notification.NewProfile = NewProfile;
+		if (UJGDMessageSubsystem* Bus = MessageSubsystem.Get(); Bus && bAcceptMessageRequests && !bWorldEnded)
+		{
+			Bus->BroadcastMessage(JGDPhysicsMessageTags::RigidBodyProfileChanged(), FInstancedStruct::Make(Notification));
 		}
 	}
 }

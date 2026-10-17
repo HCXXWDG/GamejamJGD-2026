@@ -24,6 +24,13 @@ void AJGDPhysicsProfileVolume::ActorEnteredVolume(AActor* Other)
 			}
 		}
 	}
+	if (UWorld* World = GetWorld())
+	{
+		if (UJGDPhysicsWorldSubsystem* Subsystem = World->GetSubsystem<UJGDPhysicsWorldSubsystem>())
+		{
+			Subsystem->NotifyRigidBodiesEnteredVolume(Other, this);
+		}
+	}
 }
 
 void AJGDPhysicsProfileVolume::ActorLeavingVolume(AActor* Other)
@@ -36,6 +43,13 @@ void AJGDPhysicsProfileVolume::ActorLeavingVolume(AActor* Other)
 			{
 				Subsystem->NotifyCharacterLeftVolume(Character, this);
 			}
+		}
+	}
+	if (UWorld* World = GetWorld())
+	{
+		if (UJGDPhysicsWorldSubsystem* Subsystem = World->GetSubsystem<UJGDPhysicsWorldSubsystem>())
+		{
+			Subsystem->NotifyRigidBodiesLeftVolume(Other, this);
 		}
 	}
 

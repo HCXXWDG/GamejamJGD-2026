@@ -28,6 +28,30 @@ FGameplayTag JGDPhysicsMessageTags::CharacterProfileChanged()
 	return Tag;
 }
 
+FGameplayTag JGDPhysicsMessageTags::RegisterRigidBody()
+{
+	static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(TEXT("Event.Physics.Request.RegisterRigidBody"));
+	return Tag;
+}
+
+FGameplayTag JGDPhysicsMessageTags::UnregisterRigidBody()
+{
+	static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(TEXT("Event.Physics.Request.UnregisterRigidBody"));
+	return Tag;
+}
+
+FGameplayTag JGDPhysicsMessageTags::SetRigidBodyBaseProfile()
+{
+	static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(TEXT("Event.Physics.Request.SetRigidBodyBaseProfile"));
+	return Tag;
+}
+
+FGameplayTag JGDPhysicsMessageTags::RigidBodyProfileChanged()
+{
+	static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(TEXT("Event.Physics.RigidBody.ProfileChanged"));
+	return Tag;
+}
+
 UWorld* UJGDPhysicsMessageLibrary::GetPhysicsMessageWorld(const UObject* WorldContextObject)
 {
 	return GEngine ? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull) : nullptr;
