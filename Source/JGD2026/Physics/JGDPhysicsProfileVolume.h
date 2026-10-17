@@ -7,6 +7,7 @@
 #include "JGDPhysicsProfileVolume.generated.h"
 
 class UJGDCharacterPhysicsProfile;
+class UJGDPhysicsRigidBodyProfile;
 
 /** Native PhysicsVolume that supplies a character profile while a character is inside it. */
 UCLASS(Blueprintable)
@@ -23,4 +24,7 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "JGD")
 	TObjectPtr<UJGDCharacterPhysicsProfile> CharacterProfile;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "JGD")
+	TObjectPtr<UJGDPhysicsRigidBodyProfile> RigidBodyProfile;
 };

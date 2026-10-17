@@ -10,6 +10,8 @@
 class ACharacter;
 class UJGDCharacterPhysicsProfile;
 class UJGDPhysicsWorldProfile;
+class UJGDPhysicsRigidBodyProfile;
+class UPrimitiveComponent;
 class UWorld;
 
 /** Exact-match channels registered in DefaultGameplayTags.ini. */
@@ -19,6 +21,10 @@ namespace JGDPhysicsMessageTags
 	JGD2026_API FGameplayTag SetCharacterBaseProfile();
 	JGD2026_API FGameplayTag WorldProfileChanged();
 	JGD2026_API FGameplayTag CharacterProfileChanged();
+	JGD2026_API FGameplayTag RegisterRigidBody();
+	JGD2026_API FGameplayTag UnregisterRigidBody();
+	JGD2026_API FGameplayTag SetRigidBodyBaseProfile();
+	JGD2026_API FGameplayTag RigidBodyProfileChanged();
 }
 
 USTRUCT(BlueprintType)
@@ -79,6 +85,60 @@ struct JGD2026_API FJGDCharacterPhysicsProfileChangedMessage
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "JGD|Physics|Messages")
 	TObjectPtr<UJGDCharacterPhysicsProfile> NewProfile = nullptr;
+};
+
+USTRUCT(BlueprintType)
+struct JGD2026_API FJGDRegisterRigidBodyPhysicsRequest
+{
+	GENERATED_BODY()
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "JGD|Physics|Messages")
+	TObjectPtr<UWorld> TargetWorld = nullptr;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "JGD|Physics|Messages")
+	TObjectPtr<UPrimitiveComponent> Body = nullptr;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "JGD|Physics|Messages")
+	TObjectPtr<UJGDPhysicsRigidBodyProfile> BaseProfile = nullptr;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "JGD|Physics|Messages")
+	FGuid RegistrationId;
+};
+
+USTRUCT(BlueprintType)
+struct JGD2026_API FJGDUnregisterRigidBodyPhysicsRequest
+{
+	GENERATED_BODY()
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "JGD|Physics|Messages")
+	TObjectPtr<UWorld> TargetWorld = nullptr;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "JGD|Physics|Messages")
+	TObjectPtr<UPrimitiveComponent> Body = nullptr;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "JGD|Physics|Messages")
+	FGuid RegistrationId;
+};
+
+USTRUCT(BlueprintType)
+struct JGD2026_API FJGDSetRigidBodyBasePhysicsProfileRequest
+{
+	GENERATED_BODY()
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "JGD|Physics|Messages")
+	TObjectPtr<UWorld> TargetWorld = nullptr;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "JGD|Physics|Messages")
+	TObjectPtr<UPrimitiveComponent> Body = nullptr;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "JGD|Physics|Messages")
+	TObjectPtr<UJGDPhysicsRigidBodyProfile> BaseProfile = nullptr;
+};
+
+USTRUCT(BlueprintType)
+struct JGD2026_API FJGDRigidBodyPhysicsProfileChangedMessage
+{
+	GENERATED_BODY()
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "JGD|Physics|Messages")
+	TObjectPtr<UWorld> World = nullptr;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "JGD|Physics|Messages")
+	TObjectPtr<UPrimitiveComponent> Body = nullptr;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "JGD|Physics|Messages")
+	FGuid RegistrationId;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "JGD|Physics|Messages")
+	TObjectPtr<UJGDPhysicsRigidBodyProfile> PreviousProfile = nullptr;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "JGD|Physics|Messages")
+	TObjectPtr<UJGDPhysicsRigidBodyProfile> NewProfile = nullptr;
 };
 
 /** Lets Blueprints populate the explicit TargetWorld field without engine-specific casts. */

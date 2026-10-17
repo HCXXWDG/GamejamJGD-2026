@@ -7,6 +7,7 @@
 #include "JGDPhysicsSystemSettings.generated.h"
 
 class UJGDPhysicsWorldProfile;
+class UJGDAssemblyPhysicsDriveProfile;
 
 /** Project-wide locator for the designer-authored default physics profile. */
 UCLASS(Config = Game, DefaultConfig, meta = (DisplayName = "JGD Physics System"))
@@ -19,4 +20,8 @@ public:
 
 	UPROPERTY(Config, EditAnywhere, Category = "Defaults")
 	TSoftObjectPtr<UJGDPhysicsWorldProfile> DefaultWorldProfile;
+
+	/** Used by runtime-created player executors unless they provide an explicit override. */
+	UPROPERTY(Config, EditAnywhere, Category = "Defaults")
+	TSoftObjectPtr<UJGDAssemblyPhysicsDriveProfile> DefaultAssemblyDriveProfile;
 };
