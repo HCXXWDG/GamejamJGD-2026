@@ -23,7 +23,7 @@ public class JGD2026 : ModuleRules
 			"SlateCore"
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[] { "Slate" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "AssetRegistry" });
 		if (Target.bBuildEditor)
 		{
 			// Native PIE regression tests; never linked into the game target.
