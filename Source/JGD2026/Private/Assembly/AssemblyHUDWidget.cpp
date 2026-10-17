@@ -4,12 +4,15 @@
 #include "Assembly/AssemblyDragDropOperation.h"
 #include "Assembly/AssemblySessionComponent.h"
 #include "Assembly/AssemblyShelfCardWidget.h"
+#include "Assembly/AssemblyUITheme.h"
 #include "Assembly/AssemblyWorkbenchComponent.h"
 #include "Blueprint/SlateBlueprintLibrary.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/Border.h"
 #include "Components/Button.h"
 #include "Components/HorizontalBox.h"
+#include "Components/HorizontalBoxSlot.h"
+#include "Components/Image.h"
 #include "Components/Overlay.h"
 #include "Components/OverlaySlot.h"
 #include "Components/ScrollBox.h"
@@ -17,6 +20,7 @@
 #include "Components/SpinBox.h"
 #include "Components/TextBlock.h"
 #include "Components/VerticalBox.h"
+#include "Components/VerticalBoxSlot.h"
 #include "InputCoreTypes.h"
 
 namespace
@@ -56,10 +60,18 @@ UAssemblyPointerButton::UAssemblyPointerButton(const FObjectInitializer& ObjectI
 	InitIsFocusable(false);
 }
 
+UAssemblyHUDWidget::UAssemblyHUDWidget(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	// Keep the theme reachable from the native HUD CDO for cooking.
+	UITheme = UAssemblyUITheme::LoadDefault();
+}
+
 void UAssemblyHUDWidget::NativeOnInitialized()
 {
 	Super::NativeOnInitialized();
 	SetIsFocusable(false);
+	if (!UITheme) UITheme = UAssemblyUITheme::LoadDefault();
 	if (!ShelfCardClass) ShelfCardClass = UAssemblyShelfCardWidget::StaticClass();
 	if (bBuildPlaceholderUI && WidgetTree && !WidgetTree->RootWidget) BuildPlaceholder();
 }
@@ -157,9 +169,11 @@ UTextBlock* UAssemblyHUDWidget::MakeText(const FText& Value)
 	UTextBlock* Widget = WidgetTree->ConstructWidget<UTextBlock>();
 	Widget->SetText(Value);
 	Widget->SetAutoWrapText(true);
-	Widget->SetColorAndOpacity(FSlateColor(FLinearColor::White));
+	Widget->SetColorAndOpacity(FSlateColor(UITheme ? UITheme->TextColor : FLinearColor::White));
+	Widget->SetVisibility(ESlateVisibility::HitTestInvisible);
 	FSlateFontInfo Font = Widget->GetFont();
-	Font.Size = 14;
+	Font.Size = UITheme ? FMath::Clamp(UITheme->FontSize, 10, 32) : 14;
+	if (UITheme) Font = UITheme->ApplyFont(Font);
 	Widget->SetFont(Font);
 	return Widget;
 }
@@ -167,12 +181,42 @@ UTextBlock* UAssemblyHUDWidget::MakeText(const FText& Value)
 UButton* UAssemblyHUDWidget::MakeButton(const FText& Value, EAssemblyHUDAction Action, int32 Argument, FGuid InstanceId, bool bJointAction)
 {
 	UButton* Button = WidgetTree->ConstructWidget<UAssemblyPointerButton>();
+	UPaperSprite* Icon = nullptr;
+	if (UITheme)
+	{
+		UPaperSprite* Background = Action == EAssemblyHUDAction::Start ? UITheme->PrimaryButtonSprite.Get()
+			: (Action == EAssemblyHUDAction::Remove || Action == EAssemblyHUDAction::BreakJoint
+				? UITheme->DestructiveButtonSprite.Get() : nullptr);
+		if (Background || UITheme->ButtonNormalSprite) Button->SetStyle(UITheme->MakeButtonStyle(Background));
+		if (Action == EAssemblyHUDAction::Remove) Icon = UITheme->RemoveIconSprite;
+		else if (Action == EAssemblyHUDAction::Restart) Icon = UITheme->RestartIconSprite;
+		else if (Action == EAssemblyHUDAction::Rotate) Icon = UITheme->RotateIconSprite;
+	}
 	USizeBox* Size = WidgetTree->ConstructWidget<USizeBox>();
-	Size->SetMinDesiredWidth(bJointAction ? 256.0f : 64.0f);
-	Size->SetHeightOverride(64.0f);
+	Size->SetMinDesiredWidth(bJointAction ? 256.0f : 48.0f);
+	if (Action == EAssemblyHUDAction::Binding) Size->SetWidthOverride(40.0f);
+	Size->SetHeightOverride(44.0f);
 	UTextBlock* Caption = MakeText(Value);
+	Caption->SetAutoWrapText(false);
 	Caption->SetJustification(ETextJustify::Center);
-	Size->SetContent(Caption);
+	if (Icon)
+	{
+		UHorizontalBox* Content = WidgetTree->ConstructWidget<UHorizontalBox>();
+		Content->SetVisibility(ESlateVisibility::HitTestInvisible);
+		UImage* Image = WidgetTree->ConstructWidget<UImage>();
+		FSlateBrush IconBrush = UITheme->MakeBrush(Icon, FVector2D(20.0f, 20.0f), FMargin(0.0f));
+		IconBrush.DrawAs = ESlateBrushDrawType::Image;
+		Image->SetBrush(IconBrush);
+		Image->SetVisibility(ESlateVisibility::HitTestInvisible);
+		UHorizontalBoxSlot* IconSlot = Content->AddChildToHorizontalBox(Image);
+		IconSlot->SetVerticalAlignment(VAlign_Center);
+		IconSlot->SetPadding(FMargin(0.0f, 0.0f, 4.0f, 0.0f));
+		UHorizontalBoxSlot* CaptionSlot = Content->AddChildToHorizontalBox(Caption);
+		CaptionSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+		CaptionSlot->SetVerticalAlignment(VAlign_Center);
+		Size->SetContent(Content);
+	}
+	else Size->SetContent(Caption);
 	Button->SetContent(Size);
 	UAssemblyHUDActionReceiver* Receiver = NewObject<UAssemblyHUDActionReceiver>(this);
 	Receiver->HUD = this;
@@ -186,6 +230,10 @@ UButton* UAssemblyHUDWidget::MakeButton(const FText& Value, EAssemblyHUDAction A
 
 void UAssemblyHUDWidget::BuildPlaceholder()
 {
+	// Sprite nine-slice borders use the source pixel size, not Brush.ImageSize.
+	// Keep every control inside the yellow paper, including the scroll viewport.
+	const bool bPaperPanel = UITheme && UITheme->PanelSprite;
+	const FMargin PanelPadding = bPaperPanel ? FMargin(36.0f) : FMargin(8.0f);
 	UOverlay* Root = WidgetTree->ConstructWidget<UOverlay>(UOverlay::StaticClass(), TEXT("AssemblyWorldOverlay"));
 	WidgetTree->RootWidget = Root;
 	UBorder* WorldSurface = WidgetTree->ConstructWidget<UBorder>();
@@ -196,41 +244,68 @@ void UAssemblyHUDWidget::BuildPlaceholder()
 	SurfaceSlot->SetVerticalAlignment(VAlign_Fill);
 
 	EditPanel = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("AssemblyEditPanel"));
-	EditPanel->SetBrushColor(FLinearColor(0.035f, 0.045f, 0.065f, 0.95f));
-	EditPanel->SetPadding(FMargin(8.0f));
+	if (UITheme && UITheme->PanelSprite)
+		EditPanel->SetBrush(UITheme->MakeBrush(UITheme->PanelSprite, FVector2D(304.0f, 576.0f)));
+	EditPanel->SetBrushColor(UITheme ? (UITheme->PanelSprite ? FLinearColor::White : FLinearColor(0.92f, 0.88f, 0.72f))
+		: FLinearColor(0.035f, 0.045f, 0.065f, 0.95f));
+	EditPanel->SetPadding(PanelPadding);
 	USizeBox* EditSize = WidgetTree->ConstructWidget<USizeBox>();
 	EditSize->SetWidthOverride(288.0f);
-	EditSize->SetMaxDesiredHeight(640.0f);
+	EditSize->SetMaxDesiredHeight(bPaperPanel ? 504.0f : 560.0f);
+	UVerticalBox* EditContents = WidgetTree->ConstructWidget<UVerticalBox>();
+	EditContents->SetClipping(EWidgetClipping::ClipToBounds);
+	EditContents->AddChild(MakeText(Text(TEXT("组装：将组件拖到场景中\nR 旋转 90° · 滚轮微调 · Esc 取消\n开始操控后，Space 驱动核心旋转"))));
+	UHorizontalBox* SessionActions = WidgetTree->ConstructWidget<UHorizontalBox>();
+	for (UButton* Button : { MakeButton(Text(TEXT("开始操控")), EAssemblyHUDAction::Start),
+		MakeButton(Text(TEXT("重新开始")), EAssemblyHUDAction::Restart) })
+	{
+		UHorizontalBoxSlot* ActionSlot = SessionActions->AddChildToHorizontalBox(Button);
+		ActionSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+	}
+	EditContents->AddChild(SessionActions);
 	UScrollBox* Scroll = WidgetTree->ConstructWidget<UScrollBox>();
+	Scroll->SetClipping(EWidgetClipping::ClipToBounds);
 	UVerticalBox* Contents = WidgetTree->ConstructWidget<UVerticalBox>();
 	Scroll->AddChild(Contents);
-	EditSize->SetContent(Scroll);
+	EditSize->SetContent(EditContents);
 	EditPanel->SetContent(EditSize);
 	UOverlaySlot* EditSlot = Root->AddChildToOverlay(EditPanel);
 	EditSlot->SetHorizontalAlignment(HAlign_Left);
 	EditSlot->SetVerticalAlignment(VAlign_Top);
 	EditSlot->SetPadding(FMargin(16.0f));
-	Contents->AddChild(MakeText(Text(TEXT("组装：将组件拖到场景中\nR 旋转 90° · 滚轮微调 · Esc 取消\n开始操控后，Space 驱动核心旋转"))));
 
 	UHorizontalBox* Keys = WidgetTree->ConstructWidget<UHorizontalBox>();
 	for (int32 Key = static_cast<int32>(EAssemblyMuscleKey::W); Key <= static_cast<int32>(EAssemblyMuscleKey::D); ++Key)
 	{
 		UButton* Button = MakeButton(FText::FromString(KeyName(static_cast<EAssemblyMuscleKey>(Key))), EAssemblyHUDAction::Binding, Key);
 		KeyButtons.Add(Button);
-		Keys->AddChild(Button);
+		UHorizontalBoxSlot* KeySlot = Keys->AddChildToHorizontalBox(Button);
+		KeySlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
 	}
-	Contents->AddChild(Keys);
+	EditContents->AddChild(Keys);
+	UVerticalBoxSlot* ScrollSlot = EditContents->AddChildToVerticalBox(Scroll);
+	ScrollSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
 	Contents->AddChild(MakeText(Text(TEXT("仅肌肉绑定 WASD：先选键，再拖组件。\n关节只接骨头端点，中心对齐骨头延长线；关节之间不能直连。核心可接骨头。"))));
 	Shelf = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("ComponentShelf"));
 	Contents->AddChild(Shelf);
 	SelectionCaption = MakeText(Text(TEXT("点击骨头、肌肉或关节组件；约束连接可在下方列表选择。")));
 	Contents->AddChild(SelectionCaption);
-	UHorizontalBox* InstanceActions = WidgetTree->ConstructWidget<UHorizontalBox>();
-	InstanceActions->AddChild(MakeButton(Text(TEXT("移动")), EAssemblyHUDAction::Move));
-	InstanceActions->AddChild(MakeButton(Text(TEXT("拆下")), EAssemblyHUDAction::Remove));
-	InstanceActions->AddChild(MakeButton(Text(TEXT("取消")), EAssemblyHUDAction::Cancel));
-	InstanceActions->AddChild(MakeButton(Text(TEXT("旋转")), EAssemblyHUDAction::Rotate, 90));
-	Contents->AddChild(InstanceActions);
+	UButton* InstanceButtons[] = {
+		MakeButton(Text(TEXT("移动")), EAssemblyHUDAction::Move),
+		MakeButton(Text(TEXT("拆下")), EAssemblyHUDAction::Remove),
+		MakeButton(Text(TEXT("取消")), EAssemblyHUDAction::Cancel),
+		MakeButton(Text(TEXT("旋转")), EAssemblyHUDAction::Rotate, 90)
+	};
+	for (int32 Row = 0; Row < 2; ++Row)
+	{
+		UHorizontalBox* InstanceActions = WidgetTree->ConstructWidget<UHorizontalBox>();
+		for (int32 Column = 0; Column < 2; ++Column)
+		{
+			UHorizontalBoxSlot* ActionSlot = InstanceActions->AddChildToHorizontalBox(InstanceButtons[Row * 2 + Column]);
+			ActionSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+		}
+		Contents->AddChild(InstanceActions);
+	}
 	Contents->AddChild(MakeText(Text(TEXT("连接约束：在列表选择后设置种类和角度"))));
 	JointList = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("AssemblyJoints"));
 	Contents->AddChild(JointList);
@@ -240,7 +315,8 @@ void UAssemblyHUDWidget::BuildPlaceholder()
 	{
 		UButton* Button = MakeButton(Text(JointKindLabels[Kind]), EAssemblyHUDAction::JointKind, Kind);
 		JointKindButtons.Add(Button);
-		JointKinds->AddChild(Button);
+		UHorizontalBoxSlot* KindSlot = JointKinds->AddChildToHorizontalBox(Button);
+		KindSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
 	}
 	Contents->AddChild(JointKinds);
 	UHorizontalBox* Limits = WidgetTree->ConstructWidget<UHorizontalBox>();
@@ -248,6 +324,7 @@ void UAssemblyHUDWidget::BuildPlaceholder()
 	MaxAngle = WidgetTree->ConstructWidget<USpinBox>();
 	for (USpinBox* Spin : { MinAngle.Get(), MaxAngle.Get() })
 	{
+		if (UITheme) Spin->SetFont(UITheme->ApplyFont(Spin->GetFont()));
 		Spin->SetMinValue(-180.0f);
 		Spin->SetMaxValue(180.0f);
 		Spin->SetMinDesiredWidth(64.0f);
@@ -256,16 +333,18 @@ void UAssemblyHUDWidget::BuildPlaceholder()
 	}
 	Limits->AddChild(MakeButton(Text(TEXT("应用\n角度")), EAssemblyHUDAction::ApplyLimits));
 	Contents->AddChild(Limits);
-	Contents->AddChild(MakeButton(Text(TEXT("开始操控")), EAssemblyHUDAction::Start));
-	Contents->AddChild(MakeButton(Text(TEXT("重新开始")), EAssemblyHUDAction::Restart));
 
 	PlayPanel = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("AssemblyPlayingPanel"));
-	PlayPanel->SetBrushColor(FLinearColor(0.035f, 0.045f, 0.065f, 0.90f));
-	PlayPanel->SetPadding(FMargin(8.0f));
+	if (UITheme && UITheme->PanelSprite)
+		PlayPanel->SetBrush(UITheme->MakeBrush(UITheme->PanelSprite, FVector2D(304.0f, 400.0f)));
+	PlayPanel->SetBrushColor(UITheme ? (UITheme->PanelSprite ? FLinearColor::White : FLinearColor(0.92f, 0.88f, 0.72f))
+		: FLinearColor(0.035f, 0.045f, 0.065f, 0.90f));
+	PlayPanel->SetPadding(PanelPadding);
 	USizeBox* PlaySize = WidgetTree->ConstructWidget<USizeBox>();
 	PlaySize->SetWidthOverride(288.0f);
-	PlaySize->SetMaxDesiredHeight(384.0f);
+	PlaySize->SetMaxDesiredHeight(bPaperPanel ? 328.0f : 384.0f);
 	UScrollBox* PlayScroll = WidgetTree->ConstructWidget<UScrollBox>();
+	PlayScroll->SetClipping(EWidgetClipping::ClipToBounds);
 	UVerticalBox* PlayingControls = WidgetTree->ConstructWidget<UVerticalBox>();
 	PlayingControls->AddChild(MakeText(Text(TEXT("WASD：按下收缩，松开舒张\nSpace：核心顺时针旋转"))));
 	PlayingControls->AddChild(MakeButton(Text(TEXT("重新开始")), EAssemblyHUDAction::Restart));
@@ -281,12 +360,17 @@ void UAssemblyHUDWidget::BuildPlaceholder()
 	PlaySlot->SetPadding(FMargin(16.0f));
 
 	UBorder* Status = WidgetTree->ConstructWidget<UBorder>();
-	Status->SetBrushColor(FLinearColor(0.015f, 0.02f, 0.03f, 0.8f));
-	Status->SetPadding(FMargin(8.0f));
+	if (UITheme && UITheme->StatusSprite)
+		Status->SetBrush(UITheme->MakeBrush(UITheme->StatusSprite, FVector2D(656.0f, 80.0f)));
+	Status->SetBrushColor(UITheme ? (UITheme->StatusSprite ? FLinearColor::White : FLinearColor(0.92f, 0.88f, 0.72f))
+		: FLinearColor(0.015f, 0.02f, 0.03f, 0.8f));
+	const bool bPaperStatus = UITheme && UITheme->StatusSprite;
+	Status->SetPadding(bPaperStatus ? FMargin(64.0f, 20.0f) : FMargin(8.0f));
 	Status->SetVisibility(ESlateVisibility::HitTestInvisible);
 	USizeBox* StatusSize = WidgetTree->ConstructWidget<USizeBox>();
-	StatusSize->SetWidthOverride(640.0f);
-	StatusSize->SetMinDesiredHeight(64.0f);
+	StatusSize->SetWidthOverride(bPaperStatus ? 528.0f : 640.0f);
+	StatusSize->SetMinDesiredHeight(bPaperStatus ? 40.0f : 64.0f);
+	StatusSize->SetClipping(EWidgetClipping::ClipToBounds);
 	StatusCaption = MakeText(Text(TEXT("骨头可自由摆放。完成连通结构后点击“开始操控”。")));
 	StatusSize->SetContent(StatusCaption);
 	Status->SetContent(StatusSize);
@@ -445,7 +529,14 @@ void UAssemblyHUDWidget::RefreshPresentation()
 		}
 		for (int32 Index = 0; Index < KeyButtons.Num(); ++Index)
 		{
-			if (KeyButtons[Index]) KeyButtons[Index]->SetBackgroundColor(static_cast<int32>(HighlightKey) == Index + 1
+			if (!KeyButtons[Index]) continue;
+			const bool bSelected = static_cast<int32>(HighlightKey) == Index + 1;
+			if (UITheme && UITheme->ButtonNormalSprite)
+			{
+				KeyButtons[Index]->SetStyle(UITheme->MakeButtonStyle(bSelected ? UITheme->ButtonHoveredSprite.Get() : nullptr));
+				KeyButtons[Index]->SetBackgroundColor(bSelected ? UITheme->SelectedTint : FLinearColor::White);
+			}
+			else KeyButtons[Index]->SetBackgroundColor(bSelected
 				? FLinearColor(0.10f, 0.65f, 0.80f) : FLinearColor(0.16f, 0.20f, 0.27f));
 		}
 		RefreshShelf();

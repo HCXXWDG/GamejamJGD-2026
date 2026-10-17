@@ -5,6 +5,7 @@
 #include "Assembly/AssemblyInteractionComponent.h"
 #include "Assembly/AssemblyMuscle.h"
 #include "Assembly/AssemblySpriteImage.h"
+#include "Assembly/AssemblyUITheme.h"
 #include "Assembly/AssemblyWorkbenchComponent.h"
 #include "Assembly/NormalBone.h"
 #include "Blueprint/WidgetBlueprintLibrary.h"
@@ -12,6 +13,8 @@
 #include "Components/Border.h"
 #include "Components/HorizontalBox.h"
 #include "Components/HorizontalBoxSlot.h"
+#include "Components/Overlay.h"
+#include "Components/OverlaySlot.h"
 #include "Components/ScaleBox.h"
 #include "Components/ScaleBoxSlot.h"
 #include "Components/SizeBox.h"
@@ -24,6 +27,7 @@ void UAssemblyShelfCardWidget::NativeOnInitialized()
 {
 	Super::NativeOnInitialized();
 	SetIsFocusable(false);
+	if (!UITheme) UITheme = UAssemblyUITheme::LoadDefault();
 	if (bBuildPlaceholderUI && WidgetTree && !WidgetTree->RootWidget) BuildPlaceholder();
 }
 
@@ -34,6 +38,10 @@ void UAssemblyShelfCardWidget::BuildPlaceholder()
 	Size->SetHeightOverride(64.0f);
 	Background = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("CardBackground"));
 	Background->SetPadding(FMargin(0.0f));
+	if (UITheme && UITheme->ButtonNormalSprite)
+	{
+		Background->SetBrush(UITheme->MakeBrush(UITheme->ButtonNormalSprite, FVector2D(256.0, 64.0), FMargin(0.10f, 0.18f)));
+	}
 	UHorizontalBox* Content = WidgetTree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass(), TEXT("CardContent"));
 	USizeBox* IconSize = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass(), TEXT("CardIconSize"));
 	IconSize->SetWidthOverride(64.0f);
@@ -47,14 +55,41 @@ void UAssemblyShelfCardWidget::BuildPlaceholder()
 	UScaleBoxSlot* IconSlot = Cast<UScaleBoxSlot>(IconScale->AddChild(IconImage));
 	IconSlot->SetHorizontalAlignment(HAlign_Center);
 	IconSlot->SetVerticalAlignment(VAlign_Center);
-	IconSize->SetContent(IconScale);
+	if (UITheme && UITheme->ComponentFrameSprite)
+	{
+		UOverlay* IconLayers = WidgetTree->ConstructWidget<UOverlay>(UOverlay::StaticClass(), TEXT("CardIconLayers"));
+		IconLayers->SetVisibility(ESlateVisibility::HitTestInvisible);
+		IconFrame = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("CardIconFrame"));
+		IconFrame->SetPadding(FMargin(0.0f));
+		IconFrame->SetBrush(UITheme->MakeBrush(UITheme->ComponentFrameSprite, FVector2D(64.0, 64.0)));
+		IconFrame->SetVisibility(ESlateVisibility::HitTestInvisible);
+		UOverlaySlot* FrameSlot = IconLayers->AddChildToOverlay(IconFrame);
+		FrameSlot->SetHorizontalAlignment(HAlign_Fill);
+		FrameSlot->SetVerticalAlignment(VAlign_Fill);
+		UOverlaySlot* ImageSlot = IconLayers->AddChildToOverlay(IconScale);
+		ImageSlot->SetHorizontalAlignment(HAlign_Fill);
+		ImageSlot->SetVerticalAlignment(VAlign_Fill);
+		IconSize->SetContent(IconLayers);
+	}
+	else
+	{
+		IconSize->SetContent(IconScale);
+	}
 	Content->AddChildToHorizontalBox(IconSize);
 	Caption = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("CardCaption"));
-	Caption->SetAutoWrapText(true);
-	Caption->SetColorAndOpacity(FSlateColor(FLinearColor::White));
+	Caption->SetAutoWrapText(false);
+	Caption->SetTextOverflowPolicy(ETextOverflowPolicy::Ellipsis);
+	Caption->SetClipping(EWidgetClipping::ClipToBounds);
+	Caption->SetColorAndOpacity(FSlateColor(UITheme && UITheme->ButtonNormalSprite ? UITheme->TextColor : FLinearColor::White));
 	FSlateFontInfo CaptionFont = Caption->GetFont();
-	CaptionFont.Size = 14;
+	CaptionFont.Size = UITheme ? FMath::Clamp(UITheme->FontSize - 2, 10, 30) : 14;
+	if (UITheme) CaptionFont = UITheme->ApplyFont(CaptionFont);
 	Caption->SetFont(CaptionFont);
+	if (UITheme && UITheme->ButtonNormalSprite)
+	{
+		Caption->SetShadowOffset(FVector2D(0.0, 1.0));
+		Caption->SetShadowColorAndOpacity(FLinearColor(1.0f, 0.98f, 0.88f, 0.25f));
+	}
 	Caption->SetVisibility(ESlateVisibility::HitTestInvisible);
 	UHorizontalBoxSlot* CaptionSlot = Content->AddChildToHorizontalBox(Caption);
 	CaptionSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
@@ -119,9 +154,20 @@ void UAssemblyShelfCardWidget::RefreshQuantity()
 		IconImage->SetSprite(PresentationSprite);
 		IconImage->SetVisibility(IconImage->HasRenderableSprite() ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Hidden);
 	}
+	if (IconImage)
+	{
+		IconImage->SetColorAndOpacity(UITheme && Remaining <= 0
+			? FLinearColor(0.65f, 0.65f, 0.65f, 0.60f) : FLinearColor::White);
+	}
+	if (IconFrame)
+	{
+		IconFrame->SetBrushColor(Remaining > 0 ? FLinearColor::White : FLinearColor(0.75f, 0.75f, 0.75f, 0.70f));
+	}
 	if (Caption)
 	{
-		FString Instruction = bMuscle ? TEXT("拖到骨头上，点击第二端") : TEXT("拖到场景中摆放");
+		Caption->SetColorAndOpacity(FSlateColor(UITheme && UITheme->ButtonNormalSprite
+			? (Remaining > 0 ? UITheme->TextColor : UITheme->MutedTextColor) : FLinearColor::White));
+		FString Instruction = bMuscle ? TEXT("拖至骨头，再选第二端") : TEXT("拖到场景中摆放");
 		const UAssemblyWorkbenchComponent* ActiveWorkbench = Workbench.Get();
 		const UAssemblyComponent* Model = ActiveWorkbench ? ActiveWorkbench->GetAssemblyComponent() : nullptr;
 		FAssemblyBoneDefinition Definition;
@@ -135,9 +181,16 @@ void UAssemblyShelfCardWidget::RefreshQuantity()
 	}
 	if (Background)
 	{
-		Background->SetBrushColor(Remaining > 0 ? (bMuscle ? FLinearColor(0.40f, 0.12f, 0.22f, 0.96f)
-			: (bJointPart ? FLinearColor(0.29f, 0.23f, 0.40f, 0.96f) : FLinearColor(0.15f, 0.24f, 0.34f, 0.96f)))
-			: FLinearColor(0.12f, 0.12f, 0.12f, 0.96f));
+		if (UITheme && UITheme->ButtonNormalSprite)
+		{
+			Background->SetBrushColor(Remaining > 0 ? FLinearColor::White : FLinearColor(0.75f, 0.75f, 0.75f, 0.75f));
+		}
+		else
+		{
+			Background->SetBrushColor(Remaining > 0 ? (bMuscle ? FLinearColor(0.40f, 0.12f, 0.22f, 0.96f)
+				: (bJointPart ? FLinearColor(0.29f, 0.23f, 0.40f, 0.96f) : FLinearColor(0.15f, 0.24f, 0.34f, 0.96f)))
+				: FLinearColor(0.12f, 0.12f, 0.12f, 0.96f));
+		}
 	}
 	OnCardPresentationChanged(DisplayName, Remaining, bMuscle);
 	OnPartCardPresentationChanged(DisplayName, Remaining, PartKind);
@@ -174,6 +227,7 @@ void UAssemblyShelfCardWidget::NativeOnDragDetected(const FGeometry& Geometry, c
 	Operation->InitializePartDrag(ActiveWorkbench, PartKind);
 	Operation->Pivot = EDragPivot::CenterCenter;
 	UTextBlock* Visual = NewObject<UTextBlock>(Operation);
+	if (UITheme) Visual->SetFont(UITheme->ApplyFont(Visual->GetFont()));
 	Visual->SetText(DisplayName);
 	Visual->SetColorAndOpacity(FSlateColor(FLinearColor::White));
 	Visual->SetVisibility(ESlateVisibility::HitTestInvisible);

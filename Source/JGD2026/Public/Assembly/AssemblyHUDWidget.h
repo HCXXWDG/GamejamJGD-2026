@@ -10,6 +10,7 @@
 class UAssemblySessionComponent;
 class UAssemblyWorkbenchComponent;
 class UAssemblyShelfCardWidget;
+class UAssemblyUITheme;
 class UVerticalBox;
 class UTextBlock;
 class UButton;
@@ -55,6 +56,9 @@ class JGD2026_API UAssemblyHUDWidget : public UUserWidget
 	GENERATED_BODY()
 
 public:
+	UAssemblyHUDWidget(const FObjectInitializer& ObjectInitializer);
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|UI")
+	TObjectPtr<UAssemblyUITheme> UITheme;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|UI")
 	bool bBuildPlaceholderUI = true;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|UI")

@@ -9,6 +9,7 @@ class UAssemblyWorkbenchComponent;
 class UTextBlock;
 class UBorder;
 class UAssemblySpriteImage;
+class UAssemblyUITheme;
 class UPaperSprite;
 
 /** A replaceable 64-unit shelf card. It never changes stock before a successful world drop. */
@@ -20,6 +21,9 @@ class JGD2026_API UAssemblyShelfCardWidget : public UUserWidget
 public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|UI")
 	bool bBuildPlaceholderUI = true;
+	// Optional formal skin. Unset loads the shared project default once on initialization.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|UI")
+	TObjectPtr<UAssemblyUITheme> UITheme;
 	// Optional shelf-only artwork. Unset uses the configured bone/muscle actor's sprite.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|UI")
 	TObjectPtr<UPaperSprite> IconSprite;
@@ -55,6 +59,8 @@ private:
 	TObjectPtr<UTextBlock> Caption;
 	UPROPERTY(Transient)
 	TObjectPtr<UBorder> Background;
+	UPROPERTY(Transient)
+	TObjectPtr<UBorder> IconFrame;
 	UPROPERTY(Transient)
 	TObjectPtr<UAssemblySpriteImage> IconImage;
 	UPROPERTY(Transient)
