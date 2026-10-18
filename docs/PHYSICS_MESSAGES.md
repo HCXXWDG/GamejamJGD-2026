@@ -12,6 +12,10 @@
 | `Event.Physics.Request.SetCharacterBaseProfile` | `FJGDSetCharacterBasePhysicsProfileRequest` | `Character`、`BaseProfile` |
 | `Event.Physics.World.ProfileChanged` | `FJGDWorldPhysicsProfileChangedMessage` | `World`、`PreviousProfile`、`NewProfile` |
 | `Event.Physics.Character.ProfileChanged` | `FJGDCharacterPhysicsProfileChangedMessage` | `World`、`Character`、`PreviousProfile`、`NewProfile` |
+| `Event.Physics.Request.RegisterRigidBody` | `FJGDRegisterRigidBodyPhysicsRequest` | `TargetWorld`、`Body`、`BaseProfile`、`RegistrationId` |
+| `Event.Physics.Request.UnregisterRigidBody` | `FJGDUnregisterRigidBodyPhysicsRequest` | `TargetWorld`、`Body`、`RegistrationId` |
+| `Event.Physics.Request.SetRigidBodyBaseProfile` | `FJGDSetRigidBodyBasePhysicsProfileRequest` | `TargetWorld`、`Body`、`BaseProfile` |
+| `Event.Physics.RigidBody.ProfileChanged` | `FJGDRigidBodyPhysicsProfileChangedMessage` | `World`、`Body`、`RegistrationId`、`PreviousProfile`、`NewProfile` |
 
 - **精确匹配**：订阅 `Event.Physics` 不会收到上述子频道消息。
 - 世界请求必须填写有效 `TargetWorld`；角色请求按 `Character->GetWorld()` 路由。
@@ -25,6 +29,13 @@
 - 角色从 Subsystem 注销后若仍位于 `AJGDPhysicsProfileVolume` 内，再次注册会恢复引擎当前选中的
   PhysicsVolume，不要求角色先离开再进入。普通几何 Overlap 不单独加入区域列表，以保持重建和
   `ActorEnteredVolume` / `ActorLeavingVolume` 的原生通知语义一致。
+- 刚体由 `UJGDPhysicsWorldSubsystem` 按 **当前 PhysicsVolume → Base → World 默认刚体 Profile → 内建刚体默认**
+  解析。刚体注册必须使用有效 `RegistrationId`；同一 Body 不能同时归属两个注册者。注销只接受匹配的
+  `Body + RegistrationId`，并恢复首次注册时捕获的重力、线性阻力和角阻力。
+- `UJGDPhysicsRigidBodyProfile` 只设置重力与线性/角阻力，不接管模拟开关、碰撞或关节。Assembly 执行器
+  负责这些阶段状态，并在 Playing Commit 时注册刚体、退出时按注册 ID 批量注销。
+- 刚体区域通知来自 Actor 的原生 PhysicsVolume 进出事件；注册位于区域内时会读取当前选中 PhysicsVolume，
+  注销后在区域内重新注册会恢复该区域 Profile。区域移除会解析剩余 Base/World 回退。
 
 ## 通知时机
 
@@ -32,6 +43,10 @@
 首次应用发送一次（即使 `PreviousProfile` 和 `NewProfile` 都为 None）；此后仅在 Profile
 对象引用变化时发送。重复 Apply/Refresh 仍更新参数，但同一资产内容修改不会单独触发变化通知。
 角色注销再注册视为新的首次应用。
+
+刚体 `ProfileChanged` 在重力和阻力写入后同步广播；新注册的首次解析也通知一次。注销负责恢复原值，
+不会在 Body 已销毁后广播。消息是同步调用，没有成功回执；需要提交结果的 Assembly 生命周期使用同步的
+`RegisterRigidBody` C++ API，并在失败时回滚。
 
 监听方可以在回调中注销/销毁角色；物理模块使用快照遍历及重新查找注册项。
 嵌套切换产生的通知按应用顺序排队，在当前通知完成后同步发出，避免旧通知覆盖新显示。
@@ -137,14 +152,37 @@ PhysicsBus.Reset();
 
 ## 兼容与验证入口
 
-已有 DataAsset、角色注册组件、UE PhysicsVolume 优先级、风场 Tick/AddForce 公式及直接调用 API 不变。
+已有角色 DataAsset、角色注册组件、UE PhysicsVolume 优先级、风场 Tick/AddForce 公式及直接调用 API 不变。
 GameplayTag 仅负责模块间请求/通知，不接管每帧风力，也不要求箱子注册为 Character。
+
+Assembly 的正式阶段切换经 `UAssemblyComponent` → `UAssemblyPhysicsBridgeComponent` →
+`IAssemblyPhysicsLifecycle` 同步确认：先 Prepare 和再次校验，再应用 Playing 物理状态并复核，最后模型才写入 Playing。
+任何 Prepare/Apply 失败都会 Abort 并回滚到安全 Assembly。`UJGDAssemblyPhysicsExecutorComponent` 由角色 Owner
+持有，并作为 Bridge 的唯一生命周期 Provider；它借用快照给出的通用核心/部件刚体，拥有运行时约束、驱动状态，
+并在 Playing 提交时按 Bridge `SourceId` 向 `UJGDPhysicsWorldSubsystem` 注册 Profile，停止/回滚时注销和恢复区域/Profile 状态。
+
+核心旋转通过 `Event.Physics.Core.RotationRequested` / `FAssemblyPhysicsCoreRotationMessage` 接入。
+执行器不读取键盘、不依赖 Space；输入端只需发送通用按住/停止消息，执行器保留独立的
+`SetCoreRotationDriveInput` / `ApplyCoreRotationDrive` 接口。新的按下请求只有在 Phase 为 Playing、World/Assembly/
+SourceId/RoundGeneration/Revision 与当前 Bridge 绑定一致、Session 代理保护有效、核心刚体仍有效且正在模拟，
+并且 `WorldClockwiseAxis` 为有限非零向量时才接受；执行器归一化并使用该世界空间轴。停止消息按当前绑定清理，
+并且生命周期 Shutdown、回滚、Assembly 阶段消息和重开都会本地清空缓存输入与轴，不能留下持续驱动。
+
+Assembly 执行器的核心力矩、肌肉刚度/阻尼/最大力/收缩比例和关节断裂阈值统一存于
+`/Game/Physics/Profiles/DA_AssemblyPhysicsDrive_Default` DataAsset。运行时创建的 `BP_Player` 执行器
+通过 `UJGDPhysicsSystemSettings::DefaultAssemblyDriveProfile` 加载该资源；若组件显式设置 `DriveProfile`，
+则使用组件覆盖。资源缺失或参数非法时拒绝初始化或进入 Playing，不默默采用另一组 C++ 数值。
+在编辑器中修改并保存 DataAsset 后重新启动 PIE 验证；关节断裂阈值在准备 Playing 时创建约束，
+因此修改后还需重新进入 Playing。此资源只负责驱动参数，刚体重力和阻尼仍由既有 RigidBody Profile 管理。
 
 `BP_WindVolume_Test` 以世界空间 `WindDirection` 的 XZ 投影作为角色和刚体的唯一风向；箭头只做
 编辑器可视化。`AffectedRigidBodies = false` 时不收集新刚体，也不对已经收集的刚体继续施力；
 角色风力不受这个刚体专用开关影响。
 
-关闭编辑器完整构建 `JGD2026Editor Win64 Development` 后，运行 `JGD2026.Physics` 自动化测试。
+自动化测试会另建临时关卡，不依赖或修改现有地图资产。
+
+关闭编辑器完整构建 `JGD2026Editor Win64 Development` 后，运行 `JGD2026.Physics` 和
+`JGD2026.Assembly.PhysicsExecutor` 自动化测试。
 其中 `Messages` 覆盖路由、回退、去重、退订及回调重入；PIE 用例会创建空白临时关卡，
 为区域生成真实 Brush，并验证风场进出、区域内重注册、Profile 显示、统一风向、运行时关闭刚体风力，
 以及高低优先级区域交叠时重注册并依次退出后恢复 Base Profile；不保存任何地图或资产。

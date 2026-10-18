@@ -4,6 +4,7 @@
 
 #include "Misc/AutomationTest.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Components/BoxComponent.h"
 #include "Physics/JGDPhysicsProfiles.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -44,6 +45,33 @@ bool FJGDCharacterPhysicsProfileApplicationTest::RunTest(const FString& Paramete
 		TEXT("Invalid plane normals fall back to the XZ plane"),
 		Movement->GetPlaneConstraintNormal().Equals(FVector::YAxisVector));
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FJGDRigidBodyPhysicsProfileApplicationTest,
+	"JGD2026.Physics.RigidBodyProfile.Application",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FJGDRigidBodyPhysicsProfileApplicationTest::RunTest(const FString& Parameters)
+{
+	UBoxComponent* Body = NewObject<UBoxComponent>();
+	UJGDPhysicsRigidBodyProfile* Profile = NewObject<UJGDPhysicsRigidBodyProfile>();
+	TestNotNull(TEXT("Primitive body can be created"), Body);
+	TestNotNull(TEXT("Rigid-body profile can be created"), Profile);
+	if (!Body || !Profile)
+	{
+		return false;
+	}
+
+	Profile->bEnableGravity = false;
+	Profile->LinearDamping = 2.5f;
+	Profile->AngularDamping = 0.75f;
+	Profile->ApplyTo(*Body);
+
+	TestFalse(TEXT("Profile disables gravity"), Body->IsGravityEnabled());
+	TestEqual(TEXT("Linear damping applied"), Body->GetLinearDamping(), 2.5f);
+	TestEqual(TEXT("Angular damping applied"), Body->GetAngularDamping(), 0.75f);
 	return true;
 }
 

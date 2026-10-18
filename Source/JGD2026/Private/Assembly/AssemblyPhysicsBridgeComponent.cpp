@@ -1237,9 +1237,13 @@ bool UAssemblyPhysicsBridgeComponent::IsCurrentContext(const FAssemblyPhysicsCon
 void UAssemblyPhysicsBridgeComponent::HandlePhysicsJointBroken(FGameplayTag Channel, const FInstancedStruct& Message)
 {
 	const FAssemblyPhysicsJointBrokenMessage* Confirmation = Message.GetPtr<FAssemblyPhysicsJointBrokenMessage>();
+	const bool bRequested = Confirmation && OutstandingJointBreaks.Contains(Confirmation->JointId);
+	const bool bCurrentProvider = Confirmation && Confirmation->PhysicsProvider
+		&& Confirmation->PhysicsProvider == GetPhysicsLifecycleProvider()
+		&& Confirmation->Context.Revision == GetPhysicsContext().Revision;
 	if (Channel != AssemblyMessageTags::JointBroken || !Confirmation || !IsCurrentContext(Confirmation->Context)
 		|| BoundAssembly->GetPhase() != EAssemblyPhase::Playing || !Confirmation->JointId.IsValid()
-		|| !OutstandingJointBreaks.Contains(Confirmation->JointId))
+		|| (!bRequested && !bCurrentProvider))
 	{
 		return;
 	}
@@ -1263,10 +1267,15 @@ void UAssemblyPhysicsBridgeComponent::TickComponent(float DeltaTime, ELevelTick 
 		return;
 	}
 	TArray<FAssemblyPhysicsJointBrokenMessage> Confirmations = MoveTemp(PendingJointConfirmations);
+	const int64 ConfirmationRevision = GetPhysicsContext().Revision;
 	for (const FAssemblyPhysicsJointBrokenMessage& Confirmation : Confirmations)
 	{
+		const bool bRequested = OutstandingJointBreaks.Contains(Confirmation.JointId);
+		const bool bCurrentProvider = Confirmation.PhysicsProvider
+			&& Confirmation.PhysicsProvider == GetPhysicsLifecycleProvider()
+			&& Confirmation.Context.Revision == ConfirmationRevision;
 		if (!IsCurrentContext(Confirmation.Context) || BoundAssembly->GetPhase() != EAssemblyPhase::Playing
-			|| !OutstandingJointBreaks.Contains(Confirmation.JointId))
+			|| (!bRequested && !bCurrentProvider))
 		{
 			continue;
 		}

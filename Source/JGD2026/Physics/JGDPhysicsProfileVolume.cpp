@@ -38,7 +38,6 @@ void AJGDPhysicsProfileVolume::ActorLeavingVolume(AActor* Other)
 			}
 		}
 	}
-
 	Super::ActorLeavingVolume(Other);
 }
 
