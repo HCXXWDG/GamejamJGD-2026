@@ -81,7 +81,13 @@ private:
 		FVector2D LocalA = FVector2D::ZeroVector;
 		FVector2D LocalB = FVector2D::ZeroVector;
 		float RestLength = 0.0f;
+		FVector LastDirection = FVector::ZeroVector;
 		bool bContracting = false;
+	};
+	struct FMuscleRestState
+	{
+		float Length = 0.0f;
+		FVector Direction = FVector::ZeroVector;
 	};
 
 	TWeakObjectPtr<UAssemblyPhysicsBridgeComponent> Bridge;
@@ -93,7 +99,7 @@ private:
 	UPROPERTY(Transient)
 	TMap<FGuid, TObjectPtr<UPhysicsConstraintComponent>> Constraints;
 	TMap<FGuid, FMuscleDrive> MuscleDrives;
-	TMap<FGuid, float> MuscleRestLengths;
+	TMap<FGuid, FMuscleRestState> MuscleRestStates;
 	TSet<FGuid> ReportedSameBodyMuscles;
 	TSet<FGuid> ReportedBrokenJoints;
 	FJGDMessageListenerHandle SnapshotListeners[4];
@@ -134,6 +140,7 @@ private:
 	void ApplyAssemblyState();
 	void RollbackPreparedState(bool bRestoreOriginalState);
 	void ApplyMuscleDrives(float DeltaSeconds);
+	float ComputeMuscleForceOnB(const FMuscleDrive& Drive, float Length, float RelativeSpeed) const;
 	void BreakJoint(FGuid JointId);
 	UPrimitiveComponent* ResolveBody(FGuid BoneId) const;
 	FVector ResolveAnchorWorld(FGuid BoneId, FVector2D LocalAnchor) const;

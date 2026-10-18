@@ -41,6 +41,39 @@ struct FJGDAssemblyPhysicsExecutorTestAccessor
 		const TObjectPtr<UPhysicsConstraintComponent>* Found = Executor ? Executor->Constraints.Find(JointId) : nullptr;
 		return Found ? Found->Get() : nullptr;
 	}
+	static bool HasMuscleDrive(const UJGDAssemblyPhysicsExecutorComponent* Executor, FGuid MuscleId)
+	{
+		return Executor && Executor->MuscleDrives.Contains(MuscleId);
+	}
+	static bool IsMuscleContracting(const UJGDAssemblyPhysicsExecutorComponent* Executor, FGuid MuscleId)
+	{
+		const auto* Drive = Executor ? Executor->MuscleDrives.Find(MuscleId) : nullptr;
+		return Drive && Drive->bContracting;
+	}
+	static float GetMuscleRestLength(const UJGDAssemblyPhysicsExecutorComponent* Executor, FGuid MuscleId)
+	{
+		const auto* Rest = Executor ? Executor->MuscleRestStates.Find(MuscleId) : nullptr;
+		return Rest ? Rest->Length : 0.0f;
+	}
+	static FVector GetMuscleDirection(const UJGDAssemblyPhysicsExecutorComponent* Executor, FGuid MuscleId)
+	{
+		const auto* Drive = Executor ? Executor->MuscleDrives.Find(MuscleId) : nullptr;
+		return Drive ? Drive->LastDirection : FVector::ZeroVector;
+	}
+	static float GetMuscleForceOnB(const UJGDAssemblyPhysicsExecutorComponent* Executor, FGuid MuscleId,
+		float Length, float RelativeSpeed = 0.0f)
+	{
+		const auto* Drive = Executor ? Executor->MuscleDrives.Find(MuscleId) : nullptr;
+		return Drive ? Executor->ComputeMuscleForceOnB(*Drive, Length, RelativeSpeed) : 0.0f;
+	}
+	static int32 GetMuscleRestCount(const UJGDAssemblyPhysicsExecutorComponent* Executor)
+	{
+		return Executor ? Executor->MuscleRestStates.Num() : 0;
+	}
+	static void ApplyMuscleDrives(UJGDAssemblyPhysicsExecutorComponent* Executor)
+	{
+		if (Executor) { Executor->ApplyMuscleDrives(0.016f); }
+	}
 };
 
 namespace
@@ -341,6 +374,155 @@ bool FJGDAssemblyDriveProfileTest::RunTest(const FString& Parameters)
 	{
 		TestTrue(TEXT("The default drive DataAsset contains valid parameters"), DefaultProfile->HasValidParameters());
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FJGDAssemblyMuscleRelaxationTest,
+	"JGD2026.Assembly.PhysicsExecutor.MuscleRelaxationPush", ExecutorFlags)
+
+bool FJGDAssemblyMuscleRelaxationTest::RunTest(const FString& Parameters)
+{
+	FAssemblyPhysicsExecutorWorld T;
+	if (!TestTrue(TEXT("Muscle physics fixture initializes"), T.bReady))
+	{
+		AddError(T.Reason.ToString());
+		return false;
+	}
+	auto InstallBoneAt = [&T](FVector2D Position, FGuid& OutId)
+	{
+		return T.Interaction->BeginBoneDrag(TEXT("Bone"), FGuid(), T.Reason)
+			&& T.Interaction->UpdateBoneDragAtLocalPosition(Position, T.Reason)
+			&& T.Interaction->CommitBoneDrag(OutId, T.Reason);
+	};
+	FGuid BoneA, BoneB, MuscleId, SameBodyMuscleId;
+	if (!TestTrue(TEXT("Install a core-connected bone"), InstallBoneAt(FVector2D(96.0f, 0.0f), BoneA))
+		|| !TestTrue(TEXT("Install a remote bone"), InstallBoneAt(FVector2D(500.0f, 180.0f), BoneB)))
+	{
+		AddError(T.Reason.ToString());
+		return false;
+	}
+	FAssemblyMuscleEndpoint EndpointA, EndpointB, SameBodyEndpoint;
+	EndpointA.BoneId = BoneA;
+	EndpointA.BoneLocalPoint = FVector2D(20.25f, 1.5f);
+	EndpointB.BoneId = BoneB;
+	EndpointB.BoneLocalPoint = FVector2D(-20.5f, -2.5f);
+	SameBodyEndpoint.BoneId = BoneA;
+	SameBodyEndpoint.BoneLocalPoint = FVector2D(-20.0f, -1.5f);
+	if (!TestTrue(TEXT("Bind W to the cross-bone muscle"), T.Model->SelectMuscleKey(EAssemblyMuscleKey::W, T.Reason))
+		|| !TestTrue(TEXT("Install a cross-bone muscle"), T.Model->TryInstallMuscle(TEXT("Muscle"), EndpointA, EndpointB, MuscleId, T.Reason))
+		|| !TestTrue(TEXT("Bind S to a same-body muscle"), T.Model->SelectMuscleKey(EAssemblyMuscleKey::S, T.Reason))
+		|| !TestTrue(TEXT("Install a same-body muscle"), T.Model->TryInstallMuscle(TEXT("Muscle"), SameBodyEndpoint, EndpointA, SameBodyMuscleId, T.Reason)))
+	{
+		AddError(T.Reason.ToString());
+		return false;
+	}
+	UPrimitiveComponent* BodyA = Cast<UPrimitiveComponent>(T.Model->GetBonePoseSource(BoneA));
+	UPrimitiveComponent* BodyB = Cast<UPrimitiveComponent>(T.Model->GetBonePoseSource(BoneB));
+	if (!TestNotNull(TEXT("First bone has a physics body"), BodyA)
+		|| !TestNotNull(TEXT("Second bone has a physics body"), BodyB)) { return false; }
+	const FVector InitialA = BodyA->GetComponentTransform().TransformPosition(FVector(EndpointA.BoneLocalPoint.X, 0.0f, EndpointA.BoneLocalPoint.Y));
+	const FVector InitialB = BodyB->GetComponentTransform().TransformPosition(FVector(EndpointB.BoneLocalPoint.X, 0.0f, EndpointB.BoneLocalPoint.Y));
+	const FVector InitialDirection = (InitialB - InitialA).GetSafeNormal();
+	const float InitialLength = FVector::Distance(InitialA, InitialB);
+	if (!TestTrue(TEXT("Session starts physics with both muscles installed"), T.Session->StartPlaying(T.Reason)))
+	{
+		AddError(T.Reason.ToString());
+		return false;
+	}
+	TestTrue(TEXT("Natural length is captured before the first key press"),
+		FMath::IsNearlyEqual(FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleRestLength(T.Executor, MuscleId), InitialLength, 0.01f));
+	TestEqual(TEXT("A same-body muscle has no physical rest drive"),
+		FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleRestCount(T.Executor), 1);
+	BodyB->SetWorldLocation(BodyB->GetComponentLocation() - InitialDirection * (InitialLength * 0.2f),
+		false, nullptr, ETeleportType::TeleportPhysics);
+	TestTrue(TEXT("Press creates a contracting drive"), T.Model->SetMuscleInput(EAssemblyMuscleKey::W, true));
+	TestTrue(TEXT("Cross-bone drive contracts"), FJGDAssemblyPhysicsExecutorTestAccessor::IsMuscleContracting(T.Executor, MuscleId));
+	TestTrue(TEXT("Moving a bone before the first press does not redefine natural length"),
+		FMath::IsNearlyEqual(FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleRestLength(T.Executor, MuscleId), InitialLength, 0.01f));
+	TestTrue(TEXT("A same-body press is accepted by the model"), T.Model->SetMuscleInput(EAssemblyMuscleKey::S, true));
+	TestFalse(TEXT("A same-body muscle cannot drive one rigid body"),
+		FJGDAssemblyPhysicsExecutorTestAccessor::HasMuscleDrive(T.Executor, SameBodyMuscleId));
+
+	BodyA->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	BodyB->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	BodyA->SetCollisionResponseToAllChannels(ECR_Ignore);
+	BodyB->SetCollisionResponseToAllChannels(ECR_Ignore);
+	BodyA->SetEnableGravity(false);
+	BodyB->SetEnableGravity(false);
+	BodyA->SetPhysicsLinearVelocity(FVector::ZeroVector);
+	BodyB->SetPhysicsLinearVelocity(FVector::ZeroVector);
+	auto Anchor = [](const UPrimitiveComponent* Body, const FAssemblyMuscleEndpoint& Endpoint)
+	{
+		return Body->GetComponentTransform().TransformPosition(FVector(Endpoint.BoneLocalPoint.X, 0.0f, Endpoint.BoneLocalPoint.Y));
+	};
+	auto MoveSecondAnchorTo = [&](FVector Desired)
+	{
+		const FVector Offset = Desired - Anchor(BodyB, EndpointB);
+		BodyB->SetWorldLocation(BodyB->GetComponentLocation() + Offset, false, nullptr, ETeleportType::TeleportPhysics);
+		BodyA->SetPhysicsLinearVelocity(FVector::ZeroVector);
+		BodyB->SetPhysicsLinearVelocity(FVector::ZeroVector);
+	};
+	MoveSecondAnchorTo(Anchor(BodyA, EndpointA) + InitialDirection * (InitialLength * 0.5f));
+	const float ShortLength = FVector::Distance(Anchor(BodyA, EndpointA), Anchor(BodyB, EndpointB));
+	TestTrue(TEXT("Test bones are shorter than the original muscle length"), ShortLength < InitialLength * 0.75f);
+	TestTrue(TEXT("Release requests physical relaxation"), T.Model->SetMuscleInput(EAssemblyMuscleKey::W, false));
+	TestTrue(TEXT("Release retains a drive until the original length is reached"),
+		FJGDAssemblyPhysicsExecutorTestAccessor::HasMuscleDrive(T.Executor, MuscleId)
+		&& !FJGDAssemblyPhysicsExecutorTestAccessor::IsMuscleContracting(T.Executor, MuscleId));
+	TestTrue(TEXT("Relaxation commands an outward force on the second bone"),
+		FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleForceOnB(T.Executor, MuscleId, ShortLength) > 0.0f);
+	FJGDAssemblyPhysicsExecutorTestAccessor::ApplyMuscleDrives(T.Executor);
+	TestTrue(TEXT("Relaxation stays active below the original length"),
+		FJGDAssemblyPhysicsExecutorTestAccessor::HasMuscleDrive(T.Executor, MuscleId));
+	TestTrue(TEXT("Press during relaxation switches back to contraction"), T.Model->SetMuscleInput(EAssemblyMuscleKey::W, true));
+	TestTrue(TEXT("Re-press reuses the same original length"),
+		FJGDAssemblyPhysicsExecutorTestAccessor::IsMuscleContracting(T.Executor, MuscleId)
+		&& FMath::IsNearlyEqual(FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleRestLength(T.Executor, MuscleId), InitialLength, 0.01f));
+	TestTrue(TEXT("Contraction commands an inward force on the second bone"),
+		FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleForceOnB(T.Executor, MuscleId, ShortLength) < 0.0f);
+	MoveSecondAnchorTo(Anchor(BodyA, EndpointA));
+	TestTrue(TEXT("A second release resumes relaxation"), T.Model->SetMuscleInput(EAssemblyMuscleKey::W, false));
+	FJGDAssemblyPhysicsExecutorTestAccessor::ApplyMuscleDrives(T.Executor);
+	TestTrue(TEXT("A coincident endpoint pair retains its last valid push direction"),
+		FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleDirection(T.Executor, MuscleId).Equals(InitialDirection, 0.01f));
+	TestTrue(TEXT("A fully shortened muscle still commands outward force"),
+		FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleForceOnB(T.Executor, MuscleId, 0.0f) > 0.0f);
+	MoveSecondAnchorTo(Anchor(BodyA, EndpointA) + InitialDirection * InitialLength);
+	FJGDAssemblyPhysicsExecutorTestAccessor::ApplyMuscleDrives(T.Executor);
+	TestFalse(TEXT("Drive stops when the original length is reached"),
+		FJGDAssemblyPhysicsExecutorTestAccessor::HasMuscleDrive(T.Executor, MuscleId));
+
+	FAssemblyPhysicsMuscleDriveMessage StaleRequest;
+	StaleRequest.Context = T.Bridge->GetPhysicsContext();
+	--StaleRequest.Context.RoundGeneration;
+	StaleRequest.Phase = EAssemblyPhase::Playing;
+	StaleRequest.bContracting = true;
+	T.Model->GetMuscle(MuscleId, StaleRequest.Muscle);
+	StaleRequest.EndpointBoneA.Body = BodyA;
+	StaleRequest.EndpointBoneB.Body = BodyB;
+	UJGDMessageSubsystem::Get(T.Model)->BroadcastMessage(
+		AssemblyMessageTags::MuscleDriveRequested, FInstancedStruct::Make(StaleRequest));
+	TestFalse(TEXT("An old-round press cannot resurrect a completed drive"),
+		FJGDAssemblyPhysicsExecutorTestAccessor::HasMuscleDrive(T.Executor, MuscleId));
+	MoveSecondAnchorTo(Anchor(BodyA, EndpointA));
+	TestTrue(TEXT("A current press can create another drive"), T.Model->SetMuscleInput(EAssemblyMuscleKey::W, true));
+	TestTrue(TEXT("A first press at coincident endpoints uses the original direction"),
+		FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleDirection(T.Executor, MuscleId).Equals(InitialDirection, 0.01f));
+	TestTrue(TEXT("Release after a coincident press commands outward force"), T.Model->SetMuscleInput(EAssemblyMuscleKey::W, false)
+		&& FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleForceOnB(T.Executor, MuscleId, 0.0f) > 0.0f);
+	BodyB->SetSimulatePhysics(false);
+	FJGDAssemblyPhysicsExecutorTestAccessor::ApplyMuscleDrives(T.Executor);
+	TestFalse(TEXT("Invalid physical bodies discard their drive"),
+		FJGDAssemblyPhysicsExecutorTestAccessor::HasMuscleDrive(T.Executor, MuscleId));
+	if (!TestTrue(TEXT("Restart clears physical state"), T.Session->RestartSession(T.Reason)))
+	{
+		AddError(T.Reason.ToString());
+		return false;
+	}
+	TestEqual(TEXT("Restart clears original muscle lengths"),
+		FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleRestCount(T.Executor), 0);
+	TestFalse(TEXT("Restart leaves no muscle drive"),
+		FJGDAssemblyPhysicsExecutorTestAccessor::HasMuscleDrive(T.Executor, MuscleId));
 	return true;
 }
 

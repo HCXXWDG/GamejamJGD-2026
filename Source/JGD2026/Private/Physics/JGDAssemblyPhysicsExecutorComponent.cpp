@@ -552,6 +552,30 @@ bool UJGDAssemblyPhysicsExecutorComponent::ApplyAssemblyPhase_Implementation(
 	ActiveSnapshot = Snapshot;
 	ClearCoreRotationDrive();
 	MuscleDrives.Reset();
+	MuscleRestStates.Reset();
+	for (const FAssemblyMuscleInstance& Muscle : Snapshot.Muscles)
+	{
+		const FAssemblyPhysicsBonePose* PoseA = Snapshot.BonePoses.FindByPredicate(
+			[&Muscle](const FAssemblyPhysicsBonePose& Pose) { return Pose.BoneId == Muscle.EndpointA.BoneId; });
+		const FAssemblyPhysicsBonePose* PoseB = Snapshot.BonePoses.FindByPredicate(
+			[&Muscle](const FAssemblyPhysicsBonePose& Pose) { return Pose.BoneId == Muscle.EndpointB.BoneId; });
+		if (!PoseA || !PoseB || !IsValid(PoseA->Body) || !IsValid(PoseB->Body) || PoseA->Body == PoseB->Body)
+		{
+			continue;
+		}
+		const FVector PointA = PoseA->WorldTransform.TransformPosition(
+			FVector(Muscle.EndpointA.BoneLocalPoint.X, 0.0f, Muscle.EndpointA.BoneLocalPoint.Y));
+		const FVector PointB = PoseB->WorldTransform.TransformPosition(
+			FVector(Muscle.EndpointB.BoneLocalPoint.X, 0.0f, Muscle.EndpointB.BoneLocalPoint.Y));
+		const FVector Span = PointB - PointA;
+		const float Length = Span.Size();
+		if (FMath::IsFinite(Length) && Length > UE_SMALL_NUMBER)
+		{
+			FMuscleRestState& Rest = MuscleRestStates.Add(Muscle.InstanceId);
+			Rest.Length = Length;
+			Rest.Direction = Span / Length;
+		}
+	}
 	bPlaying = true;
 	bPrepared = false;
 	SetComponentTickEnabled(true);
@@ -625,7 +649,7 @@ void UJGDAssemblyPhysicsExecutorComponent::RollbackPreparedState(bool bRestoreOr
 {
 	ClearCoreRotationDrive();
 	MuscleDrives.Reset();
-	MuscleRestLengths.Reset();
+	MuscleRestStates.Reset();
 	ReportedSameBodyMuscles.Reset();
 	UJGDPhysicsWorldSubsystem* PhysicsSubsystem = GetWorld() ? GetWorld()->GetSubsystem<UJGDPhysicsWorldSubsystem>() : nullptr;
 	if (PhysicsSubsystem)
@@ -680,7 +704,7 @@ void UJGDAssemblyPhysicsExecutorComponent::ApplyAssemblyState()
 	ClearCoreRotationDrive();
 	ReconcileAssemblyBodies(ActiveSnapshot);
 	MuscleDrives.Reset();
-	MuscleRestLengths.Reset();
+	MuscleRestStates.Reset();
 	ReportedSameBodyMuscles.Reset();
 	for (TPair<TWeakObjectPtr<UPrimitiveComponent>, FBodyState>& Pair : BodyStates)
 	{
@@ -791,7 +815,7 @@ void UJGDAssemblyPhysicsExecutorComponent::HandleSnapshotMessage(FGameplayTag Ch
 	{
 		ClearCoreRotationDrive();
 		MuscleDrives.Reset();
-		MuscleRestLengths.Reset();
+		MuscleRestStates.Reset();
 		ReportedSameBodyMuscles.Reset();
 	}
 	if (Snapshot->Phase == EAssemblyPhase::Assembly)
@@ -821,7 +845,10 @@ void UJGDAssemblyPhysicsExecutorComponent::HandleMuscleDriveMessage(FGameplayTag
 	}
 	if (!Request->bContracting)
 	{
-		MuscleDrives.Remove(Request->Muscle.InstanceId);
+		if (FMuscleDrive* Drive = MuscleDrives.Find(Request->Muscle.InstanceId))
+		{
+			Drive->bContracting = false;
+		}
 		return;
 	}
 	UPrimitiveComponent* BodyA = Request->EndpointBoneA.Body;
@@ -840,16 +867,22 @@ void UJGDAssemblyPhysicsExecutorComponent::HandleMuscleDriveMessage(FGameplayTag
 		}
 		return;
 	}
+	const FMuscleRestState* Rest = MuscleRestStates.Find(Request->Muscle.InstanceId);
+	if (!Rest || Rest->Length <= UE_SMALL_NUMBER || Rest->Direction.IsNearlyZero())
+	{
+		return;
+	}
 	FMuscleDrive Drive;
 	Drive.BodyA = BodyA;
 	Drive.BodyB = BodyB;
 	Drive.LocalA = Request->Muscle.EndpointA.BoneLocalPoint;
 	Drive.LocalB = Request->Muscle.EndpointB.BoneLocalPoint;
-	Drive.RestLength = MuscleRestLengths.FindRef(Request->Muscle.InstanceId);
-	if (Drive.RestLength <= UE_SMALL_NUMBER)
+	Drive.RestLength = Rest->Length;
+	Drive.LastDirection = Rest->Direction;
+	const FVector CurrentSpan = LocalPointToWorld(BodyB, Drive.LocalB) - LocalPointToWorld(BodyA, Drive.LocalA);
+	if (CurrentSpan.SizeSquared() > FMath::Square(0.01f))
 	{
-		Drive.RestLength = FVector::Distance(Request->EndpointWorldA, Request->EndpointWorldB);
-		MuscleRestLengths.Add(Request->Muscle.InstanceId, Drive.RestLength);
+		Drive.LastDirection = CurrentSpan.GetSafeNormal();
 	}
 	Drive.bContracting = true;
 	MuscleDrives.Add(Request->Muscle.InstanceId, Drive);
@@ -1048,6 +1081,18 @@ void UJGDAssemblyPhysicsExecutorComponent::ApplyCoreRotationDrive(float DeltaSec
 		CoreRotationWorldAxis * CoreRotationInput * DriveProfile->CoreRotationTorque, NAME_None, false);
 }
 
+float UJGDAssemblyPhysicsExecutorComponent::ComputeMuscleForceOnB(
+	const FMuscleDrive& Drive, float Length, float RelativeSpeed) const
+{
+	const float TargetLength = Drive.bContracting
+		? Drive.RestLength * (1.0f - DriveProfile->MuscleContractionRatio) : Drive.RestLength;
+	const float Error = Drive.bContracting ? Length - TargetLength : TargetLength - Length;
+	const float Damping = Drive.bContracting ? RelativeSpeed : -RelativeSpeed;
+	const float Magnitude = FMath::Clamp(DriveProfile->MuscleStiffness * Error
+		+ DriveProfile->MuscleDamping * Damping, 0.0f, DriveProfile->MuscleMaxForce);
+	return Drive.bContracting ? -Magnitude : Magnitude;
+}
+
 void UJGDAssemblyPhysicsExecutorComponent::ApplyMuscleDrives(float DeltaSeconds)
 {
 	(void)DeltaSeconds;
@@ -1056,6 +1101,7 @@ void UJGDAssemblyPhysicsExecutorComponent::ApplyMuscleDrives(float DeltaSeconds)
 		MuscleDrives.Reset();
 		return;
 	}
+	TArray<FGuid> FinishedDrives;
 	for (TPair<FGuid, FMuscleDrive>& Pair : MuscleDrives)
 	{
 		FMuscleDrive& Drive = Pair.Value;
@@ -1063,24 +1109,44 @@ void UJGDAssemblyPhysicsExecutorComponent::ApplyMuscleDrives(float DeltaSeconds)
 		UPrimitiveComponent* BodyB = Drive.BodyB.Get();
 		if (!IsValid(BodyA) || !IsValid(BodyB) || BodyA == BodyB || !BodyA->IsSimulatingPhysics() || !BodyB->IsSimulatingPhysics())
 		{
+			FinishedDrives.Add(Pair.Key);
 			continue;
 		}
 		const FVector PointA = LocalPointToWorld(BodyA, Drive.LocalA);
 		const FVector PointB = LocalPointToWorld(BodyB, Drive.LocalB);
-		FVector Direction = PointB - PointA;
-		const float Length = Direction.Size();
-		if (Length <= UE_SMALL_NUMBER || Drive.RestLength <= UE_SMALL_NUMBER)
+		const FVector Span = PointB - PointA;
+		const float Length = Span.Size();
+		if (!FMath::IsFinite(Length) || Drive.RestLength <= UE_SMALL_NUMBER)
 		{
+			FinishedDrives.Add(Pair.Key);
 			continue;
 		}
-		Direction /= Length;
-		const float TargetLength = Drive.RestLength * (1.0f - DriveProfile->MuscleContractionRatio);
+		// Tiny endpoint offsets have an unstable direction after two simulated bodies coincide.
+		if (Length > 0.01f)
+		{
+			Drive.LastDirection = Span / Length;
+		}
+		const FVector Direction = Drive.LastDirection;
+		if (Direction.IsNearlyZero())
+		{
+			FinishedDrives.Add(Pair.Key);
+			continue;
+		}
+		const float CompletionTolerance = FMath::Min(0.1f, Drive.RestLength * 0.01f);
+		if (!Drive.bContracting && Length >= Drive.RestLength - CompletionTolerance)
+		{
+			FinishedDrives.Add(Pair.Key);
+			continue;
+		}
 		const float RelativeSpeed = FVector::DotProduct(
 			BodyB->GetPhysicsLinearVelocityAtPoint(PointB) - BodyA->GetPhysicsLinearVelocityAtPoint(PointA), Direction);
-		const float Magnitude = FMath::Clamp(DriveProfile->MuscleStiffness * (Length - TargetLength)
-			+ DriveProfile->MuscleDamping * RelativeSpeed, 0.0f, DriveProfile->MuscleMaxForce);
-		BodyA->AddForceAtLocation(Direction * Magnitude, PointA);
-		BodyB->AddForceAtLocation(-Direction * Magnitude, PointB);
+		const FVector ForceOnB = Direction * ComputeMuscleForceOnB(Drive, Length, RelativeSpeed);
+		BodyA->AddForceAtLocation(-ForceOnB, PointA);
+		BodyB->AddForceAtLocation(ForceOnB, PointB);
+	}
+	for (const FGuid& Id : FinishedDrives)
+	{
+		MuscleDrives.Remove(Id);
 	}
 }
 
