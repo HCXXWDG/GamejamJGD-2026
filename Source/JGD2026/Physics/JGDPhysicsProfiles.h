@@ -107,16 +107,16 @@ class JGD2026_API UJGDAssemblyPhysicsDriveProfile : public UDataAsset
 
 public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Muscles", meta = (ClampMin = "0.0"))
-	float MuscleStiffness = 2500.0f;
+	float MuscleStiffness = 100000.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Muscles", meta = (ClampMin = "0.0"))
-	float MuscleDamping = 100.0f;
+	float MuscleDamping = 50.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Muscles", meta = (ClampMin = "0.0"))
-	float MuscleMaxForce = 30000.0f;
+	float MuscleMaxForce = 100000.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Muscles", meta = (ClampMin = "0.0", ClampMax = "0.95"))
-	float MuscleContractionRatio = 0.35f;
+	float MuscleContractionRatio = 0.8f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Constraints", meta = (ClampMin = "0.0"))
 	float JointBreakForce = 100000.0f;
@@ -125,7 +125,7 @@ public:
 	float JointBreakTorque = 100000.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Core", meta = (ClampMin = "0.0"))
-	float CoreRotationTorque = 50000.0f;
+	float CoreRotationTorque = 1000000.0f;
 
 	bool HasValidParameters() const;
 };
