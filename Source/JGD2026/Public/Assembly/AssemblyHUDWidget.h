@@ -11,6 +11,7 @@ class UAssemblySessionComponent;
 class UAssemblyWorkbenchComponent;
 class UAssemblyShelfCardWidget;
 class UAssemblyUITheme;
+class UAssemblyPlayingToolbarWidget;
 class UVerticalBox;
 class UTextBlock;
 class UButton;
@@ -108,6 +109,8 @@ private:
 	TObjectPtr<UBorder> EditPanel;
 	UPROPERTY(Transient)
 	TObjectPtr<UBorder> PlayPanel;
+	UPROPERTY(Transient)
+	TObjectPtr<UAssemblyPlayingToolbarWidget> PlayingToolbar;
 	UPROPERTY(Transient)
 	TObjectPtr<UVerticalBox> Shelf;
 	UPROPERTY(Transient)

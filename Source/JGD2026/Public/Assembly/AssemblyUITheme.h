@@ -36,6 +36,24 @@ public:
 	TObjectPtr<UPaperSprite> RestartIconSprite;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|UI|Icons")
 	TObjectPtr<UPaperSprite> RotateIconSprite;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|UI|Playing")
+	TObjectPtr<UPaperSprite> SettingsIconSprite;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|UI|Playing")
+	TObjectPtr<UPaperSprite> PauseIconSprite;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|UI|Playing")
+	TObjectPtr<UPaperSprite> ResumeIconSprite;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|UI|Playing")
+	TObjectPtr<UPaperSprite> RouteBackgroundSprite;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|UI|Playing")
+	TObjectPtr<UPaperSprite> RouteMarkerSprite;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|UI|Playing")
+	TObjectPtr<UPaperSprite> RouteFillLeftSprite;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|UI|Playing")
+	TObjectPtr<UPaperSprite> RouteFillMiddleSprite;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|UI|Playing")
+	TObjectPtr<UPaperSprite> RouteFillRightSprite;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|UI|Playing")
+	TObjectPtr<UPaperSprite> SettingsPanelSprite;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|UI|Text")
 	TObjectPtr<UFont> TextFont;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|UI|Text")

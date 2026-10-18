@@ -3,6 +3,8 @@
 #include "Assembly/AssemblyComponent.h"
 #include "Assembly/AssemblyDragDropOperation.h"
 #include "Assembly/AssemblySessionComponent.h"
+#include "Assembly/AssemblyPlayingToolbarWidget.h"
+#include "Assembly/AssemblySpriteImage.h"
 #include "Assembly/AssemblyShelfCardWidget.h"
 #include "Assembly/AssemblyUITheme.h"
 #include "Assembly/AssemblyWorkbenchComponent.h"
@@ -85,6 +87,7 @@ void UAssemblyHUDWidget::NativeConstruct()
 
 void UAssemblyHUDWidget::NativeDestruct()
 {
+	if (PlayingToolbar) PlayingToolbar->ResetToolbarState();
 	// Widget removal is presentation-only; the session owns gameplay input cleanup.
 	// The cleanup below cancels once, including tools started from the shelf.
 	EndWorldPointerCapture(false);
@@ -118,6 +121,7 @@ void UAssemblyHUDWidget::InitializeHUD(UAssemblySessionComponent* InSession)
 
 void UAssemblyHUDWidget::DetachHUD()
 {
+	if (PlayingToolbar) PlayingToolbar->InitializeToolbar(nullptr, UITheme);
 	// Clear capture ownership first; the cleanup below cancels the active tool once.
 	EndWorldPointerCapture(false);
 	UnbindPresentation();
@@ -192,6 +196,17 @@ UButton* UAssemblyHUDWidget::MakeButton(const FText& Value, EAssemblyHUDAction A
 		else if (Action == EAssemblyHUDAction::Restart) Icon = UITheme->RestartIconSprite;
 		else if (Action == EAssemblyHUDAction::Rotate) Icon = UITheme->RotateIconSprite;
 	}
+	const bool bArtRestart = Action == EAssemblyHUDAction::Restart && Icon;
+	if (bArtRestart)
+	{
+		FSlateBrush Empty;
+		Empty.DrawAs = ESlateBrushDrawType::NoDrawType;
+		FButtonStyle Style;
+		Style.SetNormal(Empty).SetHovered(Empty).SetPressed(Empty).SetDisabled(Empty);
+		Style.SetNormalPadding(FMargin(0)).SetPressedPadding(FMargin(0, 1, 0, -1));
+		Button->SetStyle(Style);
+		Button->SetToolTipText(Text(TEXT("清空本轮组装，回到出生点重新组装")));
+	}
 	USizeBox* Size = WidgetTree->ConstructWidget<USizeBox>();
 	Size->SetMinDesiredWidth(bJointAction ? 256.0f : 48.0f);
 	if (Action == EAssemblyHUDAction::Binding) Size->SetWidthOverride(40.0f);
@@ -206,6 +221,7 @@ UButton* UAssemblyHUDWidget::MakeButton(const FText& Value, EAssemblyHUDAction A
 		UImage* Image = WidgetTree->ConstructWidget<UImage>();
 		FSlateBrush IconBrush = UITheme->MakeBrush(Icon, FVector2D(20.0f, 20.0f), FMargin(0.0f));
 		IconBrush.DrawAs = ESlateBrushDrawType::Image;
+		if (bArtRestart) IconBrush.ImageSize = FVector2D(44, 44);
 		Image->SetBrush(IconBrush);
 		Image->SetVisibility(ESlateVisibility::HitTestInvisible);
 		UHorizontalBoxSlot* IconSlot = Content->AddChildToHorizontalBox(Image);
@@ -346,8 +362,7 @@ void UAssemblyHUDWidget::BuildPlaceholder()
 	UScrollBox* PlayScroll = WidgetTree->ConstructWidget<UScrollBox>();
 	PlayScroll->SetClipping(EWidgetClipping::ClipToBounds);
 	UVerticalBox* PlayingControls = WidgetTree->ConstructWidget<UVerticalBox>();
-	PlayingControls->AddChild(MakeText(Text(TEXT("WASD：按下收缩，松开舒张\nSpace：核心顺时针旋转"))));
-	PlayingControls->AddChild(MakeButton(Text(TEXT("重新开始")), EAssemblyHUDAction::Restart));
+	PlayingControls->AddChild(MakeText(Text(TEXT("可断关节"))));
 	PlayJointList = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("PlayingJoints"));
 	PlayingControls->AddChild(PlayJointList);
 	PlayingControls->AddChild(MakeButton(Text(TEXT("请求断开选中关节")), EAssemblyHUDAction::BreakJoint));
@@ -357,7 +372,7 @@ void UAssemblyHUDWidget::BuildPlaceholder()
 	UOverlaySlot* PlaySlot = Root->AddChildToOverlay(PlayPanel);
 	PlaySlot->SetHorizontalAlignment(HAlign_Right);
 	PlaySlot->SetVerticalAlignment(VAlign_Top);
-	PlaySlot->SetPadding(FMargin(16.0f));
+	PlaySlot->SetPadding(FMargin(16.0f, 144.0f, 16.0f, 16.0f));
 
 	UBorder* Status = WidgetTree->ConstructWidget<UBorder>();
 	if (UITheme && UITheme->StatusSprite)
@@ -378,6 +393,15 @@ void UAssemblyHUDWidget::BuildPlaceholder()
 	StatusSlot->SetHorizontalAlignment(HAlign_Center);
 	StatusSlot->SetVerticalAlignment(VAlign_Bottom);
 	StatusSlot->SetPadding(FMargin(16.0f));
+	PlayingToolbar = GetOwningPlayer() ? CreateWidget<UAssemblyPlayingToolbarWidget>(GetOwningPlayer())
+		: CreateWidget<UAssemblyPlayingToolbarWidget>(this);
+	if (PlayingToolbar)
+	{
+		PlayingToolbar->InitializeToolbar(Session.Get(), UITheme);
+		UOverlaySlot* ToolbarSlot = Root->AddChildToOverlay(PlayingToolbar);
+		ToolbarSlot->SetHorizontalAlignment(HAlign_Fill);
+		ToolbarSlot->SetVerticalAlignment(VAlign_Fill);
+	}
 	bPlaceholderBuilt = true;
 }
 
@@ -452,6 +476,11 @@ void UAssemblyHUDWidget::RefreshPresentation()
 	if (Model)
 	{
 		const bool bAssembly = Model->GetPhase() == EAssemblyPhase::Assembly;
+		if (PlayingToolbar)
+		{
+			PlayingToolbar->InitializeToolbar(Session.Get(), UITheme);
+			PlayingToolbar->SetPlaying(!bAssembly);
+		}
 		const EAssemblyWorkbenchTool CurrentTool = ActiveWorkbench->GetTool();
 		const FGuid CurrentToolId = ActiveWorkbench->GetToolId();
 		const bool bToolChanged = !bHaveDisplayedState || DisplayedTool != CurrentTool || DisplayedToolId != CurrentToolId;
@@ -465,7 +494,11 @@ void UAssemblyHUDWidget::RefreshPresentation()
 		if (!bShowingExplicitMessage || (bToolChanged && CurrentTool != EAssemblyWorkbenchTool::None) || bPhaseChanged)
 			HandleMessage(FText::GetEmpty());
 		if (EditPanel) EditPanel->SetVisibility(bAssembly ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
-		if (PlayPanel) PlayPanel->SetVisibility(bAssembly ? ESlateVisibility::Collapsed : ESlateVisibility::Visible);
+		const bool bHasBreakableJoint = Model->GetJoints().ContainsByPredicate([](const FAssemblyJointInstance& Joint)
+		{
+			return Joint.Kind == EAssemblyJointKind::BreakableHinge || Joint.Kind == EAssemblyJointKind::BreakableFixed;
+		});
+		if (PlayPanel) PlayPanel->SetVisibility(!bAssembly && bHasBreakableJoint ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
 		EAssemblyMuscleKey HighlightKey = Model->GetSelectedMuscleKey();
 		const FAssemblySelection Selection = ActiveWorkbench->GetSelection();
 		FString Description = TEXT("未选择组件。点击骨头、肌肉或关节组件。");
@@ -577,7 +610,7 @@ FText UAssemblyHUDWidget::GetDefaultMessage() const
 		if (const UAssemblyComponent* Model = ActiveWorkbench->GetAssemblyComponent())
 		{
 			if (Model->GetPhase() == EAssemblyPhase::Playing)
-				return Text(TEXT("WASD 按下请求收缩，松开请求舒张；Space 请求核心旋转。可点击“重新开始”回到组装。"));
+				return Text(TEXT("WASD 按住收缩，松开舒张；Space 旋转核心。右上方可暂停、设置或重置回组装。"));
 		}
 	}
 	return Text(TEXT("将组件从组件栏拖到场景中。仅肌肉需要先选择 WASD；结构连通后点击“开始操控”。"));
@@ -627,7 +660,8 @@ FVector2D UAssemblyHUDWidget::ToViewportPixels(FVector2D AbsolutePosition) const
 bool UAssemblyHUDWidget::IsOverPlaceholderPanel(FVector2D AbsolutePosition) const
 {
 	if (!bPlaceholderBuilt) return false;
-	return (EditPanel && EditPanel->GetVisibility() == ESlateVisibility::Visible && EditPanel->GetCachedGeometry().IsUnderLocation(AbsolutePosition))
+	return (PlayingToolbar && PlayingToolbar->IsOverControls(AbsolutePosition))
+		|| (EditPanel && EditPanel->GetVisibility() == ESlateVisibility::Visible && EditPanel->GetCachedGeometry().IsUnderLocation(AbsolutePosition))
 		|| (PlayPanel && PlayPanel->GetVisibility() == ESlateVisibility::Visible && PlayPanel->GetCachedGeometry().IsUnderLocation(AbsolutePosition));
 }
 
