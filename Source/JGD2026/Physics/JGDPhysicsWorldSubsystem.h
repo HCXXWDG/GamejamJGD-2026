@@ -11,8 +11,24 @@
 
 class ACharacter;
 class AJGDPhysicsProfileVolume;
+class APhysicsVolume;
 class UJGDMessageSubsystem;
 class UPrimitiveComponent;
+class UJGDPhysicsWorldSubsystem;
+
+/** Keeps each registered body tied to its own physics-volume transitions. */
+UCLASS()
+class JGD2026_API UJGDRigidBodyVolumeObserver : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	TWeakObjectPtr<UPrimitiveComponent> Body;
+	TWeakObjectPtr<UJGDPhysicsWorldSubsystem> Subsystem;
+
+	UFUNCTION()
+	void HandleVolumeChanged(APhysicsVolume* NewVolume);
+};
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(
 	FJGDCharacterPhysicsProfileChanged,
@@ -36,7 +52,9 @@ struct FJGDRigidBodyPhysicsRegistration
 	TStrongObjectPtr<UJGDPhysicsRigidBodyProfile> BaseProfile;
 	TArray<TWeakObjectPtr<AJGDPhysicsProfileVolume>> ActiveVolumes;
 	TStrongObjectPtr<UJGDPhysicsRigidBodyProfile> AppliedProfile;
+	TStrongObjectPtr<UJGDRigidBodyVolumeObserver> VolumeObserver;
 	bool bHasAppliedProfile = false;
+	bool bOriginalShouldUpdatePhysicsVolume = false;
 	bool bOriginalGravityEnabled = true;
 	float OriginalLinearDamping = 0.0f;
 	float OriginalAngularDamping = 0.0f;
@@ -72,6 +90,7 @@ public:
 	void UnregisterRigidBodiesOwnedBy(const FGuid& RegistrationId);
 	bool SetRigidBodyBaseProfile(UPrimitiveComponent* Body, UJGDPhysicsRigidBodyProfile* BaseProfile);
 	void RefreshRigidBodyProfile(UPrimitiveComponent* Body);
+	void NotifyRigidBodyPhysicsVolumeChanged(UPrimitiveComponent* Body, APhysicsVolume* NewVolume);
 	UJGDPhysicsRigidBodyProfile* GetResolvedRigidBodyProfile(UPrimitiveComponent* Body) const;
 	bool IsRigidBodyRegistered(const UPrimitiveComponent* Body) const;
 
@@ -84,8 +103,6 @@ public:
 	void NotifyCharacterEnteredVolume(ACharacter* Character, AJGDPhysicsProfileVolume* Volume);
 	void NotifyCharacterLeftVolume(ACharacter* Character, AJGDPhysicsProfileVolume* Volume);
 	void NotifyVolumeRemoved(AJGDPhysicsProfileVolume* Volume);
-	void NotifyRigidBodiesEnteredVolume(AActor* Actor, AJGDPhysicsProfileVolume* Volume);
-	void NotifyRigidBodiesLeftVolume(AActor* Actor, AJGDPhysicsProfileVolume* Volume);
 
 	UPROPERTY(BlueprintAssignable, Category = "JGD|Physics")
 	FJGDCharacterPhysicsProfileChanged OnCharacterPhysicsProfileChanged;

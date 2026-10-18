@@ -353,6 +353,10 @@ bool UJGDAssemblyPhysicsExecutorComponent::BuildConstraints(
 		{
 			// The assembly is authored in XZ; align the constraint's local twist (X) axis to world Y.
 			Constraint->SetWorldRotation(FQuat(FVector::ZAxisVector, HALF_PI).Rotator());
+			// Chaos limits twist symmetrically around the reference frame. Shift frame 2 so
+			// the authored [Min, Max] interval is centered at its actual midpoint.
+			const float MidAngle = (Joint.MinAngleDegrees + Joint.MaxAngleDegrees) * 0.5f;
+			Constraint->ConstraintInstance.AngularRotationOffset.Roll = -MidAngle;
 		}
 		Constraint->SetConstrainedComponents(BodyA, NAME_None, BodyB, NAME_None);
 		Constraint->SetDisableCollision(true);
@@ -972,8 +976,10 @@ void UJGDAssemblyPhysicsExecutorComponent::BreakJoint(FGuid JointId)
 	if (UJGDMessageSubsystem* Bus = MessageBus.Get())
 	{
 		FAssemblyPhysicsJointBrokenMessage Confirmation;
-		Confirmation.Context = ActiveSnapshot.Context;
+		Confirmation.Context = IsCurrentLifecycleBinding(ActiveSnapshot.Context, true)
+			? Bridge->GetPhysicsContext() : ActiveSnapshot.Context;
 		Confirmation.JointId = JointId;
+		Confirmation.PhysicsProvider = this;
 		Bus->BroadcastMessage(AssemblyMessageTags::JointBroken, FInstancedStruct::Make(Confirmation));
 	}
 }

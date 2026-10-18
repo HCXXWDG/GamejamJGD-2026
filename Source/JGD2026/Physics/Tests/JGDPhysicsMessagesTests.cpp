@@ -198,11 +198,13 @@ bool FJGDRigidBodyRegistrationAndVolumeRestoreTest::RunTest(const FString& Param
 	Body->SetEnableGravity(false);
 	Body->SetLinearDamping(4.0f);
 	Body->SetAngularDamping(3.0f);
+	const bool bOriginalVolumeUpdates = Body->GetShouldUpdatePhysicsVolume();
 
 	const FGuid RegistrationId = FGuid::NewGuid();
 	FText Reason;
 	TestTrue(TEXT("Body registers with a unique owner token"),
 		Test.Physics->RegisterRigidBody(Body, RegistrationId, nullptr, Reason));
+	TestTrue(TEXT("Registration enables component physics-volume tracking"), Body->GetShouldUpdatePhysicsVolume());
 	TestTrue(TEXT("World rigid-body default applies gravity"), Body->IsGravityEnabled());
 	TestEqual(TEXT("World profile linear damping applies"), Body->GetLinearDamping(), 0.5f);
 	TestEqual(TEXT("World profile angular damping applies"), Body->GetAngularDamping(), 0.25f);
@@ -210,19 +212,21 @@ bool FJGDRigidBodyRegistrationAndVolumeRestoreTest::RunTest(const FString& Param
 	AJGDPhysicsProfileVolume* Volume = Test.World->SpawnActor<AJGDPhysicsProfileVolume>();
 	Volume->Priority = 25;
 	Volume->RigidBodyProfile = MakeRigidProfile(Volume, false, 7.0f, 6.0f);
-	Test.Physics->NotifyRigidBodiesEnteredVolume(Owner, Volume);
+	Body->SetPhysicsVolume(Volume, true);
 	TestFalse(TEXT("Selected volume overrides gravity"), Body->IsGravityEnabled());
 	TestEqual(TEXT("Selected volume overrides linear damping"), Body->GetLinearDamping(), 7.0f);
 
-	Test.Physics->NotifyRigidBodiesLeftVolume(Owner, Volume);
+	Body->SetPhysicsVolume(Test.World->GetDefaultPhysicsVolume(), true);
 	TestTrue(TEXT("Leaving volume returns to world gravity"), Body->IsGravityEnabled());
 	TestEqual(TEXT("Leaving volume returns to world damping"), Body->GetLinearDamping(), 0.5f);
 
-	Test.Physics->NotifyRigidBodiesEnteredVolume(Owner, Volume);
+	Body->SetPhysicsVolume(Volume, true);
 	Test.Physics->UnregisterRigidBody(Body, FGuid::NewGuid());
 	TestTrue(TEXT("Wrong owner token cannot unregister another owner"), Test.Physics->IsRigidBodyRegistered(Body));
 	Test.Physics->UnregisterRigidBody(Body, RegistrationId);
 	TestFalse(TEXT("Matching owner token unregisters the body"), Test.Physics->IsRigidBodyRegistered(Body));
+	TestEqual(TEXT("Unregister restores the original physics-volume tracking flag"),
+		Body->GetShouldUpdatePhysicsVolume(), bOriginalVolumeUpdates);
 	TestFalse(TEXT("Unregister restores original gravity"), Body->IsGravityEnabled());
 	TestEqual(TEXT("Unregister restores original linear damping"), Body->GetLinearDamping(), 4.0f);
 	TestEqual(TEXT("Unregister restores original angular damping"), Body->GetAngularDamping(), 3.0f);
@@ -231,7 +235,7 @@ bool FJGDRigidBodyRegistrationAndVolumeRestoreTest::RunTest(const FString& Param
 	TestTrue(TEXT("Re-registration succeeds while owner remains in volume"),
 		Test.Physics->RegisterRigidBody(Body, ReRegistrationId, nullptr, Reason));
 	TestTrue(TEXT("Re-registration resolves the world profile before volume notification"), Body->IsGravityEnabled());
-	Test.Physics->NotifyRigidBodiesEnteredVolume(Owner, Volume);
+	Body->SetPhysicsVolume(Volume, true);
 	TestFalse(TEXT("Re-entering registered region applies volume gravity"), Body->IsGravityEnabled());
 	TestEqual(TEXT("Re-entering registered region applies volume damping"), Body->GetLinearDamping(), 7.0f);
 	Test.Physics->UnregisterRigidBodiesOwnedBy(ReRegistrationId);

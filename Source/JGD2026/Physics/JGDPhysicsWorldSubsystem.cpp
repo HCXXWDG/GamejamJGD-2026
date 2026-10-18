@@ -14,6 +14,14 @@
 #include "Physics/JGDPhysicsProfiles.h"
 #include "Physics/JGDPhysicsSystemSettings.h"
 
+void UJGDRigidBodyVolumeObserver::HandleVolumeChanged(APhysicsVolume* NewVolume)
+{
+	if (Subsystem.IsValid() && Body.IsValid())
+	{
+		Subsystem->NotifyRigidBodyPhysicsVolumeChanged(Body.Get(), NewVolume);
+	}
+}
+
 void UJGDPhysicsWorldSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
@@ -313,6 +321,8 @@ bool UJGDPhysicsWorldSubsystem::RegisterRigidBody(
 			return false;
 		}
 		Existing->BaseProfile.Reset(BaseProfile);
+		Body->UpdatePhysicsVolume(false);
+		RebuildRigidBodyActiveVolumes(*Existing);
 		ApplyResolvedRigidBodyProfile(*Existing);
 		return true;
 	}
@@ -324,6 +334,14 @@ bool UJGDPhysicsWorldSubsystem::RegisterRigidBody(
 	Registration.bOriginalGravityEnabled = Body->IsGravityEnabled();
 	Registration.OriginalLinearDamping = Body->GetLinearDamping();
 	Registration.OriginalAngularDamping = Body->GetAngularDamping();
+	Registration.bOriginalShouldUpdatePhysicsVolume = Body->GetShouldUpdatePhysicsVolume();
+	Registration.VolumeObserver.Reset(NewObject<UJGDRigidBodyVolumeObserver>(this));
+	Registration.VolumeObserver->Body = Body;
+	Registration.VolumeObserver->Subsystem = this;
+	Body->PhysicsVolumeChangedDelegate.AddUniqueDynamic(
+		Registration.VolumeObserver.Get(), &UJGDRigidBodyVolumeObserver::HandleVolumeChanged);
+	Body->SetShouldUpdatePhysicsVolume(true);
+	Body->UpdatePhysicsVolume(false);
 	RebuildRigidBodyActiveVolumes(Registration);
 	ApplyResolvedRigidBodyProfile(Registration);
 	return true;
@@ -386,6 +404,23 @@ void UJGDPhysicsWorldSubsystem::RefreshRigidBodyProfile(UPrimitiveComponent* Bod
 	{
 		ApplyResolvedRigidBodyProfile(*Registration);
 	}
+}
+
+void UJGDPhysicsWorldSubsystem::NotifyRigidBodyPhysicsVolumeChanged(
+	UPrimitiveComponent* Body, APhysicsVolume* NewVolume)
+{
+	FJGDRigidBodyPhysicsRegistration* Registration = RegisteredRigidBodies.Find(Body);
+	if (!Registration || !IsValid(Body) || Body->GetWorld() != GetWorld())
+	{
+		return;
+	}
+	Registration->ActiveVolumes.Reset();
+	if (AJGDPhysicsProfileVolume* ProfileVolume = Cast<AJGDPhysicsProfileVolume>(NewVolume);
+		IsValid(ProfileVolume) && ProfileVolume->GetWorld() == GetWorld())
+	{
+		Registration->ActiveVolumes.Add(ProfileVolume);
+	}
+	ApplyResolvedRigidBodyProfile(*Registration);
 }
 
 UJGDPhysicsRigidBodyProfile* UJGDPhysicsWorldSubsystem::GetResolvedRigidBodyProfile(UPrimitiveComponent* Body) const
@@ -570,48 +605,6 @@ void UJGDPhysicsWorldSubsystem::NotifyVolumeRemoved(AJGDPhysicsProfileVolume* Vo
 	}
 }
 
-void UJGDPhysicsWorldSubsystem::NotifyRigidBodiesEnteredVolume(AActor* Actor, AJGDPhysicsProfileVolume* Volume)
-{
-	if (bWorldEnded || !IsValid(Actor) || !IsValid(Volume)
-		|| Actor->GetWorld() != GetWorld() || Volume->GetWorld() != GetWorld())
-	{
-		return;
-	}
-	TArray<TWeakObjectPtr<UPrimitiveComponent>> Bodies;
-	RegisteredRigidBodies.GenerateKeyArray(Bodies);
-	for (const TWeakObjectPtr<UPrimitiveComponent>& WeakBody : Bodies)
-	{
-		UPrimitiveComponent* Body = WeakBody.Get();
-		FJGDRigidBodyPhysicsRegistration* Registration = RegisteredRigidBodies.Find(WeakBody);
-		if (IsValid(Body) && Registration && Body->GetOwner() == Actor)
-		{
-			Registration->ActiveVolumes.AddUnique(Volume);
-			ApplyResolvedRigidBodyProfile(*Registration);
-		}
-	}
-}
-
-void UJGDPhysicsWorldSubsystem::NotifyRigidBodiesLeftVolume(AActor* Actor, AJGDPhysicsProfileVolume* Volume)
-{
-	if (!IsValid(Actor) || !Volume)
-	{
-		return;
-	}
-	TArray<TWeakObjectPtr<UPrimitiveComponent>> Bodies;
-	RegisteredRigidBodies.GenerateKeyArray(Bodies);
-	for (const TWeakObjectPtr<UPrimitiveComponent>& WeakBody : Bodies)
-	{
-		UPrimitiveComponent* Body = WeakBody.Get();
-		FJGDRigidBodyPhysicsRegistration* Registration = RegisteredRigidBodies.Find(WeakBody);
-		if (IsValid(Body) && Registration && Body->GetOwner() == Actor)
-		{
-			Registration->ActiveVolumes.RemoveAll([Volume](const TWeakObjectPtr<AJGDPhysicsProfileVolume>& Item)
-				{ return !Item.IsValid() || Item.Get() == Volume; });
-			ApplyResolvedRigidBodyProfile(*Registration);
-		}
-	}
-}
-
 UJGDCharacterPhysicsProfile* UJGDPhysicsWorldSubsystem::ResolveProfile(
 	const FJGDCharacterPhysicsRegistration& Registration) const
 {
@@ -765,8 +758,8 @@ void UJGDPhysicsWorldSubsystem::RebuildRigidBodyActiveVolumes(FJGDRigidBodyPhysi
 {
 	Registration.ActiveVolumes.Reset();
 	UPrimitiveComponent* Body = Registration.Body.Get();
-	AActor* Owner = IsValid(Body) ? Body->GetOwner() : nullptr;
-	AJGDPhysicsProfileVolume* CurrentVolume = IsValid(Owner) ? Cast<AJGDPhysicsProfileVolume>(Owner->GetPhysicsVolume()) : nullptr;
+	AJGDPhysicsProfileVolume* CurrentVolume = IsValid(Body)
+		? Cast<AJGDPhysicsProfileVolume>(Body->GetPhysicsVolume()) : nullptr;
 	if (IsValid(CurrentVolume) && CurrentVolume->GetWorld() == GetWorld())
 	{
 		Registration.ActiveVolumes.Add(CurrentVolume);
@@ -777,10 +770,17 @@ void UJGDPhysicsWorldSubsystem::RestoreRigidBodySettings(FJGDRigidBodyPhysicsReg
 {
 	if (UPrimitiveComponent* Body = Registration.Body.Get(); IsValid(Body))
 	{
+		if (UJGDRigidBodyVolumeObserver* Observer = Registration.VolumeObserver.Get())
+		{
+			Body->PhysicsVolumeChangedDelegate.RemoveDynamic(
+				Observer, &UJGDRigidBodyVolumeObserver::HandleVolumeChanged);
+		}
+		Body->SetShouldUpdatePhysicsVolume(Registration.bOriginalShouldUpdatePhysicsVolume);
 		Body->SetEnableGravity(Registration.bOriginalGravityEnabled);
 		Body->SetLinearDamping(Registration.OriginalLinearDamping);
 		Body->SetAngularDamping(Registration.OriginalAngularDamping);
 	}
+	Registration.VolumeObserver.Reset();
 	Registration.AppliedProfile.Reset();
 	Registration.bHasAppliedProfile = false;
 }

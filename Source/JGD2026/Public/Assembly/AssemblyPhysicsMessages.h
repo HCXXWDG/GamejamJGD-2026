@@ -158,7 +158,7 @@ struct JGD2026_API FAssemblyPhysicsJointBreakMessage
 	FAssemblyPhysicsBonePose BodyB;
 };
 
-/** Physics publishes this ONLY after the requested constraint has actually broken. */
+/** Physics publishes this after a constraint actually breaks, whether requested or simulated. */
 USTRUCT(BlueprintType)
 struct JGD2026_API FAssemblyPhysicsJointBrokenMessage
 {
@@ -167,4 +167,7 @@ struct JGD2026_API FAssemblyPhysicsJointBrokenMessage
 	FAssemblyPhysicsContext Context;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Assembly|Physics")
 	FGuid JointId;
+	// Identifies the active physical lifecycle owner for an unsolicited solver break.
+	UPROPERTY(Transient)
+	TObjectPtr<UObject> PhysicsProvider = nullptr;
 };

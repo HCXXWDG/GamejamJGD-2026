@@ -22,6 +22,7 @@
 #include "Physics/JGDAssemblyPhysicsExecutorComponent.h"
 #include "Physics/JGDPhysicsProfiles.h"
 #include "Physics/JGDPhysicsSystemSettings.h"
+#include "PhysicsEngine/PhysicsConstraintComponent.h"
 #include <limits>
 
 struct FJGDAssemblyPhysicsExecutorTestAccessor
@@ -33,6 +34,12 @@ struct FJGDAssemblyPhysicsExecutorTestAccessor
 	static FVector GetCoreDriveAxis(const UJGDAssemblyPhysicsExecutorComponent* Executor)
 	{
 		return Executor ? Executor->CoreRotationWorldAxis : FVector::ZeroVector;
+	}
+	static UPhysicsConstraintComponent* GetConstraint(
+		const UJGDAssemblyPhysicsExecutorComponent* Executor, FGuid JointId)
+	{
+		const TObjectPtr<UPhysicsConstraintComponent>* Found = Executor ? Executor->Constraints.Find(JointId) : nullptr;
+		return Found ? Found->Get() : nullptr;
 	}
 };
 
@@ -208,7 +215,106 @@ namespace
 		{
 			if (World) { World->Tick(LEVELTICK_All, Seconds); }
 		}
+
+		FGuid InstallBoneWithJoint()
+		{
+			FGuid BoneId;
+			if (!Interaction->BeginBoneDrag(TEXT("Bone"), FGuid(), Reason)
+				|| !Interaction->UpdateBoneDragAtLocalPosition(FVector2D(96.0, 0.0), Reason)
+				|| !Interaction->CommitBoneDrag(BoneId, Reason))
+			{
+				return FGuid();
+			}
+			const TArray<FAssemblyJointInstance> Joints = Model->GetJoints();
+			return Joints.Num() == 1 ? Joints[0].InstanceId : FGuid();
+		}
 	};
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FJGDAssemblyExecutorAsymmetricHingeTest,
+	"JGD2026.Assembly.PhysicsExecutor.AsymmetricHingeLimits", ExecutorFlags)
+
+bool FJGDAssemblyExecutorAsymmetricHingeTest::RunTest(const FString& Parameters)
+{
+	for (const TPair<float, float> Limits : { TPair<float, float>(0.0f, 60.0f), TPair<float, float>(-50.0f, -10.0f) })
+	{
+		FAssemblyPhysicsExecutorWorld T;
+		if (!TestTrue(TEXT("Hinge fixture initializes"), T.bReady)) { AddError(T.Reason.ToString()); return false; }
+		const FGuid JointId = T.InstallBoneWithJoint();
+		if (!TestTrue(TEXT("Physical bone creates a core joint"), JointId.IsValid())
+			|| !TestTrue(TEXT("Asymmetric limits are accepted"),
+				T.Model->TrySetJointLimits(JointId, Limits.Key, Limits.Value, T.Reason))
+			|| !TestTrue(TEXT("Hinge starts physical simulation"), T.Session->StartPlaying(T.Reason)))
+		{
+			AddError(T.Reason.ToString());
+			return false;
+		}
+		UPhysicsConstraintComponent* Constraint = FJGDAssemblyPhysicsExecutorTestAccessor::GetConstraint(T.Executor, JointId);
+		if (!TestNotNull(TEXT("Executor built the hinge"), Constraint)) { return false; }
+		const float HalfRange = (Limits.Value - Limits.Key) * 0.5f;
+		const float Midpoint = (Limits.Value + Limits.Key) * 0.5f;
+		TestTrue(TEXT("Twist span uses half the authored interval"),
+			FMath::IsNearlyEqual(Constraint->ConstraintInstance.GetAngularTwistLimit(), HalfRange));
+		TestTrue(TEXT("Twist reference shifts to the authored midpoint"),
+			FMath::IsNearlyEqual(Constraint->ConstraintInstance.AngularRotationOffset.Roll, -Midpoint));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FJGDAssemblyExecutorJointBreakTest,
+	"JGD2026.Assembly.PhysicsExecutor.NaturalAndRequestedJointBreaks", ExecutorFlags)
+
+bool FJGDAssemblyExecutorJointBreakTest::RunTest(const FString& Parameters)
+{
+	for (const bool bNaturalBreak : { false, true })
+	{
+		FAssemblyPhysicsExecutorWorld T;
+		if (!TestTrue(TEXT("Joint break fixture initializes"), T.bReady)) { AddError(T.Reason.ToString()); return false; }
+		const FGuid JointId = T.InstallBoneWithJoint();
+		if (!TestTrue(TEXT("Physical bone creates a breakable joint"), JointId.IsValid())
+			|| !TestTrue(TEXT("Configure physical breakability"),
+				T.Model->TrySetJointKind(JointId, EAssemblyJointKind::BreakableHinge, T.Reason))
+			|| !TestTrue(TEXT("Begin physical round"), T.Session->StartPlaying(T.Reason)))
+		{
+			AddError(T.Reason.ToString());
+			return false;
+		}
+		UPhysicsConstraintComponent* Constraint = FJGDAssemblyPhysicsExecutorTestAccessor::GetConstraint(T.Executor, JointId);
+		if (!TestNotNull(TEXT("Executor built a breakable constraint"), Constraint)) { return false; }
+		UJGDMessageSubsystem* Bus = UJGDMessageSubsystem::Get(T.Model);
+		if (!TestNotNull(TEXT("Physical confirmation bus is available"), Bus)) { return false; }
+		FAssemblyPhysicsJointBrokenMessage Stale;
+		Stale.Context = T.Bridge->GetPhysicsContext();
+		Stale.JointId = JointId;
+		Stale.PhysicsProvider = T.Executor;
+		--Stale.Context.Revision;
+		Bus->BroadcastMessage(AssemblyMessageTags::JointBroken, FInstancedStruct::Make(Stale));
+		Stale.Context = T.Bridge->GetPhysicsContext();
+		--Stale.Context.RoundGeneration;
+		Bus->BroadcastMessage(AssemblyMessageTags::JointBroken, FInstancedStruct::Make(Stale));
+		Stale.Context = T.Bridge->GetPhysicsContext();
+		Stale.PhysicsProvider = T.Model;
+		Bus->BroadcastMessage(AssemblyMessageTags::JointBroken, FInstancedStruct::Make(Stale));
+		T.Bridge->TickComponent(0.016f, LEVELTICK_All, nullptr);
+		TestEqual(TEXT("Stale revision, round and provider cannot remove a joint"), T.Model->GetJoints().Num(), 1);
+		if (bNaturalBreak)
+		{
+			Constraint->BreakConstraint();
+			T.Executor->TickComponent(0.016f, LEVELTICK_All, nullptr);
+		}
+		else
+		{
+			TestTrue(TEXT("Player requests a physical break"), T.Model->RequestJointBreak(JointId, T.Reason));
+		}
+		TestEqual(TEXT("Break confirmation is queued before model update"), T.Model->GetJoints().Num(), 1);
+		T.Bridge->TickComponent(0.016f, LEVELTICK_All, nullptr);
+		TestEqual(TEXT("Both break paths remove the model joint"), T.Model->GetJoints().Num(), 0);
+		TestNull(TEXT("Broken constraint is removed from the executor"),
+			FJGDAssemblyPhysicsExecutorTestAccessor::GetConstraint(T.Executor, JointId));
+		T.Bridge->TickComponent(0.016f, LEVELTICK_All, nullptr);
+		TestEqual(TEXT("Duplicate bridge tick cannot remove another joint"), T.Model->GetJoints().Num(), 0);
+	}
+	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FJGDAssemblyDriveProfileTest,

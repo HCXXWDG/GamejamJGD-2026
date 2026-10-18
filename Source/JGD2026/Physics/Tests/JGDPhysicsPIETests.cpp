@@ -7,6 +7,7 @@
 #include "Builders/CubeBuilder.h"
 #include "Character/JGDWindTestCharacter.h"
 #include "Components/ArrowComponent.h"
+#include "Components/BoxComponent.h"
 #include "Components/PrimitiveComponent.h"
 #include "Editor.h"
 #include "EngineUtils.h"
@@ -287,7 +288,38 @@ namespace JGDPhysicsPIETests
 				HighProfile->Settings.bSnapToPlaneWhenApplied = false;
 				LowVolume->CharacterProfile = LowProfile.Get();
 				HighVolume->CharacterProfile = HighProfile.Get();
+				BaseRigidProfile = NewObject<UJGDPhysicsRigidBodyProfile>(Character.Get());
+				HighRigidProfile = NewObject<UJGDPhysicsRigidBodyProfile>(HighVolume.Get());
+				BaseRigidProfile->LinearDamping = 4.0f;
+				HighRigidProfile->LinearDamping = 7.0f;
+				HighVolume->RigidBodyProfile = HighRigidProfile.Get();
 				Participant->SetBaseProfile(BaseProfile.Get());
+
+				RigidOwner = World->SpawnActor<AActor>(FVector(1500.0, 0.0, 600.0), FRotator::ZeroRotator);
+				if (!Test->TestNotNull(TEXT("Rigid-body owner spawned"), RigidOwner.Get())) { return true; }
+				BodyOutside = NewObject<UBoxComponent>(RigidOwner.Get());
+				RigidOwner->SetRootComponent(BodyOutside.Get());
+				RigidOwner->AddInstanceComponent(BodyOutside.Get());
+				BodyOutside->SetMobility(EComponentMobility::Movable);
+				BodyOutside->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+				BodyOutside->RegisterComponent();
+				BodyInside = NewObject<UBoxComponent>(RigidOwner.Get());
+				RigidOwner->AddInstanceComponent(BodyInside.Get());
+				BodyInside->SetupAttachment(BodyOutside.Get());
+				BodyInside->SetMobility(EComponentMobility::Movable);
+				BodyInside->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+				BodyInside->RegisterComponent();
+				BodyInside->SetWorldLocation(FVector(500.0, 0.0, 600.0));
+				bOriginalVolumeUpdates = BodyInside->GetShouldUpdatePhysicsVolume();
+				FText RegisterReason;
+				if (!Test->TestTrue(TEXT("Register body inside real brush"),
+					Physics->RegisterRigidBody(BodyInside.Get(), RegistrationId, BaseRigidProfile.Get(), RegisterReason))
+					|| !Test->TestTrue(TEXT("Register second body outside real brush"),
+						Physics->RegisterRigidBody(BodyOutside.Get(), RegistrationId, BaseRigidProfile.Get(), RegisterReason)))
+				{
+				Test->AddError(RegisterReason.ToString());
+				return true;
+				}
 
 				Character->GetCharacterMovement()->SetMovementMode(MOVE_Flying);
 				Character->GetCharacterMovement()->StopMovementImmediately();
@@ -297,7 +329,8 @@ namespace JGDPhysicsPIETests
 				return false;
 			}
 			if (!Character.IsValid() || !LowVolume.IsValid() || !HighVolume.IsValid()
-				|| !BaseProfile.IsValid() || !LowProfile.IsValid() || !HighProfile.IsValid())
+				|| !BaseProfile.IsValid() || !LowProfile.IsValid() || !HighProfile.IsValid()
+				|| !BodyInside.IsValid() || !BodyOutside.IsValid() || !RigidOwner.IsValid())
 			{
 				Test->AddError(TEXT("A multi-volume PIE object was unexpectedly destroyed."));
 				return true;
@@ -308,6 +341,21 @@ namespace JGDPhysicsPIETests
 			}
 			if (Stage == 1)
 			{
+				Test->TestEqual(TEXT("Registered component inside brush tracks its own volume"),
+					BodyInside->GetPhysicsVolume(), static_cast<APhysicsVolume*>(HighVolume.Get()));
+				Test->TestEqual(TEXT("Inside body receives brush profile"),
+					Physics->GetResolvedRigidBodyProfile(BodyInside.Get()), HighRigidProfile.Get());
+				Test->TestEqual(TEXT("Same owner's outside body keeps its base profile"),
+					Physics->GetResolvedRigidBodyProfile(BodyOutside.Get()), BaseRigidProfile.Get());
+				Test->TestEqual(TEXT("Inside body receives brush damping"), BodyInside->GetLinearDamping(), 7.0f);
+				Physics->UnregisterRigidBody(BodyInside.Get(), RegistrationId);
+				Test->TestEqual(TEXT("Unregister restores volume-tracking flag"),
+					BodyInside->GetShouldUpdatePhysicsVolume(), bOriginalVolumeUpdates);
+				FText RegisterReason;
+				Test->TestTrue(TEXT("Re-register body while inside the brush"),
+					Physics->RegisterRigidBody(BodyInside.Get(), RegistrationId, BaseRigidProfile.Get(), RegisterReason));
+				Test->TestEqual(TEXT("Re-registration immediately resolves the component's brush"),
+					Physics->GetResolvedRigidBodyProfile(BodyInside.Get()), HighRigidProfile.Get());
 				Test->TestTrue(TEXT("Character overlaps the low-priority brush"), Character->IsOverlappingActor(LowVolume.Get()));
 				Test->TestTrue(TEXT("Character overlaps the high-priority brush"), Character->IsOverlappingActor(HighVolume.Get()));
 				Test->TestEqual(TEXT("UE selects the high-priority PhysicsVolume in the overlap"),
@@ -323,12 +371,17 @@ namespace JGDPhysicsPIETests
 					Character->GetCharacterMovement()->MaxWalkSpeed, 222.0f);
 
 				Character->SetActorLocation(FVector(500.0, 0.0, 600.0), false, nullptr, ETeleportType::TeleportPhysics);
+				BodyInside->SetWorldLocation(FVector(1500.0, 0.0, 600.0), false, nullptr, ETeleportType::TeleportPhysics);
 				Stage = 2;
 				StageStartedAt = World->GetTimeSeconds();
 				return false;
 			}
 			if (Stage == 2)
 			{
+				Test->TestEqual(TEXT("Leaving real brush restores body base profile"),
+					Physics->GetResolvedRigidBodyProfile(BodyInside.Get()), BaseRigidProfile.Get());
+				Test->TestEqual(TEXT("Leaving real brush restores body base damping"),
+					BodyInside->GetLinearDamping(), 4.0f);
 				Test->TestFalse(TEXT("Character has left the unselected low-priority brush"),
 					Character->IsOverlappingActor(LowVolume.Get()));
 				Test->TestTrue(TEXT("Character remains inside the high-priority brush"),
@@ -337,6 +390,7 @@ namespace JGDPhysicsPIETests
 					Physics->GetResolvedCharacterProfile(Character.Get()), HighProfile.Get());
 
 				Character->SetActorLocation(FVector(1100.0, 0.0, 600.0), false, nullptr, ETeleportType::TeleportPhysics);
+				BodyInside->SetWorldLocation(FVector(500.0, 0.0, 600.0), false, nullptr, ETeleportType::TeleportPhysics);
 				Stage = 3;
 				StageStartedAt = World->GetTimeSeconds();
 				return false;
@@ -349,6 +403,11 @@ namespace JGDPhysicsPIETests
 				Character->GetPhysicsVolume() != LowVolume.Get() && Character->GetPhysicsVolume() != HighVolume.Get());
 			Test->TestEqual(TEXT("Leaving every brush restores the base profile"),
 				Physics->GetResolvedCharacterProfile(Character.Get()), BaseProfile.Get());
+			Test->TestEqual(TEXT("Re-entering real brush reapplies the body profile"),
+				Physics->GetResolvedRigidBodyProfile(BodyInside.Get()), HighRigidProfile.Get());
+			Physics->UnregisterRigidBodiesOwnedBy(RegistrationId);
+			Test->TestEqual(TEXT("Owner unregister restores inside body tracking flag"),
+				BodyInside->GetShouldUpdatePhysicsVolume(), bOriginalVolumeUpdates);
 			Test->TestEqual(TEXT("Leaving every brush restores the base profile speed"),
 				Character->GetCharacterMovement()->MaxWalkSpeed, 900.0f);
 			CheckDisplayedProfile(BaseProfile.Get(), TEXT("Final base profile reaches the cached display via bus"));
@@ -369,6 +428,13 @@ namespace JGDPhysicsPIETests
 		TWeakObjectPtr<UJGDCharacterPhysicsProfile> BaseProfile;
 		TWeakObjectPtr<UJGDCharacterPhysicsProfile> LowProfile;
 		TWeakObjectPtr<UJGDCharacterPhysicsProfile> HighProfile;
+		TWeakObjectPtr<UJGDPhysicsRigidBodyProfile> BaseRigidProfile;
+		TWeakObjectPtr<UJGDPhysicsRigidBodyProfile> HighRigidProfile;
+		TWeakObjectPtr<AActor> RigidOwner;
+		TWeakObjectPtr<UBoxComponent> BodyInside;
+		TWeakObjectPtr<UBoxComponent> BodyOutside;
+		FGuid RegistrationId = FGuid::NewGuid();
+		bool bOriginalVolumeUpdates = false;
 		UJGDPhysicsWorldSubsystem* Physics = nullptr;
 		double StartedAt = FPlatformTime::Seconds();
 		float StageStartedAt = 0.0f;
