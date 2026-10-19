@@ -126,10 +126,11 @@ bool AssemblyRigidPartMetrics::Evaluate(const FAssemblyBoneDefinition& D, FNorma
 	if (D.PartKind != EAssemblyRigidPartKind::JointPart || !IsJointPartShapeValid(D.JointShape)
 		|| static_cast<uint8>(D.DefaultJointKind) > static_cast<uint8>(EAssemblyJointKind::BreakableFixed)
 		|| !FMath::IsFinite(D.JointPartSize.X) || !FMath::IsFinite(D.JointPartSize.Y)
+		|| !FMath::IsFinite(D.JointMassScale) || D.JointMassScale < 0.01f
 		|| D.JointPartSize.X <= UE_SMALL_NUMBER || D.JointPartSize.Y <= UE_SMALL_NUMBER
 		|| D.JointPartSize.X > TNumericLimits<float>::Max() || D.JointPartSize.Y > TNumericLimits<float>::Max())
 	{
-		OutReason = LOCTEXT("InvalidJointPart", "关节零件种类、连接类型与宽高必须有效，尺寸必须为正的有限数值。");
+		OutReason = LOCTEXT("InvalidJointPart", "关节零件种类、连接类型与宽高必须有效，尺寸必须为正的有限数值，质量倍率必须至少为 0.01。");
 		return false;
 	}
 	FNormalBonePhysicalStats Baseline;
@@ -174,7 +175,7 @@ bool AssemblyRigidPartMetrics::Evaluate(const FAssemblyBoneDefinition& D, FNorma
 	}
 	const double Unit = D.BoneParameters.UnitLength;
 	const double Area = (D.JointPartSize.X / Unit) * (D.JointPartSize.Y / Unit);
-	const double Mass = Area * Baseline.DensityMultiplier * D.BoneParameters.StandardDensityKgPerSquareUnit;
+	const double Mass = Area * Baseline.DensityMultiplier * D.BoneParameters.StandardDensityKgPerSquareUnit * D.JointMassScale;
 	if (!FMath::IsFinite(Area) || !FMath::IsFinite(Mass) || Area > TNumericLimits<float>::Max()
 		|| Mass > TNumericLimits<float>::Max() || static_cast<float>(Area) <= 0 || static_cast<float>(Mass) <= 0)
 	{

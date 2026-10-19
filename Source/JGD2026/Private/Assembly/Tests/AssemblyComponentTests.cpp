@@ -9,6 +9,8 @@ namespace
 	UAssemblyComponent* MakeAssembly(bool bSingleCellBones = false)
 	{
 		UAssemblyComponent* Component = NewObject<UAssemblyComponent>();
+		// These transaction cases use a fixed four-item budget independently of the game's level stock.
+		Component->DefaultBones[0].InitialQuantity = 4;
 		Component->DefaultPlacementMode = EAssemblyPlacementMode::Grid;
 		if (bSingleCellBones)
 		{

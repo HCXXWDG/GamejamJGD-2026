@@ -120,6 +120,8 @@ bool FAssemblyJointPartActorTransactionsTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Presenter selects the native JointPart class"), Part->GetClass() == AAssemblyJointPart::StaticClass());
 		TestTrue(TEXT("Installed part registers its real body pose"), T.Assembly->GetBonePoseSource(PartId) == Part->GetJointBody());
 		TestTrue(TEXT("Cross body keeps declared 64 by 64 dimensions"), Part->GetJointBody()->GetUnscaledBoxExtent().Equals(FVector(32, 4, 32), 0.001));
+		TestTrue(TEXT("Joint collision body uses the designed lightweight mass"),
+			FMath::IsNearlyEqual(Part->GetJointBody()->GetMass(), Part->GetPhysicalStats().MassKg, 0.001f));
 		UPaperSpriteComponent* SpriteView = Part->GetJointSprite();
 		UPaperSprite* Sprite = SpriteView->GetSprite();
 		if (!TestNotNull(TEXT("Cross uses existing Res artwork"), Sprite)) { return false; }

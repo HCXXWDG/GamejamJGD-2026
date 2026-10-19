@@ -1,4 +1,5 @@
 #include "UI/MenuPlaygroundWidget.h"
+#include "Audio/JGDInputFeedbackLibrary.h"
 #include "Assembly/AssemblyPlayingToolbarWidget.h"
 #include "Assembly/AssemblySpriteImage.h"
 #include "Blueprint/WidgetTree.h"
@@ -425,8 +426,8 @@ TArray<UPrimitiveComponent*> UMenuPlaygroundWidget::GetPieceBodies() const
 {
 	TArray<UPrimitiveComponent*> Result; for (UPrimitiveComponent* Body:Bodies) Result.Add(Body); return Result;
 }
-void UMenuPlaygroundWidget::HandleStart() { BeginMenuTransition(true); }
-void UMenuPlaygroundWidget::HandleBack() { BeginMenuTransition(false); }
+void UMenuPlaygroundWidget::HandleStart() { UJGDInputFeedbackLibrary::PlayInputPress(this); BeginMenuTransition(true); }
+void UMenuPlaygroundWidget::HandleBack() { UJGDInputFeedbackLibrary::PlayInputPress(this); BeginMenuTransition(false); }
 void UMenuPlaygroundWidget::HandleSettings()
 {
 	EndPieceDrag(false);

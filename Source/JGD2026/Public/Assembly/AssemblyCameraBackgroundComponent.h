@@ -6,8 +6,9 @@
 
 class UMaterialParameterCollection;
 class UStaticMeshComponent;
+class UMaterialInterface;
 
-/** Keeps the player's existing parallax planes behind the actual gameplay camera. */
+/** World-anchored parallax using runtime horizontal tiles of the existing background artwork. */
 UCLASS(ClassGroup=(Assembly), meta=(BlueprintSpawnableComponent))
 class JGD2026_API UAssemblyCameraBackgroundComponent : public UActorComponent
 {
@@ -22,15 +23,20 @@ private:
 	struct FBackgroundLayer
 	{
 		TWeakObjectPtr<UStaticMeshComponent> Mesh;
+		TArray<TWeakObjectPtr<UStaticMeshComponent>> Tiles;
+		TArray<TWeakObjectPtr<UMaterialInterface>> OriginalMaterials;
 		FTransform OriginalTransform;
 		FVector LocalCenter = FVector::ZeroVector;
 		FVector WorldSize = FVector::ZeroVector;
 		float Depth = 0;
+		float Parallax = 0.0f;
 		EComponentMobility::Type OriginalMobility = EComponentMobility::Movable;
 		ECollisionEnabled::Type OriginalCollision = ECollisionEnabled::NoCollision;
 		bool bOriginalGenerateOverlap = false;
 	};
 	UPROPERTY() TObjectPtr<UMaterialParameterCollection> ParallaxParameters;
 	TArray<FBackgroundLayer> Layers;
+	FVector CameraOrigin = FVector::ZeroVector;
+	bool bHaveCameraOrigin = false;
 	void CacheBackgroundLayers();
 };

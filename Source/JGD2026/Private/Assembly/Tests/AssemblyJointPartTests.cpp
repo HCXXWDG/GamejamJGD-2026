@@ -4,6 +4,7 @@
 #include "Assembly/AssemblyJointPartTypes.h"
 #include "../AssemblyFreeRules.h"
 #include "Misc/AutomationTest.h"
+#include <limits>
 
 namespace
 {
@@ -41,6 +42,12 @@ bool FAssemblyJointPartMetricsTest::RunTest(const FString& Parameters)
 	{
 		FNormalBonePhysicalStats Stats;
 		TestTrue(TEXT("Every default shape has valid body metrics"), AssemblyRigidPartMetrics::Evaluate(Part, Stats, Reason));
+		FAssemblyBoneDefinition FullMass = Part;
+		FullMass.JointMassScale = 1.0f;
+		FNormalBonePhysicalStats FullStats;
+		TestTrue(TEXT("Original joint mass remains available for tuning"), AssemblyRigidPartMetrics::Evaluate(FullMass, FullStats, Reason));
+		TestTrue(TEXT("All default joint masses are halved"), FMath::IsNearlyEqual(Stats.MassKg, FullStats.MassKg * 0.5f));
+		TestEqual(TEXT("Mass tuning preserves joint area"), Stats.AreaInSquareUnits, FullStats.AreaInSquareUnits);
 		const FVector2D Canvas = AssemblyRigidPartMetrics::GetJointArtworkPixelSize(Part.JointShape);
 		TestTrue(TEXT("Both body axes retain one source-pixel scale"), FMath::IsNearlyEqual(Part.JointPartSize.X / Canvas.X, Part.JointPartSize.Y / Canvas.Y, 0.000001));
 		TestEqual(TEXT("Each shape defaults to two pieces"), Part.InitialQuantity, 2);
@@ -55,6 +62,18 @@ bool FAssemblyJointPartMetricsTest::RunTest(const FString& Parameters)
 	Invalid.JointPartSize.Y *= 2;
 	FNormalBonePhysicalStats Stats;
 	TestFalse(TEXT("Nonuniform joint art/body scaling is refused"), AssemblyRigidPartMetrics::Evaluate(Invalid, Stats, Reason));
+	Invalid = AssemblyRigidPartMetrics::MakeJointPartDefinition(EAssemblyJointPartShape::Bar);
+	Invalid.JointMassScale = 0.0f;
+	TestFalse(TEXT("Zero joint mass scale is refused"), AssemblyRigidPartMetrics::Evaluate(Invalid, Stats, Reason));
+	Invalid.JointMassScale = std::numeric_limits<float>::quiet_NaN();
+	TestFalse(TEXT("Non-finite joint mass scale is refused"), AssemblyRigidPartMetrics::Evaluate(Invalid, Stats, Reason));
+	FAssemblyBoneDefinition OrdinaryBone;
+	FNormalBonePhysicalStats OrdinaryStats;
+	TestTrue(TEXT("Ordinary bone mass is valid"), AssemblyRigidPartMetrics::Evaluate(OrdinaryBone, OrdinaryStats, Reason));
+	OrdinaryBone.JointMassScale = 0.25f;
+	FNormalBonePhysicalStats UnchangedBoneStats;
+	TestTrue(TEXT("Joint-only mass setting does not affect bones"), AssemblyRigidPartMetrics::Evaluate(OrdinaryBone, UnchangedBoneStats, Reason));
+	TestEqual(TEXT("Ordinary bone mass stays unchanged"), OrdinaryStats.MassKg, UnchangedBoneStats.MassKg);
 	Invalid = AssemblyRigidPartMetrics::MakeJointPartDefinition(EAssemblyJointPartShape::Cross);
 	const FVector2D DuplicatePort = Invalid.ConnectionPoints[0];
 	Invalid.ConnectionPoints.Add(DuplicatePort);

@@ -6,6 +6,7 @@
 #include "Assembly/AssemblyInteractionComponent.h"
 #include "Assembly/AssemblyPhysicsBridgeComponent.h"
 #include "Assembly/AssemblySessionComponent.h"
+#include "Assembly/NormalBone.h"
 #include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Engine/Engine.h"
@@ -130,6 +131,16 @@ namespace
 		}
 
 		bool Initialize() { return bReady && Session->InitializeSession(Controller, Reason); }
+		FVector2D CoreBonePosition() const
+		{
+			FAssemblyBoneDefinition Definition;
+			FNormalBonePhysicalStats Stats;
+			FText MetricsReason;
+			if (!Model->GetBoneDefinition(TEXT("Bone"), Definition)
+				|| !ANormalBone::CalculateBoneStats(Definition.BoneParameters, Stats, MetricsReason)) return FVector2D::ZeroVector;
+			const FAssemblyFreeSettings Settings = Model->GetFreeSettings();
+			return Settings.CoreLocalPosition + FVector2D(Settings.CoreRadius + Stats.Length * 0.5f, 0);
+		}
 		bool IsMovementFrozen() const
 		{
 			const UCharacterMovementComponent* Movement = Character->GetCharacterMovement();
@@ -300,7 +311,7 @@ bool FAssemblySessionProxyLateVerifyTest::RunTest(const FString& Parameters)
 		FGuid Bone;
 		if (!TestTrue(TEXT("Install editable body before notification conflict"),
 			T.Interaction->BeginBoneDrag(TEXT("Bone"), FGuid(), T.Reason)
-			&& T.Interaction->UpdateBoneDragAtLocalPosition(FVector2D(96,0), T.Reason)
+			&& T.Interaction->UpdateBoneDragAtLocalPosition(T.CoreBonePosition(), T.Reason)
 			&& T.Interaction->CommitBoneDrag(Bone, T.Reason))) { AddError(T.Reason.ToString()); return false; }
 		USceneComponent* OriginalPose = T.Model->GetBonePoseSource(Bone);
 		const int32 OriginalStock = T.Model->GetRemainingQuantity(TEXT("Bone"));
@@ -365,7 +376,7 @@ bool FAssemblySessionProxyRefreshFailureTest::RunTest(const FString& Parameters)
 		|| !TestTrue(TEXT("Session initializes"), T.Initialize())) { AddError(T.Reason.ToString()); return false; }
 	FGuid Bone;
 	if (!TestTrue(TEXT("Install before refresh rejection"), T.Interaction->BeginBoneDrag(TEXT("Bone"), FGuid(), T.Reason)
-		&& T.Interaction->UpdateBoneDragAtLocalPosition(FVector2D(96,0), T.Reason)
+		&& T.Interaction->UpdateBoneDragAtLocalPosition(T.CoreBonePosition(), T.Reason)
 		&& T.Interaction->CommitBoneDrag(Bone, T.Reason))) { return false; }
 	const int32 Stock = T.Model->GetRemainingQuantity(TEXT("Bone"));
 	USceneComponent* Pose = T.Model->GetBonePoseSource(Bone);
@@ -410,7 +421,7 @@ bool FAssemblySessionProxyFinalObserverTest::RunTest(const FString& Parameters)
 				|| !TestTrue(TEXT("Protected session initializes"), T.Initialize())) { AddError(T.Reason.ToString()); return false; }
 			FGuid Bone;
 			if (!TestTrue(TEXT("Install editable body before final observer conflict"), T.Interaction->BeginBoneDrag(TEXT("Bone"), FGuid(), T.Reason)
-				&& T.Interaction->UpdateBoneDragAtLocalPosition(FVector2D(96,0), T.Reason)
+				&& T.Interaction->UpdateBoneDragAtLocalPosition(T.CoreBonePosition(), T.Reason)
 				&& T.Interaction->CommitBoneDrag(Bone, T.Reason))) { return false; }
 			USceneComponent* OriginalPose = T.Model->GetBonePoseSource(Bone);
 			const int32 OriginalStock = T.Model->GetRemainingQuantity(TEXT("Bone"));
@@ -454,7 +465,7 @@ bool FAssemblySessionNativeMuscleShutdownTest::RunTest(const FString& Parameters
 		|| !TestTrue(TEXT("Protected session initializes"), T.Initialize())) { AddError(T.Reason.ToString()); return false; }
 	FGuid Bone, MuscleA, MuscleB;
 	if (!TestTrue(TEXT("Install connected body"), T.Interaction->BeginBoneDrag(TEXT("Bone"), FGuid(), T.Reason)
-		&& T.Interaction->UpdateBoneDragAtLocalPosition(FVector2D(96,0), T.Reason)
+		&& T.Interaction->UpdateBoneDragAtLocalPosition(T.CoreBonePosition(), T.Reason)
 		&& T.Interaction->CommitBoneDrag(Bone, T.Reason))) { return false; }
 	FAssemblyMuscleEndpoint A, B;
 	A.BoneId = B.BoneId = Bone;
@@ -513,7 +524,7 @@ bool FAssemblySessionTypedMuscleShutdownTest::RunTest(const FString& Parameters)
 		|| !TestTrue(TEXT("Protected session initializes"), T.Initialize())) { AddError(T.Reason.ToString()); return false; }
 	FGuid Bone, MuscleA, MuscleB;
 	if (!TestTrue(TEXT("Install connected body"), T.Interaction->BeginBoneDrag(TEXT("Bone"), FGuid(), T.Reason)
-		&& T.Interaction->UpdateBoneDragAtLocalPosition(FVector2D(96,0), T.Reason)
+		&& T.Interaction->UpdateBoneDragAtLocalPosition(T.CoreBonePosition(), T.Reason)
 		&& T.Interaction->CommitBoneDrag(Bone, T.Reason))) { return false; }
 	FAssemblyMuscleEndpoint A, B;
 	A.BoneId = B.BoneId = Bone;

@@ -1,4 +1,5 @@
 #include "Assembly/AssemblyHUDWidget.h"
+#include "Audio/JGDInputFeedbackLibrary.h"
 
 #include "Assembly/AssemblyComponent.h"
 #include "Assembly/AssemblyDragDropOperation.h"
@@ -664,6 +665,7 @@ void UAssemblyHUDWidget::ExecuteAction(EAssemblyHUDAction Action, int32 Argument
 	UAssemblySessionComponent* ActiveSession = Session.Get();
 	UAssemblyWorkbenchComponent* ActiveWorkbench = GetWorkbench();
 	if (!ActiveSession || !ActiveWorkbench) return;
+	UJGDInputFeedbackLibrary::PlayInputPress(this);
 	FText Reason;
 	bool bSucceeded = false;
 	switch (Action)

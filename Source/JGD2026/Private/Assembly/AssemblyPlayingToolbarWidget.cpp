@@ -1,4 +1,5 @@
 #include "Assembly/AssemblyPlayingToolbarWidget.h"
+#include "Audio/JGDInputFeedbackLibrary.h"
 
 #include "Assembly/AssemblyComponent.h"
 #include "Assembly/AssemblyHUDWidget.h"
@@ -33,6 +34,8 @@
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/PlayerController.h"
 #include "InputCoreTypes.h"
+#include "Kismet/GameplayStatics.h"
+#include "Misc/PackageName.h"
 #include "PaperSprite.h"
 #include "UObject/ConstructorHelpers.h"
 
@@ -248,6 +251,12 @@ void UAssemblyPlayingToolbarWidget::BuildUI()
 	for (UButton* Button : {Apply, Close})
 		SettingActions->AddChildToHorizontalBox(Button)->SetPadding(FMargin(8, 0));
 	SettingsContents->AddChildToVerticalBox(SettingActions)->SetHorizontalAlignment(HAlign_Center);
+	MainMenuButton = MakeTextButton(Label(TEXT("返回主菜单")));
+	MainMenuButton->SetToolTipText(Label(TEXT("离开当前关卡；当前组装和关卡进度不会保留")));
+	MainMenuButton->OnClicked.AddDynamic(this, &ThisClass::HandleReturnToMenu);
+	UVerticalBoxSlot* MenuSlot = SettingsContents->AddChildToVerticalBox(MainMenuButton);
+	MenuSlot->SetHorizontalAlignment(HAlign_Center);
+	MenuSlot->SetPadding(FMargin(0, 12, 0, 0));
 	SettingsSize->SetContent(SettingsContents);
 	Paper->SetContent(SettingsSize);
 	SettingsOverlay->SetContent(Paper);
@@ -346,6 +355,7 @@ void UAssemblyPlayingToolbarWidget::RefreshPauseButton()
 void UAssemblyPlayingToolbarWidget::HandlePause()
 {
 	if (!bPlaying || bSettingsOpen) return;
+	UJGDInputFeedbackLibrary::PlayInputPress(this);
 	bManualPaused = !bManualPaused;
 	if (!UpdatePauseState())
 	{
@@ -358,6 +368,7 @@ void UAssemblyPlayingToolbarWidget::HandlePause()
 void UAssemblyPlayingToolbarWidget::HandleSettings()
 {
 	if ((!Session.IsValid() && !bStandaloneSettings) || bSettingsOpen) return;
+	UJGDInputFeedbackLibrary::PlayInputPress(this);
 	OriginalVolume = UAssemblyPlayPreferences::Get()->GetMasterVolume();
 	bSettingsApplied = false;
 	bPopulatingSettings = true;
@@ -378,6 +389,7 @@ void UAssemblyPlayingToolbarWidget::HandleSettings()
 		return;
 	}
 	SettingsMessage->SetText(Label(TEXT("设置期间游戏暂停；关闭后恢复打开前的状态。未保存的音量预览会撤销。")));
+	if (MainMenuButton) MainMenuButton->SetVisibility(bStandaloneSettings ? ESlateVisibility::Collapsed : ESlateVisibility::Visible);
 	SettingsOverlay->SetVisibility(ESlateVisibility::Visible);
 	RefreshPauseButton();
 }
@@ -410,6 +422,7 @@ UWidget* UAssemblyPlayingToolbarWidget::GenerateQualityOption(FString Option)
 void UAssemblyPlayingToolbarWidget::HandleApplySettings()
 {
 	if (!bSettingsOpen) return;
+	UJGDInputFeedbackLibrary::PlayInputPress(this);
 	UAssemblyPlayPreferences* Preferences = UAssemblyPlayPreferences::Get();
 	Preferences->SetMasterVolume(VolumeSlider->GetValue());
 	Preferences->ApplyAudio(this);
@@ -446,12 +459,34 @@ void UAssemblyPlayingToolbarWidget::CloseSettings(bool bKeepChanges)
 	if (bStandaloneSettings) SetVisibility(ESlateVisibility::Collapsed);
 }
 
-void UAssemblyPlayingToolbarWidget::HandleCloseSettings() { CloseSettings(false); }
+void UAssemblyPlayingToolbarWidget::HandleCloseSettings() { UJGDInputFeedbackLibrary::PlayInputPress(this); CloseSettings(false); }
+
+void UAssemblyPlayingToolbarWidget::HandleReturnToMenu()
+{
+	UAssemblySessionComponent* Active = Session.Get();
+	UWorld* World = GetWorld();
+	if (!bSettingsOpen || bStandaloneSettings || bReturningToMenu || !Active || !World) return;
+	if (MainMenuMap.IsNull() || !FPackageName::DoesPackageExist(MainMenuMap.ToSoftObjectPath().GetLongPackageName()))
+	{
+		SettingsMessage->SetText(Label(TEXT("主菜单地图不存在，无法返回。")));
+		return;
+	}
+	bReturningToMenu = true;
+	const TSoftObjectPtr<UWorld> Destination = MainMenuMap;
+	UJGDInputFeedbackLibrary::PlayInputPress(this);
+	CloseSettings(false);
+	ResetToolbarState();
+	// Shutdown stops held drives, cancels tools, releases input and removes this HUD.
+	// Keep the destination/world locally because the widget is detached by shutdown.
+	Active->ShutdownSession();
+	UGameplayStatics::OpenLevelBySoftObjectPtr(World, Destination);
+}
 
 void UAssemblyPlayingToolbarWidget::HandleRestart()
 {
 	UAssemblySessionComponent* Active = Session.Get();
 	if (!bPlaying || !Active) return;
+	UJGDInputFeedbackLibrary::PlayInputPress(this);
 	FText Reason;
 	if (Active->RestartSession(Reason))
 	{

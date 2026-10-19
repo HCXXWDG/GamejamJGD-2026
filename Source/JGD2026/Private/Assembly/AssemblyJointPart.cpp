@@ -79,6 +79,9 @@ bool AAssemblyJointPart::ApplyRigidPartDefinition(const FAssemblyBoneDefinition&
 		BoneSprite->SetMaterial(0, PreviousMaterial);
 		return false;
 	}
+	// Joint mass is defined by 2D gameplay metrics, independent of the collision box's Y thickness.
+	// Without an override Chaos estimates a much heavier solid 3D box from the default material.
+	GetBoneBody()->SetMassOverrideInKg(NAME_None, Stats.MassKg, true);
 	return true;
 }
 

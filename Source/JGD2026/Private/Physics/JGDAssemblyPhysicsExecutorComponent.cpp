@@ -347,8 +347,23 @@ bool UJGDAssemblyPhysicsExecutorComponent::BuildConstraints(
 		Constraint->RegisterComponent();
 		const FVector AnchorA = ResolveAnchorWorld(Joint.BoneA, Joint.LocalAnchorA);
 		const FVector AnchorB = ResolveAnchorWorld(Joint.BoneB, Joint.LocalAnchorB);
-		Constraint->SetWorldLocation((AnchorA + AnchorB) * 0.5f);
 		const bool bHinge = Joint.Kind == EAssemblyJointKind::Hinge || Joint.Kind == EAssemblyJointKind::BreakableHinge;
+		auto IsCircularConnector = [&Snapshot](FGuid Id)
+		{
+			if (!Id.IsValid()) return true; // The core is a circular connector.
+			const FAssemblyBoneInstance* Part = Snapshot.Bones.FindByPredicate(
+				[Id](const FAssemblyBoneInstance& Item) { return Item.InstanceId == Id; });
+			const FAssemblyBoneDefinition* Definition = Part ? Snapshot.BoneDefinitions.FindByPredicate(
+				[Part](const FAssemblyBoneDefinition& Item) { return Item.TypeId == Part->TypeId; }) : nullptr;
+			return Definition && Definition->PartKind == EAssemblyRigidPartKind::JointPart
+				&& Definition->JointShape == EAssemblyJointPartShape::Round;
+		};
+		// Surface anchors describe artwork/contact. A movable round connector rotates
+		// around its center: the bone's reference frame extends back to that center,
+		// keeping its endpoint on the circumference throughout the orbit.
+		const FVector Pivot = bHinge && IsCircularConnector(Joint.BoneA) ? BodyA->GetComponentLocation()
+			: bHinge && IsCircularConnector(Joint.BoneB) ? BodyB->GetComponentLocation() : (AnchorA + AnchorB) * 0.5f;
+		Constraint->SetWorldLocation(Pivot);
 		if (bHinge)
 		{
 			// The assembly is authored in XZ; align the constraint's local twist (X) axis to world Y.
@@ -574,6 +589,14 @@ bool UJGDAssemblyPhysicsExecutorComponent::ApplyAssemblyPhase_Implementation(
 			FMuscleRestState& Rest = MuscleRestStates.Add(Muscle.InstanceId);
 			Rest.Length = Length;
 			Rest.Direction = Span / Length;
+			FMuscleDrive& Drive = MuscleDrives.Add(Muscle.InstanceId);
+			Drive.BodyA = PoseA->Body;
+			Drive.BodyB = PoseB->Body;
+			Drive.LocalA = Muscle.EndpointA.BoneLocalPoint;
+			Drive.LocalB = Muscle.EndpointB.BoneLocalPoint;
+			Drive.RestLength = Length;
+			Drive.TargetLength = Length;
+			Drive.LastDirection = Rest.Direction;
 		}
 	}
 	bPlaying = true;
@@ -872,20 +895,11 @@ void UJGDAssemblyPhysicsExecutorComponent::HandleMuscleDriveMessage(FGameplayTag
 	{
 		return;
 	}
-	FMuscleDrive Drive;
-	Drive.BodyA = BodyA;
-	Drive.BodyB = BodyB;
-	Drive.LocalA = Request->Muscle.EndpointA.BoneLocalPoint;
-	Drive.LocalB = Request->Muscle.EndpointB.BoneLocalPoint;
-	Drive.RestLength = Rest->Length;
-	Drive.LastDirection = Rest->Direction;
-	const FVector CurrentSpan = LocalPointToWorld(BodyB, Drive.LocalB) - LocalPointToWorld(BodyA, Drive.LocalA);
-	if (CurrentSpan.SizeSquared() > FMath::Square(0.01f))
+	FMuscleDrive* Drive = MuscleDrives.Find(Request->Muscle.InstanceId);
+	if (Drive && Drive->BodyA.Get() == BodyA && Drive->BodyB.Get() == BodyB)
 	{
-		Drive.LastDirection = CurrentSpan.GetSafeNormal();
+		Drive->bContracting = true;
 	}
-	Drive.bContracting = true;
-	MuscleDrives.Add(Request->Muscle.InstanceId, Drive);
 }
 
 void UJGDAssemblyPhysicsExecutorComponent::HandleCoreRotationMessage(
@@ -1082,20 +1096,37 @@ void UJGDAssemblyPhysicsExecutorComponent::ApplyCoreRotationDrive(float DeltaSec
 }
 
 float UJGDAssemblyPhysicsExecutorComponent::ComputeMuscleForceOnB(
-	const FMuscleDrive& Drive, float Length, float RelativeSpeed) const
+	const FMuscleDrive& Drive, float Length, float RelativeSpeed, float DeltaSeconds) const
 {
-	const float TargetLength = Drive.bContracting
-		? Drive.RestLength * (1.0f - DriveProfile->MuscleContractionRatio) : Drive.RestLength;
-	const float Error = Drive.bContracting ? Length - TargetLength : TargetLength - Length;
-	const float Damping = Drive.bContracting ? RelativeSpeed : -RelativeSpeed;
-	const float Magnitude = FMath::Clamp(DriveProfile->MuscleStiffness * Error
-		+ DriveProfile->MuscleDamping * Damping, 0.0f, DriveProfile->MuscleMaxForce);
-	return Drive.bContracting ? -Magnitude : Magnitude;
+	const FVector Direction = Drive.LastDirection;
+	auto InverseEffectiveMass = [&Direction](const UPrimitiveComponent* Body, FVector2D Local)
+	{
+		if (!IsValid(Body) || !Body->IsSimulatingPhysics()) return 0.0;
+		const FVector Lever = LocalPointToWorld(Body, Local) - Body->GetCenterOfMass();
+		const FVector Inertia = Body->GetInertiaTensor();
+		const FVector Axis = Body->GetComponentQuat().UnrotateVector(FVector::YAxisVector);
+		const double PlanarInertia = FVector::DotProduct(Axis * Axis, Inertia);
+		const double Moment = FVector::CrossProduct(Lever, Direction).Y;
+		return 1.0 / FMath::Max(0.001, static_cast<double>(Body->GetMass()))
+			+ (PlanarInertia > UE_SMALL_NUMBER ? Moment * Moment / PlanarInertia : 0.0);
+	};
+	const double InvMass = InverseEffectiveMass(Drive.BodyA.Get(), Drive.LocalA)
+		+ InverseEffectiveMass(Drive.BodyB.Get(), Drive.LocalB);
+	const double Strength = Drive.bContracting ? DriveProfile->MuscleContractionStrength : 1.0;
+	const double K = DriveProfile->MuscleStiffness * Strength;
+	// At least critical damping for the attachment-point effective mass, including
+	// rotational leverage. Implicit PD avoids frame-rate-dependent stiff-spring kicks.
+	const double C = FMath::Max(static_cast<double>(DriveProfile->MuscleDamping),
+		InvMass > UE_SMALL_NUMBER ? 2.0 * FMath::Sqrt(K / InvMass) : 0.0);
+	const double Dt = FMath::Max(0.0f, DeltaSeconds);
+	const double Force = -(K * (Length - Drive.TargetLength) + (C + K * Dt) * RelativeSpeed)
+		/ (1.0 + (C * Dt + K * Dt * Dt) * InvMass);
+	const double MaxForce = DriveProfile->MuscleMaxForce * Strength;
+	return FMath::Clamp(Force, -MaxForce, MaxForce);
 }
 
 void UJGDAssemblyPhysicsExecutorComponent::ApplyMuscleDrives(float DeltaSeconds)
 {
-	(void)DeltaSeconds;
 	if (!IsValid(DriveProfile.Get()) || !DriveProfile->HasValidParameters())
 	{
 		MuscleDrives.Reset();
@@ -1132,15 +1163,13 @@ void UJGDAssemblyPhysicsExecutorComponent::ApplyMuscleDrives(float DeltaSeconds)
 			FinishedDrives.Add(Pair.Key);
 			continue;
 		}
-		const float CompletionTolerance = FMath::Min(0.1f, Drive.RestLength * 0.01f);
-		if (!Drive.bContracting && Length >= Drive.RestLength - CompletionTolerance)
-		{
-			FinishedDrives.Add(Pair.Key);
-			continue;
-		}
+		const float DesiredLength = Drive.RestLength * (Drive.bContracting ? 1.0f - DriveProfile->MuscleContractionRatio : 1.0f);
+		const float Blend = DriveProfile->MuscleTransitionTime <= UE_SMALL_NUMBER ? 1.0f
+			: 1.0f - FMath::Exp(-FMath::Max(0.0f, DeltaSeconds) / DriveProfile->MuscleTransitionTime);
+		Drive.TargetLength = FMath::Lerp(Drive.TargetLength, DesiredLength, Blend);
 		const float RelativeSpeed = FVector::DotProduct(
 			BodyB->GetPhysicsLinearVelocityAtPoint(PointB) - BodyA->GetPhysicsLinearVelocityAtPoint(PointA), Direction);
-		const FVector ForceOnB = Direction * ComputeMuscleForceOnB(Drive, Length, RelativeSpeed);
+		const FVector ForceOnB = Direction * ComputeMuscleForceOnB(Drive, Length, RelativeSpeed, DeltaSeconds);
 		BodyA->AddForceAtLocation(-ForceOnB, PointA);
 		BodyB->AddForceAtLocation(ForceOnB, PointB);
 	}

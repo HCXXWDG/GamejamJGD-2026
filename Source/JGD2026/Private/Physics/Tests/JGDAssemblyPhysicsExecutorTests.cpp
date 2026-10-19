@@ -5,6 +5,7 @@
 #include "Assembly/AssemblyPhysicsBridgeComponent.h"
 #include "Assembly/AssemblySessionComponent.h"
 #include "Assembly/NormalBone.h"
+#include "Assembly/AssemblyJointPart.h"
 #include "Character/BaseCharacter.h"
 #include "Components/BoxComponent.h"
 #include "Engine/Engine.h"
@@ -62,10 +63,10 @@ struct FJGDAssemblyPhysicsExecutorTestAccessor
 		return Drive ? Drive->LastDirection : FVector::ZeroVector;
 	}
 	static float GetMuscleForceOnB(const UJGDAssemblyPhysicsExecutorComponent* Executor, FGuid MuscleId,
-		float Length, float RelativeSpeed = 0.0f)
+		float Length, float RelativeSpeed = 0.0f, float DeltaSeconds = 0.0f)
 	{
 		const auto* Drive = Executor ? Executor->MuscleDrives.Find(MuscleId) : nullptr;
-		return Drive ? Executor->ComputeMuscleForceOnB(*Drive, Length, RelativeSpeed) : 0.0f;
+		return Drive ? Executor->ComputeMuscleForceOnB(*Drive, Length, RelativeSpeed, DeltaSeconds) : 0.0f;
 	}
 	static int32 GetMuscleRestCount(const UJGDAssemblyPhysicsExecutorComponent* Executor)
 	{
@@ -368,6 +369,53 @@ bool FJGDAssemblyExecutorJointBreakTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FJGDAssemblyCircularPivotTest,
+	"JGD2026.Assembly.PhysicsExecutor.CircularSurfaceOrbit", ExecutorFlags)
+
+bool FJGDAssemblyCircularPivotTest::RunTest(const FString& Parameters)
+{
+	FAssemblyPhysicsExecutorWorld T;
+	if (!TestTrue(TEXT("Circular articulation fixture initializes"), T.bReady)) return false;
+	TArray<FAssemblyBoneDefinition> Definitions = T.Model->GetBoneDefinitions();
+	FAssemblyBoneDefinition Round = AAssemblyJointPart::MakeJointPartDefinition(EAssemblyJointPartShape::Round);
+	Definitions.Add(Round);
+	if (!TestTrue(TEXT("Configure independent round connector"), T.Model->ConfigureFreeAssembly(
+		T.Model->GetFreeSettings(), Definitions, T.Model->GetMuscleDefinitions(), T.Reason))) return false;
+	const FGuid CoreEdgeId = T.InstallBoneWithJoint();
+	if (!TestTrue(TEXT("Install the core-connected bone"), CoreEdgeId.IsValid())) return false;
+	const FAssemblyBoneInstance Bone = T.Model->GetBones()[0];
+	FNormalBonePhysicalStats Stats;
+	FText Reason;
+	ANormalBone::CalculateBoneStats(Definitions[0].BoneParameters, Stats, Reason);
+	FGuid RoundId;
+	if (!TestTrue(TEXT("Place round connector at the far endpoint"),
+		T.Interaction->BeginBoneDrag(Round.TypeId, FGuid(), T.Reason)
+		&& T.Interaction->UpdateBoneDragAtLocalPosition(Bone.LocalPosition + FVector2D(Stats.Length * 0.5 + Round.JointPartSize.X * 0.5, 0), T.Reason)
+		&& T.Interaction->CommitBoneDrag(RoundId, T.Reason))
+		|| !TestTrue(TEXT("Start circular articulation simulation"), T.Session->StartPlaying(T.Reason)))
+	{
+		AddError(T.Reason.ToString()); return false;
+	}
+	UPrimitiveComponent* RoundBody = Cast<UPrimitiveComponent>(T.Model->GetBonePoseSource(RoundId));
+	TestNotNull(TEXT("Round part has its own body"), RoundBody);
+	for (const FAssemblyJointInstance& Joint : T.Model->GetJoints())
+	{
+		UPhysicsConstraintComponent* Constraint = FJGDAssemblyPhysicsExecutorTestAccessor::GetConstraint(T.Executor, Joint.InstanceId);
+		if (!TestNotNull(TEXT("Circular connection has a Chaos constraint"), Constraint)) return false;
+		const bool bCore = !Joint.BoneA.IsValid() || !Joint.BoneB.IsValid();
+		const FVector Center = bCore ? T.Core->GetComponentLocation() : RoundBody->GetComponentLocation();
+		TestTrue(bCore ? TEXT("Core hinge pivot is at core center") : TEXT("Round joint hinge pivot is at joint center"),
+			Constraint->GetComponentLocation().Equals(Center, 0.001));
+		UPrimitiveComponent* A = Joint.BoneA.IsValid() ? Cast<UPrimitiveComponent>(T.Model->GetBonePoseSource(Joint.BoneA)) : T.Core;
+		UPrimitiveComponent* B = Cast<UPrimitiveComponent>(T.Model->GetBonePoseSource(Joint.BoneB));
+		TestTrue(TEXT("First constraint reference frame resolves to circle center"), A->GetComponentTransform().TransformPosition(
+			Constraint->ConstraintInstance.GetRefFrame(EConstraintFrame::Frame1).GetLocation()).Equals(Center, 0.001));
+		TestTrue(TEXT("Second constraint reference frame resolves to the same center"), B->GetComponentTransform().TransformPosition(
+			Constraint->ConstraintInstance.GetRefFrame(EConstraintFrame::Frame2).GetLocation()).Equals(Center, 0.001));
+	}
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FJGDAssemblyDriveProfileTest,
 	"JGD2026.Assembly.PhysicsExecutor.DriveProfile", ExecutorFlags)
 
@@ -381,6 +429,16 @@ bool FJGDAssemblyDriveProfileTest::RunTest(const FString& Parameters)
 	Profile->MuscleContractionRatio = 1.0f;
 	TestFalse(TEXT("Out-of-range muscle contraction is rejected"), Profile->HasValidParameters());
 	Profile->MuscleContractionRatio = 0.35f;
+	Profile->MuscleTransitionTime = -0.1f;
+	TestFalse(TEXT("Negative transition time is rejected"), Profile->HasValidParameters());
+	Profile->MuscleTransitionTime = 0.18f;
+	Profile->MuscleContractionStrength = std::numeric_limits<float>::quiet_NaN();
+	TestFalse(TEXT("Non-finite contraction strength is rejected"), Profile->HasValidParameters());
+	Profile->MuscleContractionStrength = 0.5f;
+	TestFalse(TEXT("Contraction strength below one is rejected"), Profile->HasValidParameters());
+	Profile->MuscleContractionStrength = 4.0f;
+	TestFalse(TEXT("Excessive contraction strength is rejected"), Profile->HasValidParameters());
+	Profile->MuscleContractionStrength = 1.25f;
 	Profile->MuscleMaxForce = -1.0f;
 	TestFalse(TEXT("Negative muscle force is rejected"), Profile->HasValidParameters());
 
@@ -457,10 +515,33 @@ bool FJGDAssemblyMuscleRelaxationTest::RunTest(const FString& Parameters)
 		FMath::IsNearlyEqual(FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleRestLength(T.Executor, MuscleId), InitialLength, 0.01f));
 	TestEqual(TEXT("A same-body muscle has no physical rest drive"),
 		FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleRestCount(T.Executor), 1);
+	TestTrue(TEXT("Passive support exists before any input"),
+		FJGDAssemblyPhysicsExecutorTestAccessor::HasMuscleDrive(T.Executor, MuscleId)
+		&& !FJGDAssemblyPhysicsExecutorTestAccessor::IsMuscleContracting(T.Executor, MuscleId));
+	TestTrue(TEXT("An idle muscle pulls an overextended structure back"),
+		FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleForceOnB(T.Executor, MuscleId, InitialLength * 1.1f) < 0);
+	TestTrue(TEXT("An idle muscle pushes a compressed structure back"),
+		FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleForceOnB(T.Executor, MuscleId, InitialLength * 0.9f) > 0);
+	TestTrue(TEXT("Idle damping opposes separating velocity at the authored length"),
+		FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleForceOnB(T.Executor, MuscleId, InitialLength, 20) < 0);
+	TestTrue(TEXT("Idle damping opposes closing velocity at the authored length"),
+		FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleForceOnB(T.Executor, MuscleId, InitialLength, -20) > 0);
 	BodyB->SetWorldLocation(BodyB->GetComponentLocation() - InitialDirection * (InitialLength * 0.2f),
 		false, nullptr, ETeleportType::TeleportPhysics);
 	TestTrue(TEXT("Press creates a contracting drive"), T.Model->SetMuscleInput(EAssemblyMuscleKey::W, true));
 	TestTrue(TEXT("Cross-bone drive contracts"), FJGDAssemblyPhysicsExecutorTestAccessor::IsMuscleContracting(T.Executor, MuscleId));
+	UJGDAssemblyPhysicsDriveProfile* StrengthProfile = DuplicateObject<UJGDAssemblyPhysicsDriveProfile>(T.Executor->DriveProfile.Get(), T.Executor);
+	T.Executor->DriveProfile = StrengthProfile;
+	StrengthProfile->MuscleContractionStrength = 1.0f;
+	const float BasePull = FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleForceOnB(T.Executor, MuscleId, InitialLength + 0.1f);
+	const float BaseStepPull = FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleForceOnB(T.Executor, MuscleId, InitialLength + 0.1f, 0, 1.0f / 60.0f);
+	StrengthProfile->MuscleContractionStrength = 1.25f;
+	TestTrue(TEXT("Active spring strength rises by 25 percent before stabilization"),
+		FMath::IsNearlyEqual(FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleForceOnB(T.Executor, MuscleId, InitialLength + 0.1f), BasePull * 1.25f, 0.1f));
+	TestTrue(TEXT("Stabilized per-frame contraction also becomes stronger"),
+		FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleForceOnB(T.Executor, MuscleId, InitialLength + 0.1f, 0, 1.0f / 60.0f) < BaseStepPull);
+	TestTrue(TEXT("Active force limit rises by 25 percent"),
+		FMath::IsNearlyEqual(FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleForceOnB(T.Executor, MuscleId, InitialLength * 1000), -StrengthProfile->MuscleMaxForce * 1.25f, 0.1f));
 	TestTrue(TEXT("Moving a bone before the first press does not redefine natural length"),
 		FMath::IsNearlyEqual(FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleRestLength(T.Executor, MuscleId), InitialLength, 0.01f));
 	TestTrue(TEXT("A same-body press is accepted by the model"), T.Model->SetMuscleInput(EAssemblyMuscleKey::S, true));
@@ -486,10 +567,16 @@ bool FJGDAssemblyMuscleRelaxationTest::RunTest(const FString& Parameters)
 		BodyA->SetPhysicsLinearVelocity(FVector::ZeroVector);
 		BodyB->SetPhysicsLinearVelocity(FVector::ZeroVector);
 	};
-	MoveSecondAnchorTo(Anchor(BodyA, EndpointA) + InitialDirection * (InitialLength * 0.5f));
+	MoveSecondAnchorTo(Anchor(BodyA, EndpointA) + InitialDirection * (InitialLength * 0.85f));
 	const float ShortLength = FVector::Distance(Anchor(BodyA, EndpointA), Anchor(BodyB, EndpointB));
-	TestTrue(TEXT("Test bones are shorter than the original muscle length"), ShortLength < InitialLength * 0.75f);
+	TestTrue(TEXT("Test bones are shorter than the original muscle length"), ShortLength < InitialLength * 0.95f);
 	TestTrue(TEXT("Release requests physical relaxation"), T.Model->SetMuscleInput(EAssemblyMuscleKey::W, false));
+	const float PassiveForce = FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleForceOnB(T.Executor, MuscleId, InitialLength + 0.1f);
+	StrengthProfile->MuscleContractionStrength = 1.0f;
+	TestEqual(TEXT("Released support ignores the active strength multiplier"),
+		FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleForceOnB(T.Executor, MuscleId, InitialLength + 0.1f), PassiveForce);
+	StrengthProfile->MuscleContractionStrength = 1.25f;
+	for (int32 Step = 0; Step < 100; ++Step) FJGDAssemblyPhysicsExecutorTestAccessor::ApplyMuscleDrives(T.Executor);
 	TestTrue(TEXT("Release retains a drive until the original length is reached"),
 		FJGDAssemblyPhysicsExecutorTestAccessor::HasMuscleDrive(T.Executor, MuscleId)
 		&& !FJGDAssemblyPhysicsExecutorTestAccessor::IsMuscleContracting(T.Executor, MuscleId));
@@ -499,6 +586,7 @@ bool FJGDAssemblyMuscleRelaxationTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Relaxation stays active below the original length"),
 		FJGDAssemblyPhysicsExecutorTestAccessor::HasMuscleDrive(T.Executor, MuscleId));
 	TestTrue(TEXT("Press during relaxation switches back to contraction"), T.Model->SetMuscleInput(EAssemblyMuscleKey::W, true));
+	for (int32 Step = 0; Step < 100; ++Step) FJGDAssemblyPhysicsExecutorTestAccessor::ApplyMuscleDrives(T.Executor);
 	TestTrue(TEXT("Re-press reuses the same original length"),
 		FJGDAssemblyPhysicsExecutorTestAccessor::IsMuscleContracting(T.Executor, MuscleId)
 		&& FMath::IsNearlyEqual(FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleRestLength(T.Executor, MuscleId), InitialLength, 0.01f));
@@ -513,7 +601,7 @@ bool FJGDAssemblyMuscleRelaxationTest::RunTest(const FString& Parameters)
 		FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleForceOnB(T.Executor, MuscleId, 0.0f) > 0.0f);
 	MoveSecondAnchorTo(Anchor(BodyA, EndpointA) + InitialDirection * InitialLength);
 	FJGDAssemblyPhysicsExecutorTestAccessor::ApplyMuscleDrives(T.Executor);
-	TestFalse(TEXT("Drive stops when the original length is reached"),
+	TestTrue(TEXT("Drive keeps supporting the authored length after release"),
 		FJGDAssemblyPhysicsExecutorTestAccessor::HasMuscleDrive(T.Executor, MuscleId));
 
 	FAssemblyPhysicsMuscleDriveMessage StaleRequest;
@@ -526,8 +614,8 @@ bool FJGDAssemblyMuscleRelaxationTest::RunTest(const FString& Parameters)
 	StaleRequest.EndpointBoneB.Body = BodyB;
 	UJGDMessageSubsystem::Get(T.Model)->BroadcastMessage(
 		AssemblyMessageTags::MuscleDriveRequested, FInstancedStruct::Make(StaleRequest));
-	TestFalse(TEXT("An old-round press cannot resurrect a completed drive"),
-		FJGDAssemblyPhysicsExecutorTestAccessor::HasMuscleDrive(T.Executor, MuscleId));
+	TestFalse(TEXT("An old-round press cannot change passive support into contraction"),
+		FJGDAssemblyPhysicsExecutorTestAccessor::IsMuscleContracting(T.Executor, MuscleId));
 	MoveSecondAnchorTo(Anchor(BodyA, EndpointA));
 	TestTrue(TEXT("A current press can create another drive"), T.Model->SetMuscleInput(EAssemblyMuscleKey::W, true));
 	TestTrue(TEXT("A first press at coincident endpoints uses the original direction"),
@@ -547,6 +635,21 @@ bool FJGDAssemblyMuscleRelaxationTest::RunTest(const FString& Parameters)
 		FJGDAssemblyPhysicsExecutorTestAccessor::GetMuscleRestCount(T.Executor), 0);
 	TestFalse(TEXT("Restart leaves no muscle drive"),
 		FJGDAssemblyPhysicsExecutorTestAccessor::HasMuscleDrive(T.Executor, MuscleId));
+	TestEqual(TEXT("Playing restart preserves authored bones"), T.Model->GetBones().Num(), 2);
+	TestEqual(TEXT("Playing restart preserves authored muscles"), T.Model->GetMuscles().Num(), 2);
+	TestTrue(TEXT("Begin another shelf preview before clearing assembly"),
+		T.Interaction->BeginBoneDrag(TEXT("Bone"), FGuid(), T.Reason));
+	TestTrue(TEXT("Assembly restart clears the authored build"), T.Session->RestartSession(T.Reason));
+	TestEqual(TEXT("Fresh assembly has no installed rigid parts"), T.Model->GetBones().Num(), 0);
+	TestEqual(TEXT("Fresh assembly has no installed muscles"), T.Model->GetMuscles().Num(), 0);
+	TestEqual(TEXT("Fresh assembly has no connections"), T.Model->GetJoints().Num(), 0);
+	TestFalse(TEXT("Fresh assembly cancels the drag preview"), T.Interaction->IsBoneDragActive());
+	for (const FAssemblyBoneDefinition& Definition : T.Model->GetBoneDefinitions())
+		TestEqual(TEXT("Assembly restart refunds rigid stock"), T.Model->GetRemainingQuantity(Definition.TypeId), Definition.InitialQuantity);
+	for (const FAssemblyMuscleDefinition& Definition : T.Model->GetMuscleDefinitions())
+		TestEqual(TEXT("Assembly restart refunds muscle stock"), T.Model->GetRemainingQuantity(Definition.TypeId), Definition.InitialQuantity);
+	TestTrue(TEXT("Repeated empty assembly restart succeeds"), T.Session->RestartSession(T.Reason));
+	TestFalse(TEXT("Fresh assembly core stays non-simulating"), T.Core->IsSimulatingPhysics());
 	return true;
 }
 

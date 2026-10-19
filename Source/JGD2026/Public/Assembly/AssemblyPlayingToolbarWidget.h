@@ -40,6 +40,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category="JGD|Settings")
 	void ShowStandaloneSettings();
 
+	/** Soft map reference is also discovered by the cooker. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Assembly|Navigation")
+	TSoftObjectPtr<UWorld> MainMenuMap = TSoftObjectPtr<UWorld>(FSoftObjectPath(TEXT("/Game/Maps/Menu.Menu")));
+
 protected:
 	virtual void NativeTick(const FGeometry& Geometry, float DeltaTime) override;
 	virtual void NativeDestruct() override;
@@ -55,6 +59,7 @@ private:
 	UPROPERTY(Transient) TObjectPtr<UTextBlock> PauseCaption;
 	UPROPERTY(Transient) TObjectPtr<UButton> PauseButton;
 	UPROPERTY(Transient) TObjectPtr<UButton> RestartButton;
+	UPROPERTY(Transient) TObjectPtr<UButton> MainMenuButton;
 	UPROPERTY(Transient) TObjectPtr<UWidget> RouteContainer;
 	UPROPERTY(Transient) TObjectPtr<UTextBlock> RouteCaption;
 	UPROPERTY(Transient) TObjectPtr<UTextBlock> SettingsMessage;
@@ -81,6 +86,7 @@ private:
 	bool bPopulatingSettings = false;
 	bool bSettingsApplied = false;
 	bool bStandaloneSettings = false;
+	bool bReturningToMenu = false;
 
 	void BuildUI();
 	UTextBlock* MakeText(const FText& Caption, int32 Size = 16);
@@ -100,6 +106,7 @@ private:
 	UFUNCTION() void HandleRestart();
 	UFUNCTION() void HandleApplySettings();
 	UFUNCTION() void HandleCloseSettings();
+	UFUNCTION() void HandleReturnToMenu();
 	UFUNCTION() void HandleVolumeChanged(float Value);
 	UFUNCTION() UWidget* GenerateQualityOption(FString Option);
 };

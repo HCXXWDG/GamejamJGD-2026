@@ -115,8 +115,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Muscles", meta = (ClampMin = "0.0"))
 	float MuscleMaxForce = 100000.0f;
 
+	/** Active stiffness and force-limit multiplier. Passive support keeps its normal strength. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Muscles", meta = (ClampMin = "1.0", ClampMax = "3.0"))
+	float MuscleContractionStrength = 1.25f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Muscles", meta = (ClampMin = "0.0", ClampMax = "0.95"))
-	float MuscleContractionRatio = 0.8f;
+	float MuscleContractionRatio = 0.3f;
+
+	/** Time constant in seconds for contraction and return to the authored assembly length. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Muscles", meta = (ClampMin = "0.0", Units = "s"))
+	float MuscleTransitionTime = 0.18f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Constraints", meta = (ClampMin = "0.0"))
 	float JointBreakForce = 100000.0f;

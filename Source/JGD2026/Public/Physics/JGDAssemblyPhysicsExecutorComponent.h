@@ -81,6 +81,7 @@ private:
 		FVector2D LocalA = FVector2D::ZeroVector;
 		FVector2D LocalB = FVector2D::ZeroVector;
 		float RestLength = 0.0f;
+		float TargetLength = 0.0f;
 		FVector LastDirection = FVector::ZeroVector;
 		bool bContracting = false;
 	};
@@ -140,7 +141,7 @@ private:
 	void ApplyAssemblyState();
 	void RollbackPreparedState(bool bRestoreOriginalState);
 	void ApplyMuscleDrives(float DeltaSeconds);
-	float ComputeMuscleForceOnB(const FMuscleDrive& Drive, float Length, float RelativeSpeed) const;
+	float ComputeMuscleForceOnB(const FMuscleDrive& Drive, float Length, float RelativeSpeed, float DeltaSeconds = 0.0f) const;
 	void BreakJoint(FGuid JointId);
 	UPrimitiveComponent* ResolveBody(FGuid BoneId) const;
 	FVector ResolveAnchorWorld(FGuid BoneId, FVector2D LocalAnchor) const;

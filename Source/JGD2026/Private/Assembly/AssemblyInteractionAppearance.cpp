@@ -161,6 +161,21 @@ bool UAssemblyInteractionComponent::GetJointWorldAnchors(const FAssemblyJointIns
 		const FVector2D Anchor = BoundAssembly->GetFreeSettings().CoreLocalPosition + Joint.LocalAnchorA;
 		OutA = BoundAssembly->GetGridFrameTransform().TransformPosition(FVector(Anchor.X, 0.0, Anchor.Y));
 	}
+	if (BoundAssembly->GetPhase() == EAssemblyPhase::Playing
+		&& (Joint.Kind == EAssemblyJointKind::Hinge || Joint.Kind == EAssemblyJointKind::BreakableHinge))
+	{
+		auto IsCircular = [this](FGuid Id)
+		{
+			if (!Id.IsValid()) return true;
+			FAssemblyBoneInstance Part;
+			FAssemblyBoneDefinition Definition;
+			return BoundAssembly->GetBone(Id, Part) && BoundAssembly->GetBoneDefinition(Part.TypeId, Definition)
+				&& Definition.PartKind == EAssemblyRigidPartKind::JointPart && Definition.JointShape == EAssemblyJointPartShape::Round;
+		};
+		// The surface contact travels with the bone around a circular connector.
+		if (IsCircular(Joint.BoneA)) OutA = OutB;
+		else if (IsCircular(Joint.BoneB)) OutB = OutA;
+	}
 	return !OutA.ContainsNaN() && !OutB.ContainsNaN();
 }
 

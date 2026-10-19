@@ -1,4 +1,5 @@
 #include "Assembly/AssemblySessionComponent.h"
+#include "Audio/JGDInputFeedbackLibrary.h"
 #include "Assembly/AssemblyComponent.h"
 #include "Assembly/AssemblyHUDWidget.h"
 #include "Assembly/AssemblyInteractionComponent.h"
@@ -12,6 +13,8 @@
 #include "Engine/GameViewportClient.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
+#include "Engine/GameInstance.h"
+#include "UI/JGDLoadingScreenSubsystem.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
 #include "Framework/Application/SlateApplication.h"
@@ -675,6 +678,13 @@ void UAssemblySessionComponent::ShowMessage(FText Message)
 bool UAssemblySessionComponent::CanUseSession(FText& OutReason) const
 {
 	OutReason = FText::GetEmpty();
+	const UGameInstance* Instance = GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
+	const UJGDLoadingScreenSubsystem* Loading = Instance ? Instance->GetSubsystem<UJGDLoadingScreenSubsystem>() : nullptr;
+	if (Loading && Loading->IsLoadingScreenVisible())
+	{
+		OutReason = LOCTEXT("LoadingMap", "正在加载关卡，请稍候。");
+		return false;
+	}
 	if (bTransitioning || bInitializing || bReleasing)
 	{
 		OutReason = LOCTEXT("SessionTransitionBusy", "组装会话正在切换阶段、初始化或关闭，请稍后重试。");
@@ -798,6 +808,7 @@ bool UAssemblySessionComponent::RestartSession(FText& OutReason)
 	UAssemblyInteractionComponent* Interaction = BoundInteraction.Get();
 	UAssemblyWorkbenchComponent* Workbench = BoundWorkbench.Get();
 	APlayerController* PC = BoundController.Get();
+	const bool bClearBuild = Model->GetPhase() == EAssemblyPhase::Assembly;
 	ClearHeldInput();
 	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
 	{
@@ -811,7 +822,8 @@ bool UAssemblySessionComponent::RestartSession(FText& OutReason)
 		return false;
 	}
 	// StopBeforeReset is enforced by the model before pose sources/data/views are cleared.
-	if (!Model->ReturnToAssemblyKeepingBuild(OutReason)) { ShowMessage(OutReason); return false; }
+	const bool bRestarted = bClearBuild ? Model->RestartAssembly(OutReason) : Model->ReturnToAssemblyKeepingBuild(OutReason);
+	if (!bRestarted) { ShowMessage(OutReason); return false; }
 	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
 	{
 		OutReason = LOCTEXT("RestartPhysicsCanceled", "组装会话在重新组装期间已被关闭或更换。");
@@ -1022,6 +1034,9 @@ bool UAssemblySessionComponent::IsSessionViewportFocused() const
 
 bool UAssemblySessionComponent::CanAcceptInput(bool bAllowTransition) const
 {
+	const UGameInstance* Instance = GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
+	const UJGDLoadingScreenSubsystem* Loading = Instance ? Instance->GetSubsystem<UJGDLoadingScreenSubsystem>() : nullptr;
+	if (Loading && Loading->IsLoadingScreenVisible()) return false;
 	const UAssemblyPlayerExperienceComponent* Experience = GetOwner()->FindComponentByClass<UAssemblyPlayerExperienceComponent>();
 	if (Experience && Experience->IsRestartTransitionActive()) return false;
 	return !bInitializing && (!bTransitioning || bAllowTransition)
@@ -1041,6 +1056,7 @@ void UAssemblySessionComponent::HandleMusclePressed(EAssemblyMuscleKey Key)
 {
 	if (!CanAcceptInput() || HeldMuscleKeys.Contains(Key)) { return; }
 	HeldMuscleKeys.Add(Key);
+	UJGDInputFeedbackLibrary::PlayInputPress(this);
 	if (BoundAssembly->GetPhase() == EAssemblyPhase::Playing) { BoundAssembly->SetMuscleInput(Key, true); }
 	else if (BoundWorkbench.IsValid())
 	{
@@ -1051,6 +1067,7 @@ void UAssemblySessionComponent::HandleMusclePressed(EAssemblyMuscleKey Key)
 
 void UAssemblySessionComponent::HandleMuscleReleased(EAssemblyMuscleKey Key)
 {
+	if (HeldMuscleKeys.Contains(Key) && CanAcceptInput()) UJGDInputFeedbackLibrary::PlayInputRelease(this);
 	HeldMuscleKeys.Remove(Key);
 	if (BoundAssembly.IsValid()) { BoundAssembly->SetMuscleInput(Key, false); }
 }
@@ -1064,10 +1081,12 @@ void UAssemblySessionComponent::HandleSpacePressed()
 	bSpaceHeld = bAccepted && BoundAssembly.Get() == Model
 		&& IsCurrentSessionBinding(Model, BoundInteraction.Get(), BoundWorkbench.Get(), BoundController.Get())
 		&& Model->GetPhase() == EAssemblyPhase::Playing && Model->IsCoreRotationHeld();
+	if (bSpaceHeld) UJGDInputFeedbackLibrary::PlayInputPress(this);
 }
 
 void UAssemblySessionComponent::HandleSpaceReleased()
 {
+	if (bSpaceHeld && CanAcceptInput()) UJGDInputFeedbackLibrary::PlayInputRelease(this);
 	bSpaceHeld = false;
 	if (BoundAssembly.IsValid()) { BoundAssembly->SetCoreRotationInput(false); }
 }

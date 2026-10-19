@@ -12,6 +12,7 @@ UAssemblyComponent::UAssemblyComponent()
 	PrimaryComponentTick.bCanEverTick = false;
 	FAssemblyBoneDefinition Bone;
 	Bone.DisplayName = LOCTEXT("DefaultBone", "骨头");
+	Bone.InitialQuantity = 6;
 	DefaultBones.Add(Bone);
 	for (uint8 Shape = 0; Shape <= static_cast<uint8>(EAssemblyJointPartShape::FixedRound); ++Shape)
 	{
