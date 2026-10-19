@@ -107,6 +107,8 @@ private:
 	TWeakObjectPtr<UAssemblyWorkbenchComponent> BoundWorkbench;
 	UPROPERTY(Transient)
 	TObjectPtr<UBorder> EditPanel;
+	UPROPERTY(Transient) TObjectPtr<UBorder> InspectorPanel;
+	UPROPERTY(Transient) TObjectPtr<UBorder> AssemblyActionsPanel;
 	UPROPERTY(Transient)
 	TObjectPtr<UBorder> PlayPanel;
 	UPROPERTY(Transient)

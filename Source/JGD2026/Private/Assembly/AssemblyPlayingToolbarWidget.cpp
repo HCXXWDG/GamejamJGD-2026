@@ -63,6 +63,7 @@ void UAssemblyPlayingToolbarWidget::InitializeToolbar(UAssemblySessionComponent*
 		DestinationClass = LoadClass<AActor>(nullptr, TEXT("/Game/Module/Grid/Blueprints/Destination/BP_Destination.BP_Destination_C"));
 	if (!bBuilt && WidgetTree) BuildUI();
 	UAssemblyPlayPreferences::Get()->ApplyAudio(this);
+	if (!Session.IsValid() && !bStandaloneSettings) SetVisibility(ESlateVisibility::Collapsed);
 }
 
 UTextBlock* UAssemblyPlayingToolbarWidget::MakeText(const FText& Caption, int32 Size)
@@ -137,7 +138,8 @@ void UAssemblyPlayingToolbarWidget::BuildUI()
 	PauseCaption = PauseLabel;
 	PauseButton->OnClicked.AddDynamic(this, &ThisClass::HandlePause);
 	UButton* Restart = MakeArtButton(Label(TEXT("重置")), Theme ? Theme->RestartIconSprite.Get() : nullptr);
-	Restart->SetToolTipText(Label(TEXT("清空本轮组装，回到出生点重新组装")));
+	RestartButton = Restart;
+	Restart->SetToolTipText(Label(TEXT("保留当前装配，回到出生点重新组装")));
 	Restart->OnClicked.AddDynamic(this, &ThisClass::HandleRestart);
 	for (UButton* Button : {Settings, PauseButton.Get(), Restart})
 	{
@@ -151,6 +153,7 @@ void UAssemblyPlayingToolbarWidget::BuildUI()
 	ButtonsSlot->SetPadding(FMargin(16));
 
 	UVerticalBox* RouteContents = WidgetTree->ConstructWidget<UVerticalBox>();
+	RouteContainer = RouteContents;
 	RouteContents->SetVisibility(ESlateVisibility::HitTestInvisible);
 	RouteCaption = MakeText(Label(TEXT("距终点 —")), 16);
 	RouteCaption->SetColorAndOpacity(FSlateColor(FLinearColor(0.96f, 0.93f, 0.76f)));
@@ -253,7 +256,7 @@ void UAssemblyPlayingToolbarWidget::BuildUI()
 	SettingsSlot->SetHorizontalAlignment(HAlign_Fill);
 	SettingsSlot->SetVerticalAlignment(VAlign_Fill);
 	bBuilt = true;
-	SetVisibility(bPlaying ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
+	SetVisibility(Session.IsValid() ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
 }
 
 void UAssemblyPlayingToolbarWidget::SetPlaying(bool bInPlaying)
@@ -264,7 +267,10 @@ void UAssemblyPlayingToolbarWidget::SetPlaying(bool bInPlaying)
 		bPlaying = bInPlaying;
 		if (bPlaying) CaptureRoute();
 	}
-	SetVisibility(bPlaying ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
+	SetVisibility(Session.IsValid() ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
+	if (PauseButton) PauseButton->SetVisibility(bPlaying ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+	if (RestartButton) RestartButton->SetVisibility(bPlaying ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+	if (RouteContainer) RouteContainer->SetVisibility(bPlaying ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
 	RefreshPauseButton();
 }
 
@@ -297,12 +303,17 @@ bool UAssemblyPlayingToolbarWidget::UpdatePauseState()
 	}
 	UAssemblySessionComponent* Active = Session.Get();
 	UAssemblyComponent* Model = Active ? Active->GetAssemblyComponent() : nullptr;
-	if (!bPlaying || !Active || !Model || Model->GetPhase() != EAssemblyPhase::Playing) return false;
-	Active->ClearHeldInput();
+	if (!bStandaloneSettings && (!Active || !Model)) return false;
+	const EAssemblyPhase ExpectedPhase = Model ? Model->GetPhase() : EAssemblyPhase::Assembly;
+	if (Active)
+	{
+		Active->ClearHeldInput();
+		if (UAssemblyWorkbenchComponent* Workbench = Active->GetWorkbench()) Workbench->CancelTool();
+	}
 	// Input-release listeners may synchronously shut down or replace the Session.
 	// Never acquire an invisible pause lease after that callback detached this HUD.
-	if (!bPlaying || Session.Get() != Active || Active->GetAssemblyComponent() != Model
-		|| Model->GetPhase() != EAssemblyPhase::Playing || (!bManualPaused && !bSettingsOpen)) return false;
+	if ((!bStandaloneSettings && (!Active || Session.Get() != Active || Active->GetAssemblyComponent() != Model
+		|| Model->GetPhase() != ExpectedPhase)) || (!bManualPaused && !bSettingsOpen)) return false;
 	// A pre-existing external pause is left untouched. Tick can acquire our own lease
 	// later if that owner releases its pause while this modal is still open.
 	if (bOwnPauseLease || World->IsPaused()) return true;
@@ -346,7 +357,7 @@ void UAssemblyPlayingToolbarWidget::HandlePause()
 
 void UAssemblyPlayingToolbarWidget::HandleSettings()
 {
-	if (!bPlaying || bSettingsOpen) return;
+	if ((!Session.IsValid() && !bStandaloneSettings) || bSettingsOpen) return;
 	OriginalVolume = UAssemblyPlayPreferences::Get()->GetMasterVolume();
 	bSettingsApplied = false;
 	bPopulatingSettings = true;
@@ -369,6 +380,17 @@ void UAssemblyPlayingToolbarWidget::HandleSettings()
 	SettingsMessage->SetText(Label(TEXT("设置期间游戏暂停；关闭后恢复打开前的状态。未保存的音量预览会撤销。")));
 	SettingsOverlay->SetVisibility(ESlateVisibility::Visible);
 	RefreshPauseButton();
+}
+
+void UAssemblyPlayingToolbarWidget::ShowStandaloneSettings()
+{
+	bStandaloneSettings = true;
+	if (!Theme) Theme = UAssemblyUITheme::LoadDefault();
+	if (!bBuilt && WidgetTree) BuildUI();
+	if (ToolbarPanel) ToolbarPanel->SetVisibility(ESlateVisibility::Collapsed);
+	if (RouteContainer) RouteContainer->SetVisibility(ESlateVisibility::Collapsed);
+	SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+	HandleSettings();
 }
 
 void UAssemblyPlayingToolbarWidget::HandleVolumeChanged(float Value)
@@ -421,6 +443,7 @@ void UAssemblyPlayingToolbarWidget::CloseSettings(bool bKeepChanges)
 	if (SettingsOverlay) SettingsOverlay->SetVisibility(ESlateVisibility::Collapsed);
 	UpdatePauseState();
 	RefreshPauseButton();
+	if (bStandaloneSettings) SetVisibility(ESlateVisibility::Collapsed);
 }
 
 void UAssemblyPlayingToolbarWidget::HandleCloseSettings() { CloseSettings(false); }
@@ -503,16 +526,17 @@ void UAssemblyPlayingToolbarWidget::RefreshRoute()
 void UAssemblyPlayingToolbarWidget::NativeTick(const FGeometry& Geometry, float DeltaTime)
 {
 	Super::NativeTick(Geometry, DeltaTime);
-	if (!bPlaying) return;
+	if (bStandaloneSettings) return;
 	UAssemblySessionComponent* Active = Session.Get();
-	if (!Active || !Active->GetAssemblyComponent() || Active->GetAssemblyComponent()->GetPhase() != EAssemblyPhase::Playing)
+	if (!Active || !Active->GetAssemblyComponent())
 	{
-		SetPlaying(false);
+		ResetToolbarState();
 		return;
 	}
+	if (bPlaying && Active->GetAssemblyComponent()->GetPhase() != EAssemblyPhase::Playing) SetPlaying(false);
 	if ((bSettingsOpen || bManualPaused) && GetWorld() && !GetWorld()->IsPaused()) UpdatePauseState();
 	RouteRefreshTime += DeltaTime;
-	if (RouteRefreshTime >= 0.10f)
+	if (bPlaying && RouteRefreshTime >= 0.10f)
 	{
 		RouteRefreshTime = 0;
 		RefreshRoute();
@@ -522,7 +546,7 @@ void UAssemblyPlayingToolbarWidget::NativeTick(const FGeometry& Geometry, float 
 
 bool UAssemblyPlayingToolbarWidget::IsOverControls(FVector2D Position) const
 {
-	return bPlaying && (bSettingsOpen || (ToolbarPanel && ToolbarPanel->GetCachedGeometry().IsUnderLocation(Position)));
+	return bSettingsOpen || (Session.IsValid() && ToolbarPanel && ToolbarPanel->GetCachedGeometry().IsUnderLocation(Position));
 }
 
 FReply UAssemblyPlayingToolbarWidget::NativeOnMouseButtonDown(const FGeometry& Geometry, const FPointerEvent& MouseEvent)

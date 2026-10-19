@@ -92,6 +92,12 @@ public:
 	bool EnterAssembly(FText& OutReason);
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Flow")
 	bool RestartAssembly(FText& OutReason);
+	/** Return to the authored pre-play build after stopping the physical round. */
+	UFUNCTION(BlueprintCallable, Category = "Assembly|Session")
+	bool ReturnToAssemblyKeepingBuild(FText& OutReason);
+	void CaptureBuildCheckpoint();
+	void ApplyInitialGameplayScale(float Scale);
+	float GetGameplaySizeScale() const { return GameplaySizeScale; }
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Flow")
 	bool TryStartPlaying(FText& OutReason);
 	UFUNCTION(BlueprintPure, Category = "Assembly|Flow")
@@ -270,6 +276,13 @@ private:
 	TArray<FAssemblyMuscleInstance> InstalledMuscles;
 	UPROPERTY(Transient)
 	TMap<FName, int32> RemainingQuantities;
+	UPROPERTY(Transient) TArray<FAssemblyBoneInstance> CheckpointBones;
+	UPROPERTY(Transient) TArray<FAssemblyMuscleInstance> CheckpointMuscles;
+	UPROPERTY(Transient) TArray<FAssemblyJointInstance> CheckpointJoints;
+	UPROPERTY(Transient) TMap<FName, int32> CheckpointQuantities;
+	EAssemblyMuscleKey CheckpointKey = EAssemblyMuscleKey::None;
+	bool bHasBuildCheckpoint = false;
+	float GameplaySizeScale = 1.0f;
 	UPROPERTY(Transient)
 	TWeakObjectPtr<USceneComponent> GridFrame;
 	UPROPERTY(Transient)

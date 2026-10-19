@@ -287,6 +287,7 @@ AAssemblyMuscle* UAssemblyInteractionComponent::SpawnMuscleView(FGuid InstanceId
 	AAssemblyMuscle* Muscle = GetWorld()->SpawnActor<AAssemblyMuscle>(MuscleActorClass, FTransform::Identity, Params);
 	if (!Muscle) { OutReason = LOCTEXT("MuscleSpawnFailed", "创建肌肉曲线失败，安装库存已恢复。"); return nullptr; }
 	if (!Muscle->InitializeMuscle(BoundAssembly.Get(), InstanceId, OutReason)) { Muscle->Destroy(); return nullptr; }
+	Muscle->LineWidth *= BoundAssembly->GetGameplaySizeScale();
 	MuscleViews.Add(InstanceId, Muscle);
 	return Muscle;
 }
@@ -644,10 +645,9 @@ void UAssemblyInteractionComponent::HandleAssemblyReset()
 			GetOwner()->SetActorTransform(SpawnOwnerTransform, false, nullptr, ETeleportType::TeleportPhysics);
 		}
 	}
-	UpdateCorePlaceholder();
-	SynchronizeAppearanceViews();
-	RequestPhysicsSnapshot();
-	OnViewsChanged.Broadcast();
+	// A retained build already contains parts when this reset notification arrives.
+	FText RebuildReason;
+	if (!SynchronizeViews(RebuildReason)) OnInteractionMessage.Broadcast(RebuildReason);
 }
 
 void UAssemblyInteractionComponent::HandlePhaseChanged(EAssemblyPhase Phase)

@@ -205,7 +205,7 @@ UButton* UAssemblyHUDWidget::MakeButton(const FText& Value, EAssemblyHUDAction A
 		Style.SetNormal(Empty).SetHovered(Empty).SetPressed(Empty).SetDisabled(Empty);
 		Style.SetNormalPadding(FMargin(0)).SetPressedPadding(FMargin(0, 1, 0, -1));
 		Button->SetStyle(Style);
-		Button->SetToolTipText(Text(TEXT("清空本轮组装，回到出生点重新组装")));
+		Button->SetToolTipText(Text(TEXT("保留当前装配，回到出生点重新组装")));
 	}
 	USizeBox* Size = WidgetTree->ConstructWidget<USizeBox>();
 	Size->SetMinDesiredWidth(bJointAction ? 256.0f : 48.0f);
@@ -249,7 +249,7 @@ void UAssemblyHUDWidget::BuildPlaceholder()
 	// Sprite nine-slice borders use the source pixel size, not Brush.ImageSize.
 	// Keep every control inside the yellow paper, including the scroll viewport.
 	const bool bPaperPanel = UITheme && UITheme->PanelSprite;
-	const FMargin PanelPadding = bPaperPanel ? FMargin(36.0f) : FMargin(8.0f);
+	const FMargin PanelPadding = bPaperPanel ? FMargin(32.0f) : FMargin(12.0f);
 	UOverlay* Root = WidgetTree->ConstructWidget<UOverlay>(UOverlay::StaticClass(), TEXT("AssemblyWorldOverlay"));
 	WidgetTree->RootWidget = Root;
 	UBorder* WorldSurface = WidgetTree->ConstructWidget<UBorder>();
@@ -266,11 +266,27 @@ void UAssemblyHUDWidget::BuildPlaceholder()
 		: FLinearColor(0.035f, 0.045f, 0.065f, 0.95f));
 	EditPanel->SetPadding(PanelPadding);
 	USizeBox* EditSize = WidgetTree->ConstructWidget<USizeBox>();
-	EditSize->SetWidthOverride(288.0f);
-	EditSize->SetMaxDesiredHeight(bPaperPanel ? 504.0f : 560.0f);
+	EditSize->SetWidthOverride(224.0f);
+	EditSize->SetMaxDesiredHeight(492.0f);
 	UVerticalBox* EditContents = WidgetTree->ConstructWidget<UVerticalBox>();
 	EditContents->SetClipping(EWidgetClipping::ClipToBounds);
-	EditContents->AddChild(MakeText(Text(TEXT("组装：将组件拖到场景中\nR 旋转 90° · 滚轮微调 · Esc 取消\n开始操控后，Space 驱动核心旋转"))));
+	UTextBlock* ShelfTitle = MakeText(Text(TEXT("组装工坊")));
+	FSlateFontInfo ShelfFont = ShelfTitle->GetFont(); ShelfFont.Size = 22; ShelfTitle->SetFont(ShelfFont);
+	EditContents->AddChildToVerticalBox(ShelfTitle)->SetPadding(FMargin(0,0,0,8));
+	EditContents->AddChildToVerticalBox(MakeText(Text(TEXT("拖入场景即可组装\nR 旋转 · 滚轮微调 · Esc 取消"))))->SetPadding(FMargin(0,0,0,12));
+	AssemblyActionsPanel = WidgetTree->ConstructWidget<UBorder>();
+	if (UITheme && UITheme->StatusSprite) AssemblyActionsPanel->SetBrush(UITheme->MakeBrush(UITheme->StatusSprite, FVector2D(560,136), FMargin(.08f,.18f)));
+	AssemblyActionsPanel->SetBrushColor(FLinearColor::White);
+	AssemblyActionsPanel->SetPadding(FMargin(48,18));
+	USizeBox* ActionSize = WidgetTree->ConstructWidget<USizeBox>();
+	ActionSize->SetWidthOverride(400);
+	UVerticalBox* ActionContents = WidgetTree->ConstructWidget<UVerticalBox>();
+	ActionSize->SetContent(ActionContents);
+	AssemblyActionsPanel->SetContent(ActionSize);
+	UOverlaySlot* ActionsSlot = Root->AddChildToOverlay(AssemblyActionsPanel);
+	ActionsSlot->SetHorizontalAlignment(HAlign_Center);
+	ActionsSlot->SetVerticalAlignment(VAlign_Bottom);
+	ActionsSlot->SetPadding(FMargin(16,16,16,104));
 	UHorizontalBox* SessionActions = WidgetTree->ConstructWidget<UHorizontalBox>();
 	for (UButton* Button : { MakeButton(Text(TEXT("开始操控")), EAssemblyHUDAction::Start),
 		MakeButton(Text(TEXT("重新开始")), EAssemblyHUDAction::Restart) })
@@ -278,7 +294,6 @@ void UAssemblyHUDWidget::BuildPlaceholder()
 		UHorizontalBoxSlot* ActionSlot = SessionActions->AddChildToHorizontalBox(Button);
 		ActionSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
 	}
-	EditContents->AddChild(SessionActions);
 	UScrollBox* Scroll = WidgetTree->ConstructWidget<UScrollBox>();
 	Scroll->SetClipping(EWidgetClipping::ClipToBounds);
 	UVerticalBox* Contents = WidgetTree->ConstructWidget<UVerticalBox>();
@@ -287,7 +302,7 @@ void UAssemblyHUDWidget::BuildPlaceholder()
 	EditPanel->SetContent(EditSize);
 	UOverlaySlot* EditSlot = Root->AddChildToOverlay(EditPanel);
 	EditSlot->SetHorizontalAlignment(HAlign_Left);
-	EditSlot->SetVerticalAlignment(VAlign_Top);
+	EditSlot->SetVerticalAlignment(VAlign_Center);
 	EditSlot->SetPadding(FMargin(16.0f));
 
 	UHorizontalBox* Keys = WidgetTree->ConstructWidget<UHorizontalBox>();
@@ -298,12 +313,31 @@ void UAssemblyHUDWidget::BuildPlaceholder()
 		UHorizontalBoxSlot* KeySlot = Keys->AddChildToHorizontalBox(Button);
 		KeySlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
 	}
-	EditContents->AddChild(Keys);
+	ActionContents->AddChildToVerticalBox(MakeText(Text(TEXT("肌肉绑定键"))))->SetHorizontalAlignment(HAlign_Center);
+	ActionContents->AddChild(Keys);
+	ActionContents->AddChildToVerticalBox(SessionActions)->SetPadding(FMargin(0,8,0,0));
 	UVerticalBoxSlot* ScrollSlot = EditContents->AddChildToVerticalBox(Scroll);
 	ScrollSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-	Contents->AddChild(MakeText(Text(TEXT("仅肌肉绑定 WASD：先选键，再拖组件。\n关节只接骨头端点，中心对齐骨头延长线；关节之间不能直连。核心可接骨头。"))));
 	Shelf = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("ComponentShelf"));
 	Contents->AddChild(Shelf);
+	InspectorPanel = WidgetTree->ConstructWidget<UBorder>();
+	if (UITheme && UITheme->PanelSprite) InspectorPanel->SetBrush(UITheme->MakeBrush(UITheme->PanelSprite, FVector2D(304,384)));
+	InspectorPanel->SetBrushColor(FLinearColor::White);
+	InspectorPanel->SetPadding(PanelPadding);
+	USizeBox* InspectorSize = WidgetTree->ConstructWidget<USizeBox>();
+	InspectorSize->SetWidthOverride(240);
+	InspectorSize->SetMaxDesiredHeight(360);
+	UScrollBox* InspectorScroll = WidgetTree->ConstructWidget<UScrollBox>();
+	UVerticalBox* Details = WidgetTree->ConstructWidget<UVerticalBox>();
+	InspectorScroll->AddChild(Details);
+	InspectorSize->SetContent(InspectorScroll);
+	InspectorPanel->SetContent(InspectorSize);
+	UOverlaySlot* InspectorSlot = Root->AddChildToOverlay(InspectorPanel);
+	InspectorSlot->SetHorizontalAlignment(HAlign_Right);
+	InspectorSlot->SetVerticalAlignment(VAlign_Center);
+	InspectorSlot->SetPadding(FMargin(16,116,16,90));
+	Contents = Details;
+	Contents->AddChildToVerticalBox(MakeText(Text(TEXT("部件与连接"))))->SetPadding(FMargin(0,0,0,12));
 	SelectionCaption = MakeText(Text(TEXT("点击骨头、肌肉或关节组件；约束连接可在下方列表选择。")));
 	Contents->AddChild(SelectionCaption);
 	UButton* InstanceButtons[] = {
@@ -322,7 +356,7 @@ void UAssemblyHUDWidget::BuildPlaceholder()
 		}
 		Contents->AddChild(InstanceActions);
 	}
-	Contents->AddChild(MakeText(Text(TEXT("连接约束：在列表选择后设置种类和角度"))));
+	Contents->AddChild(MakeText(Text(TEXT("关节：选择连接后调整"))));
 	JointList = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("AssemblyJoints"));
 	Contents->AddChild(JointList);
 	UHorizontalBox* JointKinds = WidgetTree->ConstructWidget<UHorizontalBox>();
@@ -494,6 +528,8 @@ void UAssemblyHUDWidget::RefreshPresentation()
 		if (!bShowingExplicitMessage || (bToolChanged && CurrentTool != EAssemblyWorkbenchTool::None) || bPhaseChanged)
 			HandleMessage(FText::GetEmpty());
 		if (EditPanel) EditPanel->SetVisibility(bAssembly ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+		if (InspectorPanel) InspectorPanel->SetVisibility(bAssembly ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+		if (AssemblyActionsPanel) AssemblyActionsPanel->SetVisibility(bAssembly ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
 		const bool bHasBreakableJoint = Model->GetJoints().ContainsByPredicate([](const FAssemblyJointInstance& Joint)
 		{
 			return Joint.Kind == EAssemblyJointKind::BreakableHinge || Joint.Kind == EAssemblyJointKind::BreakableFixed;
@@ -662,6 +698,8 @@ bool UAssemblyHUDWidget::IsOverPlaceholderPanel(FVector2D AbsolutePosition) cons
 	if (!bPlaceholderBuilt) return false;
 	return (PlayingToolbar && PlayingToolbar->IsOverControls(AbsolutePosition))
 		|| (EditPanel && EditPanel->GetVisibility() == ESlateVisibility::Visible && EditPanel->GetCachedGeometry().IsUnderLocation(AbsolutePosition))
+		|| (InspectorPanel && InspectorPanel->GetVisibility() == ESlateVisibility::Visible && InspectorPanel->GetCachedGeometry().IsUnderLocation(AbsolutePosition))
+		|| (AssemblyActionsPanel && AssemblyActionsPanel->GetVisibility() == ESlateVisibility::Visible && AssemblyActionsPanel->GetCachedGeometry().IsUnderLocation(AbsolutePosition))
 		|| (PlayPanel && PlayPanel->GetVisibility() == ESlateVisibility::Visible && PlayPanel->GetCachedGeometry().IsUnderLocation(AbsolutePosition));
 }
 

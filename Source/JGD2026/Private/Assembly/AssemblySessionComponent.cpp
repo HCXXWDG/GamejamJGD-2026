@@ -5,6 +5,9 @@
 #include "Assembly/AssemblyPhysicsBridgeComponent.h"
 #include "Assembly/AssemblyPhysicsMessages.h"
 #include "Assembly/AssemblyWorkbenchComponent.h"
+#include "Assembly/AssemblyExperienceSettings.h"
+#include "Assembly/AssemblyPlayerExperienceComponent.h"
+#include "Assembly/AssemblyCameraBackgroundComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/LocalPlayer.h"
@@ -256,6 +259,18 @@ UAssemblyHUDWidget* UAssemblySessionComponent::GetHUD() const { return IsValid(H
 void UAssemblySessionComponent::BeginPlay()
 {
 	Super::BeginPlay();
+	if (!GetOwner()->FindComponentByClass<UAssemblyPlayerExperienceComponent>())
+	{
+		UAssemblyPlayerExperienceComponent* Experience = NewObject<UAssemblyPlayerExperienceComponent>(GetOwner());
+		GetOwner()->AddInstanceComponent(Experience);
+		Experience->RegisterComponent();
+	}
+	if (!GetOwner()->FindComponentByClass<UAssemblyCameraBackgroundComponent>())
+	{
+		UAssemblyCameraBackgroundComponent* Background = NewObject<UAssemblyCameraBackgroundComponent>(GetOwner());
+		GetOwner()->AddInstanceComponent(Background);
+		Background->RegisterComponent();
+	}
 	// Actor Blueprint BeginPlay may still configure the frame/model after component BeginPlay.
 }
 
@@ -344,6 +359,7 @@ bool UAssemblySessionComponent::InitializeSession(APlayerController* PC, FText& 
 	}
 	// An already configured round survives controller changes and repeated initialization.
 	if (!Model->IsInitialized() && !Model->EnterAssembly(OutReason)) { ReleaseSession(); return false; }
+	Model->ApplyInitialGameplayScale(GetDefault<UAssemblyExperienceSettings>()->PlayerSizeScale);
 	if (!InitializationStillValid())
 	{
 		OutReason = LOCTEXT("ModelInitializationCanceled", "组装会话在模型初始化期间已被关闭或更换。");
@@ -766,6 +782,7 @@ bool UAssemblySessionComponent::StartPlaying(FText& OutReason)
 	if (!VerifyStartedPhysics()) { return RecoverFailedStart(); }
 	OnSessionChanged.Broadcast();
 	if (!VerifyStartedPhysics()) { return RecoverFailedStart(); }
+	Model->CaptureBuildCheckpoint();
 	return true;
 }
 
@@ -794,7 +811,7 @@ bool UAssemblySessionComponent::RestartSession(FText& OutReason)
 		return false;
 	}
 	// StopBeforeReset is enforced by the model before pose sources/data/views are cleared.
-	if (!Model->RestartAssembly(OutReason)) { ShowMessage(OutReason); return false; }
+	if (!Model->ReturnToAssemblyKeepingBuild(OutReason)) { ShowMessage(OutReason); return false; }
 	if (!IsCurrentSessionBinding(Model, Interaction, Workbench, PC))
 	{
 		OutReason = LOCTEXT("RestartPhysicsCanceled", "组装会话在重新组装期间已被关闭或更换。");
@@ -1005,6 +1022,8 @@ bool UAssemblySessionComponent::IsSessionViewportFocused() const
 
 bool UAssemblySessionComponent::CanAcceptInput(bool bAllowTransition) const
 {
+	const UAssemblyPlayerExperienceComponent* Experience = GetOwner()->FindComponentByClass<UAssemblyPlayerExperienceComponent>();
+	if (Experience && Experience->IsRestartTransitionActive()) return false;
 	return !bInitializing && (!bTransitioning || bAllowTransition)
 		&& IsCurrentSessionBinding(BoundAssembly.Get(), BoundInteraction.Get(), BoundWorkbench.Get(), BoundController.Get())
 		&& GetWorld() && !GetWorld()->IsPaused() && BoundController->GetPawn() == GetOwner() && IsSessionViewportFocused();

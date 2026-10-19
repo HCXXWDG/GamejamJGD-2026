@@ -243,6 +243,63 @@ bool UAssemblyComponent::RestartAssembly(FText& OutReason)
 	return EnterAssembly(OutReason);
 }
 
+void UAssemblyComponent::CaptureBuildCheckpoint()
+{
+	if (!bInitialized || bEndingPlay) return;
+	CheckpointBones = InstalledBones;
+	CheckpointMuscles = InstalledMuscles;
+	CheckpointJoints = InstalledJoints;
+	CheckpointQuantities = RemainingQuantities;
+	CheckpointKey = SelectedKey;
+	for (FAssemblyMuscleInstance& Muscle : CheckpointMuscles) Muscle.bContracting = false;
+	bHasBuildCheckpoint = true;
+}
+
+void UAssemblyComponent::ApplyInitialGameplayScale(float Scale)
+{
+	if (!bInitialized || Phase != EAssemblyPhase::Assembly || !InstalledBones.IsEmpty()
+		|| !FMath::IsNearlyEqual(GameplaySizeScale, 1.0f)) return;
+	GameplaySizeScale = FMath::IsFinite(Scale) ? FMath::Clamp(Scale, 0.3f, 1.5f) : 0.8f;
+	RoundFreeSettings.CoreRadius *= GameplaySizeScale;
+	RoundFreeSettings.CoreLocalPosition *= GameplaySizeScale;
+	RoundFreeSettings.ConnectionDistance *= GameplaySizeScale;
+	RoundFreeSettings.SnapReleaseDistance *= GameplaySizeScale;
+	RoundGrid.CellSize *= GameplaySizeScale;
+	RoundGrid.TopLeftLocal *= GameplaySizeScale;
+	for (FAssemblyBoneDefinition& Definition : RoundBoneDefinitions)
+	{
+		Definition.BoneParameters.UnitLength *= GameplaySizeScale;
+		Definition.JointPartSize *= GameplaySizeScale;
+		for (FVector2D& Point : Definition.ConnectionPoints) Point *= GameplaySizeScale;
+		for (FVector2D& Point : Definition.SurfaceOutline) Point *= GameplaySizeScale;
+	}
+}
+
+bool UAssemblyComponent::ReturnToAssemblyKeepingBuild(FText& OutReason)
+{
+	if (!CanMutate(OutReason)) return false;
+	if (!bInitialized) return EnterAssembly(OutReason);
+	// Assembly edits are the newest design; a running round restores its start design.
+	if (Phase == EAssemblyPhase::Assembly || !bHasBuildCheckpoint) CaptureBuildCheckpoint();
+	if (!RunLifecycleCheck(false, OutReason)) return false;
+	ClearInputState();
+	InstalledBones = CheckpointBones;
+	InstalledMuscles = CheckpointMuscles;
+	InstalledJoints = CheckpointJoints;
+	RemainingQuantities = CheckpointQuantities;
+	SelectedKey = CheckpointKey;
+	BonePoseSources.Reset();
+	Phase = EAssemblyPhase::Assembly;
+	{
+		TGuardValue<bool> Guard(bNotifying, true);
+		OnAssemblyReset.Broadcast();
+	}
+	NotifyPhase();
+	NotifyChanged();
+	OutReason = FText::GetEmpty();
+	return true;
+}
+
 bool UAssemblyComponent::RecoverAssemblyAfterPhysicsFailure(FText& OutReason)
 {
 	if (!CanMutate(OutReason) || !bInitialized) { return false; }
@@ -264,6 +321,11 @@ bool UAssemblyComponent::RecoverAssemblyAfterPhysicsFailure(FText& OutReason)
 
 void UAssemblyComponent::ResetRound()
 {
+	bHasBuildCheckpoint = false;
+	CheckpointBones.Reset();
+	CheckpointMuscles.Reset();
+	CheckpointJoints.Reset();
+	CheckpointQuantities.Reset();
 	ClearInputState();
 	InstalledBones.Reset();
 	InstalledMuscles.Reset();

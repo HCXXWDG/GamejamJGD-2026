@@ -4,6 +4,7 @@
 #include "Assembly/AssemblyInteractionComponent.h"
 #include "Assembly/AssemblyPhysicsBridgeComponent.h"
 #include "Assembly/AssemblySessionComponent.h"
+#include "Assembly/NormalBone.h"
 #include "Character/BaseCharacter.h"
 #include "Components/BoxComponent.h"
 #include "Engine/Engine.h"
@@ -249,11 +250,28 @@ namespace
 			if (World) { World->Tick(LEVELTICK_All, Seconds); }
 		}
 
+		bool GetCoreBonePlacement(FVector2D& OutPosition)
+		{
+			FAssemblyBoneDefinition Definition;
+			FNormalBonePhysicalStats Stats;
+			if (!Model->GetBoneDefinition(TEXT("Bone"), Definition)
+				|| !ANormalBone::CalculateBoneStats(Definition.BoneParameters, Stats, Reason))
+			{
+				return false;
+			}
+			// Exercise a real surface connection at the configured gameplay scale.
+			const FAssemblyFreeSettings Settings = Model->GetFreeSettings();
+			OutPosition = Settings.CoreLocalPosition + FVector2D(Settings.CoreRadius + Stats.Length * .5f, 0);
+			return true;
+		}
+
 		FGuid InstallBoneWithJoint()
 		{
 			FGuid BoneId;
-			if (!Interaction->BeginBoneDrag(TEXT("Bone"), FGuid(), Reason)
-				|| !Interaction->UpdateBoneDragAtLocalPosition(FVector2D(96.0, 0.0), Reason)
+			FVector2D Position;
+			if (!GetCoreBonePlacement(Position)
+				|| !Interaction->BeginBoneDrag(TEXT("Bone"), FGuid(), Reason)
+				|| !Interaction->UpdateBoneDragAtLocalPosition(Position, Reason)
 				|| !Interaction->CommitBoneDrag(BoneId, Reason))
 			{
 				return FGuid();
@@ -395,7 +413,13 @@ bool FJGDAssemblyMuscleRelaxationTest::RunTest(const FString& Parameters)
 			&& T.Interaction->CommitBoneDrag(OutId, T.Reason);
 	};
 	FGuid BoneA, BoneB, MuscleId, SameBodyMuscleId;
-	if (!TestTrue(TEXT("Install a core-connected bone"), InstallBoneAt(FVector2D(96.0f, 0.0f), BoneA))
+	FVector2D CoreBonePosition;
+	if (!TestTrue(TEXT("Resolve a core connection at the configured bone scale"), T.GetCoreBonePlacement(CoreBonePosition)))
+	{
+		AddError(T.Reason.ToString());
+		return false;
+	}
+	if (!TestTrue(TEXT("Install a core-connected bone"), InstallBoneAt(CoreBonePosition, BoneA))
 		|| !TestTrue(TEXT("Install a remote bone"), InstallBoneAt(FVector2D(500.0f, 180.0f), BoneB)))
 	{
 		AddError(T.Reason.ToString());

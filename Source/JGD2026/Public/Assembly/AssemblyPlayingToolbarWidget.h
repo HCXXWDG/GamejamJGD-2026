@@ -37,6 +37,8 @@ public:
 	bool IsManuallyPaused() const { return bManualPaused; }
 	UFUNCTION(BlueprintPure, Category = "Assembly|UI")
 	float GetRouteProgress() const { return RouteProgress; }
+	UFUNCTION(BlueprintCallable, Category="JGD|Settings")
+	void ShowStandaloneSettings();
 
 protected:
 	virtual void NativeTick(const FGeometry& Geometry, float DeltaTime) override;
@@ -52,6 +54,8 @@ private:
 	UPROPERTY(Transient) TObjectPtr<UAssemblySpriteImage> PauseImage;
 	UPROPERTY(Transient) TObjectPtr<UTextBlock> PauseCaption;
 	UPROPERTY(Transient) TObjectPtr<UButton> PauseButton;
+	UPROPERTY(Transient) TObjectPtr<UButton> RestartButton;
+	UPROPERTY(Transient) TObjectPtr<UWidget> RouteContainer;
 	UPROPERTY(Transient) TObjectPtr<UTextBlock> RouteCaption;
 	UPROPERTY(Transient) TObjectPtr<UTextBlock> SettingsMessage;
 	UPROPERTY(Transient) TObjectPtr<USlider> VolumeSlider;
@@ -76,6 +80,7 @@ private:
 	bool bRouteAvailable = false;
 	bool bPopulatingSettings = false;
 	bool bSettingsApplied = false;
+	bool bStandaloneSettings = false;
 
 	void BuildUI();
 	UTextBlock* MakeText(const FText& Caption, int32 Size = 16);
