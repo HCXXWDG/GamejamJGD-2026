@@ -106,6 +106,17 @@ class JGD2026_API UJGDAssemblyPhysicsDriveProfile : public UDataAsset
 	GENERATED_BODY()
 
 public:
+	/** Sliding grip applied to the assembly's real physics bodies while playing. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Contact", meta = (ClampMin = "0.0"))
+	float ContactFriction = 1.2f;
+
+	/** Grip before a resting contact starts sliding. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Contact", meta = (ClampMin = "0.0"))
+	float ContactStaticFriction = 1.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Contact", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float ContactRestitution = 0.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Muscles", meta = (ClampMin = "0.0"))
 	float MuscleStiffness = 100000.0f;
 

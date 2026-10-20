@@ -37,6 +37,21 @@
 - 刚体区域通知来自 Actor 的原生 PhysicsVolume 进出事件；注册位于区域内时会读取当前选中 PhysicsVolume，
   注销后在区域内重新注册会恢复该区域 Profile。区域移除会解析剩余 Base/World 回退。
 
+## 组装刚体抓地
+
+Playing 阶段的核心、骨头及关节通过真实物理材质设置摩擦，参数来自
+`Content/Physics/Profiles/DA_AssemblyPhysicsDrive_Default` 的 **Contact** 分类：
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `Contact Friction` | 1.2 | 接触滑动时的摩擦 |
+| `Contact Static Friction` | 1.5 | 开始滑动前的抓地力 |
+| `Contact Restitution` | 0.0 | 碰撞弹性，0 表示不主动弹起 |
+
+执行器复制各刚体原有物理材质，保留密度等参数，再使用 **Max** 合并摩擦、**Min** 合并弹性。
+返回组装、重开或退出时会恢复原始材质覆盖，不修改素材资源。参数在下次开始操控时应用。
+`DA_CharacterPhysics_Default` 的 `Ground Friction` 属于 CharacterMovement，不能调整当前组装刚体的抓地力。
+
 ## 通知时机
 
 通知代表配置已经应用：角色运动参数已写入；世界通知还保证重力设置及本次角色刷新已完成。

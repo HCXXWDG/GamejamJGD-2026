@@ -278,7 +278,7 @@ void UAssemblyPlayingToolbarWidget::BuildUI()
 	CompletionPaper->SetBrushColor(Theme ? FLinearColor::White : FLinearColor(.92f, .88f, .72f));
 	CompletionPaper->SetPadding(FMargin(48));
 	UVerticalBox* CompletionContents = WidgetTree->ConstructWidget<UVerticalBox>();
-	UTextBlock* Success = MakeText(Label(TEXT("抵达终点！")), 32);
+	UTextBlock* Success = MakeText(Label(TEXT("通关成功！")), 32);
 	Success->SetJustification(ETextJustify::Center);
 	CompletionContents->AddChildToVerticalBox(Success)->SetPadding(FMargin(0, 0, 0, 24));
 	CompletionStars = CreateWidget<UJGDStarRatingWidget>(GetOwningPlayer());
@@ -541,7 +541,7 @@ void UAssemblyPlayingToolbarWidget::CompleteLevel(int32 EarnedStars, int32 BestS
 	if (bSettingsOpen) CloseSettings(false);
 	bLevelComplete = true;
 	CompletionStars->SetStarCount(EarnedStars);
-	CompletionRating->SetText(FText::FromString(FString::Printf(TEXT("本次 %d 星 / 3 · 最高 %d 星 / 3"),
+	CompletionRating->SetText(FText::FromString(FString::Printf(TEXT("本次获得 %d 颗心\n最佳纪录 %d 颗心"),
 		FMath::Clamp(EarnedStars, 1, 3), FMath::Clamp(BestStars, 1, 3))));
 	Session->ClearHeldInput();
 	RouteProgress = 1;

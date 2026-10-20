@@ -6,7 +6,7 @@
 namespace
 {
 	using namespace AssemblyMuscleRouting;
-	constexpr auto Flags = EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter;
+	constexpr auto MuscleRoutingTestFlags = EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter;
 	struct FAntagonists
 	{
 		FAssemblyMuscleInstance Inner, Outer;
@@ -36,7 +36,7 @@ namespace
 	};
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblyAntagonistRouteTest, "JGD2026.Assembly.MuscleRouting.SideAndStraightLeverage", Flags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblyAntagonistRouteTest, "JGD2026.Assembly.MuscleRouting.SideAndStraightLeverage", MuscleRoutingTestFlags)
 bool FAssemblyAntagonistRouteTest::RunTest(const FString& Parameters)
 {
 	FAntagonists Pair;
@@ -77,7 +77,7 @@ bool FAssemblyAntagonistRouteTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblyRouteGradientTest, "JGD2026.Assembly.MuscleRouting.ForceGradientAndReaction", Flags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssemblyRouteGradientTest, "JGD2026.Assembly.MuscleRouting.ForceGradientAndReaction", MuscleRoutingTestFlags)
 bool FAssemblyRouteGradientTest::RunTest(const FString& Parameters)
 {
 	FAntagonists Pair;

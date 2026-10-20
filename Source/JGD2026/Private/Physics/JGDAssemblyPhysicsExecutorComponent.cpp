@@ -15,6 +15,7 @@
 #include "Physics/JGDPhysicsProfiles.h"
 #include "Physics/JGDPhysicsSystemSettings.h"
 #include "PhysicsEngine/PhysicsConstraintComponent.h"
+#include "PhysicalMaterials/PhysicalMaterial.h"
 
 #define LOCTEXT_NAMESPACE "JGDAssemblyPhysicsExecutor"
 
@@ -239,11 +240,43 @@ void UJGDAssemblyPhysicsExecutorComponent::CaptureBodyState(UPrimitiveComponent*
 	State.AngularDamping = Body->GetAngularDamping();
 	if (FBodyInstance* BodyInstance = Body->GetBodyInstance())
 	{
+		State.OriginalPhysicalMaterialOverride.Reset(BodyInstance->GetPhysMaterialOverride());
 		State.DOFMode = BodyInstance->DOFMode;
 		State.CustomDOFPlaneNormal = BodyInstance->CustomDOFPlaneNormal;
 		State.bHasDOFMode = true;
 	}
 	BodyStates.Add(Body, State);
+}
+
+void UJGDAssemblyPhysicsExecutorComponent::ApplyContactMaterial(UPrimitiveComponent* Body, FBodyState& State)
+{
+	RestoreContactMaterial(Body, State);
+	const FBodyInstance* BodyInstance = Body->GetBodyInstance();
+	State.OriginalPhysicalMaterialOverride.Reset(BodyInstance ? BodyInstance->GetPhysMaterialOverride() : nullptr);
+	const UPhysicalMaterial* SourceMaterial = BodyInstance ? BodyInstance->GetSimplePhysicalMaterial() : nullptr;
+	UPhysicalMaterial* ContactMaterial = DuplicateObject<UPhysicalMaterial>(
+		SourceMaterial ? SourceMaterial : GetDefault<UPhysicalMaterial>(), this);
+	ContactMaterial->SetFlags(RF_Transient);
+	ContactMaterial->ClearFlags(RF_Public | RF_Standalone);
+	// Copy the resolved material so density, mass scaling and surface properties stay intact.
+	ContactMaterial->Friction = DriveProfile->ContactFriction;
+	ContactMaterial->StaticFriction = DriveProfile->ContactStaticFriction;
+	ContactMaterial->Restitution = DriveProfile->ContactRestitution;
+	ContactMaterial->bOverrideFrictionCombineMode = true;
+	ContactMaterial->FrictionCombineMode = EFrictionCombineMode::Max;
+	ContactMaterial->bOverrideRestitutionCombineMode = true;
+	ContactMaterial->RestitutionCombineMode = EFrictionCombineMode::Min;
+	State.PlayingContactMaterial.Reset(ContactMaterial);
+	Body->SetPhysMaterialOverride(ContactMaterial);
+}
+
+void UJGDAssemblyPhysicsExecutorComponent::RestoreContactMaterial(UPrimitiveComponent* Body, FBodyState& State)
+{
+	if (State.PlayingContactMaterial.IsValid())
+	{
+		Body->SetPhysMaterialOverride(State.OriginalPhysicalMaterialOverride.Get());
+		State.PlayingContactMaterial.Reset();
+	}
 }
 
 void UJGDAssemblyPhysicsExecutorComponent::RestoreBodyAttachment(
@@ -278,13 +311,14 @@ void UJGDAssemblyPhysicsExecutorComponent::RestoreBodyAttachment(
 }
 
 void UJGDAssemblyPhysicsExecutorComponent::RestoreBodyState(
-	UPrimitiveComponent* Body, const FBodyState& State, bool bRestoreTransform, bool bRestoreSimulation)
+	UPrimitiveComponent* Body, FBodyState& State, bool bRestoreTransform, bool bRestoreSimulation)
 {
 	if (!IsValid(Body))
 	{
 		return;
 	}
 	Body->SetSimulatePhysics(false);
+	RestoreContactMaterial(Body, State);
 	Body->SetPhysicsLinearVelocity(FVector::ZeroVector);
 	Body->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
 	Body->SetEnableGravity(State.bGravity);
@@ -538,6 +572,7 @@ bool UJGDAssemblyPhysicsExecutorComponent::ApplyAssemblyPhase_Implementation(
 
 	for (UPrimitiveComponent* Body : Bodies)
 	{
+		ApplyContactMaterial(Body, BodyStates.FindChecked(Body));
 		Body->SetCollisionProfileName(TEXT("PhysicsActor"));
 		Body->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 		Body->SetGenerateOverlapEvents(true);
@@ -713,6 +748,7 @@ void UJGDAssemblyPhysicsExecutorComponent::RollbackPreparedState(bool bRestoreOr
 			continue;
 		}
 		Body->SetSimulatePhysics(false);
+		RestoreContactMaterial(Body, Pair.Value);
 		Body->SetPhysicsLinearVelocity(FVector::ZeroVector);
 		Body->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
 		Body->SetEnableGravity(false);
@@ -754,6 +790,7 @@ void UJGDAssemblyPhysicsExecutorComponent::ApplyAssemblyState()
 		if (UPrimitiveComponent* Body = Pair.Key.Get())
 		{
 			Body->SetSimulatePhysics(false);
+			RestoreContactMaterial(Body, Pair.Value);
 			Body->SetPhysicsLinearVelocity(FVector::ZeroVector);
 			Body->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
 			Body->SetEnableGravity(false);
@@ -1151,10 +1188,11 @@ float UJGDAssemblyPhysicsExecutorComponent::ComputeMuscleForceOnB(
 	const double K = DriveProfile->MuscleStiffness * Strength;
 	// The routed spring includes both endpoint levers and the guide's reaction.
 	// Implicit PD avoids frame-rate-dependent stiff-spring kicks.
-	const double DampingK = Drive.bContracting ? K : DriveProfile->MuscleStiffness;
-	const double C = FMath::Max(static_cast<double>(DriveProfile->MuscleDamping),
-		InvMass > UE_SMALL_NUMBER ? 2.0 * FMath::Sqrt(DampingK / InvMass) : 0.0)
-		* (Drive.bContracting ? 1.0 : Drive.PassiveScale);
+	// Weaken the restoring spring without making the released pair underdamped.
+	// Damping follows sqrt(stiffness), so the smaller return force settles gently.
+	const double DampingScale = Drive.bContracting ? 1.0 : FMath::Sqrt(Drive.PassiveScale);
+	const double C = FMath::Max(static_cast<double>(DriveProfile->MuscleDamping) * DampingScale,
+		InvMass > UE_SMALL_NUMBER ? 2.0 * FMath::Sqrt(K / InvMass) : 0.0);
 	const double Dt = FMath::Max(0.0f, DeltaSeconds);
 	const double Force = -(K * (Length - Drive.TargetLength) + (C + K * Dt) * RelativeSpeed)
 		/ (1.0 + (C * Dt + K * Dt * Dt) * InvMass);
@@ -1231,7 +1269,7 @@ void UJGDAssemblyPhysicsExecutorComponent::ApplyMuscleDrives(float DeltaSeconds)
 				const FMuscleDrive& Other = OtherPair.Value;
 				UPrimitiveComponent* OtherA = Other.BodyA.Get();
 				UPrimitiveComponent* OtherB = Other.BodyB.Get();
-				if (!Other.bContracting || !Other.Guide.bValid || !IsValid(OtherA) || !IsValid(OtherB)
+				if (!Other.Guide.bValid || !IsValid(OtherA) || !IsValid(OtherB)
 					|| OtherA == OtherB || !OtherA->IsSimulatingPhysics() || !OtherB->IsSimulatingPhysics()
 					|| Other.GuideBody.Get() != Drive.GuideBody.Get()
 					|| !AssemblyMuscleRouting::IsGuideConnected(Other.Guide, ActiveSnapshot.Joints)
@@ -1244,10 +1282,14 @@ void UJGDAssemblyPhysicsExecutorComponent::ApplyMuscleDrives(float DeltaSeconds)
 				const double OtherSign = bReverseOrder ? -Other.Guide.Sign : Other.Guide.Sign;
 				if ((bSameOrder || bReverseOrder) && Drive.Guide.Sign * OtherSign < 0.0)
 				{
-					// Reciprocal inhibition lets an actively pulled limb move while its
-					// opposing muscle retains a small amount of passive support.
-					Drive.PassiveScale = 0.2;
-					break;
+					// Antagonists already support the limb from both sides. Keep their
+					// released restoring force gentle, and relax it further when the
+					// opposing muscle is actively pulling. Active strength is unchanged.
+					Drive.PassiveScale = Other.bContracting ? 0.1 : 0.3;
+					if (Other.bContracting)
+					{
+						break;
+					}
 				}
 			}
 		}

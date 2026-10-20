@@ -6,6 +6,7 @@
 #include "Assembly/AssemblyMuscleRouting.h"
 #include "MessageBus/JGDMessageBusTypes.h"
 #include "PhysicsEngine/BodyInstance.h"
+#include "UObject/StrongObjectPtr.h"
 #include "JGDAssemblyPhysicsExecutorComponent.generated.h"
 
 class UAssemblyPhysicsBridgeComponent;
@@ -15,6 +16,7 @@ class UJGDPhysicsRigidBodyProfile;
 class UJGDAssemblyPhysicsDriveProfile;
 class UPrimitiveComponent;
 class UPhysicsConstraintComponent;
+class UPhysicalMaterial;
 class USceneComponent;
 
 /** Owns runtime constraints and drive state; borrows every core and part body from the assembly views. */
@@ -66,6 +68,8 @@ private:
 		TEnumAsByte<ECollisionEnabled::Type> CollisionEnabled = ECollisionEnabled::QueryOnly;
 		TEnumAsByte<ECollisionChannel> CollisionObjectType = ECC_WorldDynamic;
 		FCollisionResponseContainer CollisionResponses;
+		TStrongObjectPtr<UPhysicalMaterial> OriginalPhysicalMaterialOverride;
+		TStrongObjectPtr<UPhysicalMaterial> PlayingContactMaterial;
 		TEnumAsByte<EDOFMode::Type> DOFMode = EDOFMode::Default;
 		FVector CustomDOFPlaneNormal = FVector::YAxisVector;
 		bool bSimulate = false;
@@ -143,8 +147,10 @@ private:
 	void ClearCoreRotationDrive();
 	bool CaptureAndValidateBodies(const FAssemblyPhysicsSnapshotMessage& Snapshot, FText& OutReason);
 	void CaptureBodyState(UPrimitiveComponent* Body);
+	void ApplyContactMaterial(UPrimitiveComponent* Body, FBodyState& State);
+	void RestoreContactMaterial(UPrimitiveComponent* Body, FBodyState& State);
 	void RestoreBodyAttachment(UPrimitiveComponent* Body, const FBodyState& State, bool bRestoreTransform);
-	void RestoreBodyState(UPrimitiveComponent* Body, const FBodyState& State, bool bRestoreTransform, bool bRestoreSimulation);
+	void RestoreBodyState(UPrimitiveComponent* Body, FBodyState& State, bool bRestoreTransform, bool bRestoreSimulation);
 	void ReconcileAssemblyBodies(const FAssemblyPhysicsSnapshotMessage& Snapshot);
 	bool BuildConstraints(const FAssemblyPhysicsSnapshotMessage& Snapshot, FText& OutReason);
 	void DestroyConstraints();

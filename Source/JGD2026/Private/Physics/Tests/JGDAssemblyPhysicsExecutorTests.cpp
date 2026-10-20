@@ -25,6 +25,7 @@
 #include "Physics/JGDPhysicsProfiles.h"
 #include "Physics/JGDPhysicsSystemSettings.h"
 #include "PhysicsEngine/PhysicsConstraintComponent.h"
+#include "PhysicalMaterials/PhysicalMaterial.h"
 #include <limits>
 
 struct FJGDAssemblyPhysicsExecutorTestAccessor
@@ -281,6 +282,50 @@ namespace
 			return Joints.Num() == 1 ? Joints[0].InstanceId : FGuid();
 		}
 	};
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FJGDAssemblyContactGripTest,
+	"JGD2026.Assembly.PhysicsExecutor.ContactGripRestoresMaterials", ExecutorFlags)
+
+bool FJGDAssemblyContactGripTest::RunTest(const FString& Parameters)
+{
+	FAssemblyPhysicsExecutorWorld T;
+	if (!TestTrue(TEXT("Contact fixture initializes"), T.bReady)) { AddError(T.Reason.ToString()); return false; }
+	if (!TestTrue(TEXT("Contact fixture installs a physical bone"), T.InstallBoneWithJoint().IsValid())) { return false; }
+	UPrimitiveComponent* BoneBody = T.Interaction->GetBoneActor(T.Model->GetBones()[0].InstanceId)->GetBoneBody();
+	UPhysicalMaterial* Original = NewObject<UPhysicalMaterial>(T.Character);
+	Original->Friction = 0.15f;
+	Original->Density = 2.5f;
+	T.Core->SetPhysMaterialOverride(Original);
+	UPhysicalMaterial* OriginalBoneOverride = BoneBody->GetBodyInstance()->GetPhysMaterialOverride();
+	if (!TestTrue(TEXT("Contact fixture starts"), T.Session->StartPlaying(T.Reason))) { AddError(T.Reason.ToString()); return false; }
+	UPhysicalMaterial* Grip = T.Core->GetBodyInstance()->GetPhysMaterialOverride();
+	if (!TestNotNull(TEXT("Playing has a contact material"), Grip)) { return false; }
+	TestTrue(TEXT("Contact settings use a copy of the original"), Grip != Original);
+	TestEqual(TEXT("Dynamic grip comes from the drive profile"), Grip->Friction, T.Executor->DriveProfile->ContactFriction);
+	TestEqual(TEXT("Static grip comes from the drive profile"), Grip->StaticFriction, T.Executor->DriveProfile->ContactStaticFriction);
+	TestEqual(TEXT("Contact bounce comes from the drive profile"), Grip->Restitution, T.Executor->DriveProfile->ContactRestitution);
+	TestTrue(TEXT("Floor friction cannot average away the configured grip"),
+		Grip->bOverrideFrictionCombineMode && Grip->FrictionCombineMode == EFrictionCombineMode::Max);
+	TestEqual(TEXT("Material copy preserves density"), Grip->Density, Original->Density);
+	// Compare both materials on the same initialized dynamic body, not the query-only preview.
+	const float GripMass = T.Core->GetMass();
+	T.Core->SetPhysMaterialOverride(Original);
+	const float OriginalMass = T.Core->GetMass();
+	T.Core->SetPhysMaterialOverride(Grip);
+	TestTrue(TEXT("Contact grip does not change body mass"), FMath::IsNearlyEqual(GripMass, OriginalMass, 0.001f));
+	TestEqual(TEXT("Source material is not edited"), Original->Friction, 0.15f);
+	UPhysicalMaterial* BoneGrip = BoneBody->GetBodyInstance()->GetPhysMaterialOverride();
+	if (!TestNotNull(TEXT("Bone feet receive contact grip too"), BoneGrip)) { return false; }
+	TestEqual(TEXT("Core and bone use the same grip strength"), BoneGrip->Friction, Grip->Friction);
+	if (!TestTrue(TEXT("Restart returns to assembly"), T.Session->RestartSession(T.Reason))) { return false; }
+	TestTrue(TEXT("Restart restores the precise core override"), T.Core->GetBodyInstance()->GetPhysMaterialOverride() == Original);
+	TestTrue(TEXT("Restart restores a bone's original null override"), BoneBody->GetBodyInstance()->GetPhysMaterialOverride() == OriginalBoneOverride);
+	if (!TestTrue(TEXT("A second round re-creates contact grip"), T.Session->StartPlaying(T.Reason))) { return false; }
+	TestTrue(TEXT("A later round uses a fresh physical material"), T.Core->GetBodyInstance()->GetPhysMaterialOverride() != Grip);
+	T.Session->ShutdownSession();
+	TestTrue(TEXT("Shutdown restores the borrowed core's material"), T.Core->GetBodyInstance()->GetPhysMaterialOverride() == Original);
+	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FJGDAssemblyExecutorAsymmetricHingeTest,

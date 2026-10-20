@@ -41,7 +41,10 @@ void UJGDPhysicsRigidBodyProfile::ApplyTo(UPrimitiveComponent& Body) const
 
 bool UJGDAssemblyPhysicsDriveProfile::HasValidParameters() const
 {
-	return FMath::IsFinite(MuscleStiffness) && MuscleStiffness >= 0.0f
+	return FMath::IsFinite(ContactFriction) && ContactFriction >= 0.0f
+		&& FMath::IsFinite(ContactStaticFriction) && ContactStaticFriction >= 0.0f
+		&& FMath::IsFinite(ContactRestitution) && ContactRestitution >= 0.0f && ContactRestitution <= 1.0f
+		&& FMath::IsFinite(MuscleStiffness) && MuscleStiffness >= 0.0f
 		&& FMath::IsFinite(MuscleDamping) && MuscleDamping >= 0.0f
 		&& FMath::IsFinite(MuscleMaxForce) && MuscleMaxForce >= 0.0f
 		&& FMath::IsFinite(MuscleContractionStrength) && MuscleContractionStrength >= 1.0f && MuscleContractionStrength <= 3.0f

@@ -2,7 +2,7 @@
 #include "Assembly/AssemblyComponent.h"
 #include "Assembly/AssemblyInteractionComponent.h"
 #include "Assembly/AssemblyMuscle.h"
-#include "Assembly/AssemblySurfaceGeometry.h"
+#include "Assembly/NormalBoneTypes.h"
 #include "Engine/World.h"
 #include "PaperSprite.h"
 
@@ -10,8 +10,8 @@
 
 namespace
 {
-	// Workbench clicks choose a tendon attachment on a bone's side. The public
-	// model picker still preserves exact interior coordinates for existing data.
+	// Preserve the clicked attachment instead of pushing it to the physical box
+	// edge, which can sit outside the narrower artwork at the bone's shaft.
 	bool PickMuscleSide(UAssemblyComponent* Assembly, FVector Pointer, float SnapDistance,
 		FAssemblyMuscleEndpoint& OutEndpoint, const FAssemblyMuscleEndpoint* OtherEndpoint = nullptr)
 	{
@@ -19,16 +19,19 @@ namespace
 		FAssemblyBoneInstance Bone;
 		FAssemblyBoneDefinition Definition;
 		FTransform Pose;
-		AssemblySurfaceGeometry::FShape Shape;
+		FNormalBonePhysicalStats Stats;
 		FText Reason;
 		if (!Assembly->GetBone(OutEndpoint.BoneId, Bone) || !Assembly->GetBoneDefinition(Bone.TypeId, Definition)
 			|| !Assembly->GetBoneWorldTransform(Bone.InstanceId, Pose)
-			|| !AssemblySurfaceGeometry::BuildShape(Definition, FTransform::Identity, Shape, Reason)
-			|| Shape.Vertices.IsEmpty()) { return false; }
+			|| !NormalBoneMetrics::Evaluate(Definition.BoneParameters, Stats, Reason)) { return false; }
+
+		const double SideOffset = Stats.Thickness * 0.05;
+		const double CenterTolerance = SideOffset * 0.1;
+		if (FMath::Abs(OutEndpoint.BoneLocalPoint.Y) > CenterTolerance) { return true; }
 
 		const FVector LocalPointer = Pose.InverseTransformPosition(Pointer);
 		double Side = LocalPointer.Z < 0.0 ? -1.0 : 1.0;
-		if (FMath::Abs(LocalPointer.Z) <= 0.01 && OtherEndpoint)
+		if (FMath::Abs(LocalPointer.Z) <= CenterTolerance && OtherEndpoint)
 		{
 			FVector OtherWorld;
 			if (Assembly->GetEndpointWorldPosition(*OtherEndpoint, OtherWorld))
@@ -49,39 +52,13 @@ namespace
 			}
 		}
 
-		const double PickX = OutEndpoint.BoneLocalPoint.X;
-		// Intersect the actual contour rather than the sprite bounds or a nominal
-		// rectangle. At a tapered axial tip, move slightly inward to find a side.
-		for (int32 Attempt = 0; Attempt < 9; ++Attempt)
-		{
-			const double X = PickX * (1.0 - static_cast<double>(Attempt) * 0.1);
-			double ChosenY = 0.0;
-			bool bFound = false;
-			auto Consider = [&](double Y)
-			{
-				if (!bFound || Side * Y > Side * ChosenY) { ChosenY = Y; bFound = true; }
-			};
-			for (int32 Edge = 0; Edge < Shape.Vertices.Num(); ++Edge)
-			{
-				const FVector2D A = Shape.Vertices[Edge];
-				const FVector2D B = Shape.Vertices[(Edge + 1) % Shape.Vertices.Num()];
-				const double Width = B.X - A.X;
-				if (FMath::Abs(Width) <= UE_DOUBLE_SMALL_NUMBER)
-				{
-					if (FMath::Abs(X - A.X) <= AssemblySurfaceGeometry::Tolerance) { Consider(A.Y); Consider(B.Y); }
-					continue;
-				}
-				const double Alpha = (X - A.X) / Width;
-				if (Alpha >= 0.0 && Alpha <= 1.0) { Consider(FMath::Lerp(A.Y, B.Y, Alpha)); }
-			}
-			if (bFound && ChosenY * Side > AssemblySurfaceGeometry::Tolerance)
-			{
-				OutEndpoint.BoneLocalPoint = FVector2D(X, ChosenY);
-				return true;
-			}
-		}
-		OutEndpoint = FAssemblyMuscleEndpoint();
-		return false;
+		// Only an almost-centred click needs a small side cue (10% of the half
+		// thickness). A custom tapered outline may reject it; keep the valid pick.
+		FAssemblyMuscleEndpoint Adjusted = OutEndpoint;
+		Adjusted.BoneLocalPoint.Y = Side * SideOffset;
+		FVector AdjustedWorld;
+		if (Assembly->GetEndpointWorldPosition(Adjusted, AdjustedWorld)) { OutEndpoint = Adjusted; }
+		return true;
 	}
 }
 
