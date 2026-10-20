@@ -18,6 +18,7 @@ class USceneComponent;
 class USizeBox;
 class USlider;
 class UTextBlock;
+class UJGDStarRatingWidget;
 
 /** Playing-only presentation and local pause/settings ownership. Physics stays in its provider. */
 UCLASS(BlueprintType)
@@ -30,7 +31,7 @@ public:
 	void InitializeToolbar(UAssemblySessionComponent* InSession, UAssemblyUITheme* InTheme);
 	void SetPlaying(bool bInPlaying);
 	void ResetToolbarState();
-	void CompleteLevel();
+	void CompleteLevel(int32 EarnedStars = 1, int32 BestStars = 1);
 	UFUNCTION(BlueprintPure, Category="Assembly|UI") bool IsLevelComplete() const { return bLevelComplete; }
 	bool IsOverControls(FVector2D AbsolutePosition) const;
 	UFUNCTION(BlueprintPure, Category = "Assembly|UI")
@@ -58,6 +59,9 @@ private:
 	UPROPERTY(Transient) TObjectPtr<UBorder> ToolbarPanel;
 	UPROPERTY(Transient) TObjectPtr<UBorder> SettingsOverlay;
 	UPROPERTY(Transient) TObjectPtr<UBorder> CompletionOverlay;
+	UPROPERTY(Transient) TObjectPtr<UJGDStarRatingWidget> CompletionStars;
+	UPROPERTY(Transient) TObjectPtr<UTextBlock> CompletionRating;
+	UPROPERTY(Transient) TObjectPtr<UTextBlock> CollectionCaption;
 	UPROPERTY(Transient) TObjectPtr<UAssemblySpriteImage> PauseImage;
 	UPROPERTY(Transient) TObjectPtr<UTextBlock> PauseCaption;
 	UPROPERTY(Transient) TObjectPtr<UButton> PauseButton;

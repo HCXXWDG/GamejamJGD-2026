@@ -25,10 +25,12 @@ namespace AssemblyTutorial
 		for (FAssemblyBoneDefinition& Bone : Bones)
 		{
 			const bool bGive = StageIndex == 1 && !bGaveBones && Bone.PartKind == EAssemblyRigidPartKind::Bone;
-			Bone.InitialQuantity = bGive ? 2 : 0;
+			const bool bMovableJoint = StageIndex == 1 && Bone.PartKind == EAssemblyRigidPartKind::JointPart
+				&& Bone.JointShape == EAssemblyJointPartShape::Round;
+			Bone.InitialQuantity = bGive ? 4 : bMovableJoint ? 2 : 0;
 			bGaveBones |= bGive;
 		}
 		for (int32 Index = 0; Index < Muscles.Num(); ++Index)
-			Muscles[Index].InitialQuantity = StageIndex == 1 && Index == 0 ? 1 : 0;
+			Muscles[Index].InitialQuantity = StageIndex == 1 && Index == 0 ? 4 : 0;
 	}
 }

@@ -174,5 +174,5 @@ private:
 	void HandleMessage(FText Message);
 	UFUNCTION() void HandleBindingRequired();
 public:
-	void CompleteLevel();
+	void CompleteLevel(int32 EarnedStars = 1, int32 BestStars = 1);
 };

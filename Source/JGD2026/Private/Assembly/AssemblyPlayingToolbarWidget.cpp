@@ -1,5 +1,7 @@
 #include "Assembly/AssemblyPlayingToolbarWidget.h"
 #include "Audio/JGDInputFeedbackLibrary.h"
+#include "Progress/JGDLevelRatingComponent.h"
+#include "Progress/JGDStarRatingWidget.h"
 
 #include "Assembly/AssemblyComponent.h"
 #include "Assembly/AssemblyHUDWidget.h"
@@ -201,6 +203,12 @@ void UAssemblyPlayingToolbarWidget::BuildUI()
 	RouteMarkerSlot->SetSize(FVector2D(48, 48));
 	RouteSize->SetContent(Track);
 	RouteContents->AddChild(RouteSize);
+	CollectionCaption = MakeText(Label(TEXT("心脏 0 / 2 · 通关可得 1 星")), 16);
+	CollectionCaption->SetColorAndOpacity(FSlateColor(FLinearColor(.96f, .93f, .76f)));
+	CollectionCaption->SetJustification(ETextJustify::Center);
+	CollectionCaption->SetShadowColorAndOpacity(FLinearColor(0, 0, 0, .9f));
+	CollectionCaption->SetShadowOffset(FVector2D(1, 1));
+	RouteContents->AddChild(CollectionCaption);
 	UOverlaySlot* RouteSlot = Root->AddChildToOverlay(RouteContents);
 	RouteSlot->SetHorizontalAlignment(HAlign_Center);
 	RouteSlot->SetVerticalAlignment(VAlign_Top);
@@ -273,6 +281,12 @@ void UAssemblyPlayingToolbarWidget::BuildUI()
 	UTextBlock* Success = MakeText(Label(TEXT("抵达终点！")), 32);
 	Success->SetJustification(ETextJustify::Center);
 	CompletionContents->AddChildToVerticalBox(Success)->SetPadding(FMargin(0, 0, 0, 24));
+	CompletionStars = CreateWidget<UJGDStarRatingWidget>(GetOwningPlayer());
+	CompletionStars->SetIconSize(56);
+	CompletionContents->AddChildToVerticalBox(CompletionStars)->SetHorizontalAlignment(HAlign_Center);
+	CompletionRating = MakeText(FText::GetEmpty(), 18);
+	CompletionRating->SetJustification(ETextJustify::Center);
+	CompletionContents->AddChildToVerticalBox(CompletionRating)->SetPadding(FMargin(0, 12, 0, 18));
 	const bool bLastLevel = UGameplayStatics::GetCurrentLevelName(this, true) == TEXT("Level_2");
 	UButton* Next = MakeTextButton(Label(bLastLevel ? TEXT("完成旅程") : TEXT("下一关")));
 	Next->OnClicked.AddDynamic(this, &ThisClass::HandleNextLevel);
@@ -521,11 +535,14 @@ void UAssemblyPlayingToolbarWidget::HandleRestart()
 	else Report(Reason);
 }
 
-void UAssemblyPlayingToolbarWidget::CompleteLevel()
+void UAssemblyPlayingToolbarWidget::CompleteLevel(int32 EarnedStars, int32 BestStars)
 {
 	if (bLevelComplete || !bPlaying || !Session.IsValid()) return;
 	if (bSettingsOpen) CloseSettings(false);
 	bLevelComplete = true;
+	CompletionStars->SetStarCount(EarnedStars);
+	CompletionRating->SetText(FText::FromString(FString::Printf(TEXT("本次 %d 星 / 3 · 最高 %d 星 / 3"),
+		FMath::Clamp(EarnedStars, 1, 3), FMath::Clamp(BestStars, 1, 3))));
 	Session->ClearHeldInput();
 	RouteProgress = 1;
 	if (RouteCaption) RouteCaption->SetText(Label(TEXT("已抵达终点")));
@@ -605,7 +622,18 @@ void UAssemblyPlayingToolbarWidget::CaptureRoute()
 
 void UAssemblyPlayingToolbarWidget::RefreshRoute()
 {
-	if (bRouteAvailable && RouteCore.IsValid() && RouteGoal.IsValid())
+	if (CollectionCaption && Session.IsValid())
+	{
+		const UJGDLevelRatingComponent* Rating = Session->GetOwner()->FindComponentByClass<UJGDLevelRatingComponent>();
+		CollectionCaption->SetText(FText::FromString(FString::Printf(TEXT("心脏 %d / 2 · 通关可得 %d 星"),
+			Rating ? Rating->GetCollectedStars() : 0, 1 + (Rating ? Rating->GetCollectedStars() : 0))));
+	}
+	if (bLevelComplete)
+	{
+		RouteProgress = 1;
+		RouteCaption->SetText(Label(TEXT("已抵达终点")));
+	}
+	else if (bRouteAvailable && RouteCore.IsValid() && RouteGoal.IsValid())
 	{
 		const FVector Goal = RouteGoal->GetComponentLocation();
 		const FVector Core = RouteCore->GetComponentLocation();

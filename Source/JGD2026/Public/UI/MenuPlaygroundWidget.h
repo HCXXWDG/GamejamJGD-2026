@@ -14,6 +14,7 @@ class UAssemblySpriteImage;
 class UAssemblyPlayingToolbarWidget;
 class UMenuPlaygroundWidget;
 class UTextBlock;
+class UJGDLevelSelectionRatings;
 
 UENUM(BlueprintType)
 enum class EMenuPieceCollision : uint8 { Box, Circle };
@@ -63,7 +64,7 @@ public:
 	void BeginPieceDrag(int32 Index, FVector2D Screen);
 	void MovePieceDrag(FVector2D Screen);
 	void EndPieceDrag(bool bThrow);
-	void AdvanceMenuTransition(float DeltaTime) { TickMenuTransition(DeltaTime); }
+	void AdvanceMenuTransition(float DeltaTime);
 	UFUNCTION(BlueprintPure, Category="Menu|Playground") bool HasScattered() const { return bScattered; }
 	UFUNCTION(BlueprintPure, Category="Menu|Playground") TArray<UPrimitiveComponent*> GetPieceBodies() const;
 	UFUNCTION(BlueprintPure, Category="Menu|Transition") bool IsTransitioning() const { return TransitionStage != 0; }
@@ -80,6 +81,8 @@ private:
 	UPROPERTY(Transient) TWeakObjectPtr<UUserWidget> Menu;
 	UPROPERTY(Transient) TObjectPtr<UCanvasPanel> Canvas;
 	UPROPERTY(Transient) TObjectPtr<UTextBlock> GuideCaption;
+	UPROPERTY(Transient) TObjectPtr<UJGDLevelSelectionRatings> LevelRatings;
+	float RatingRefreshTime = 0;
 	UPROPERTY(Transient) TObjectPtr<UPrimitiveComponent> DraggedBody;
 	UPROPERTY(Transient) TObjectPtr<UPhysicsHandleComponent> GrabHandle;
 	UPROPERTY(Transient) TObjectPtr<UAssemblyPlayingToolbarWidget> SettingsWidget;

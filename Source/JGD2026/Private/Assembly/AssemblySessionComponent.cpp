@@ -1,4 +1,5 @@
 #include "Assembly/AssemblySessionComponent.h"
+#include "Progress/JGDLevelRatingComponent.h"
 #include "Audio/JGDInputFeedbackLibrary.h"
 #include "Assembly/AssemblyComponent.h"
 #include "Assembly/AssemblyHUDWidget.h"
@@ -262,6 +263,12 @@ UAssemblyHUDWidget* UAssemblySessionComponent::GetHUD() const { return IsValid(H
 void UAssemblySessionComponent::BeginPlay()
 {
 	Super::BeginPlay();
+	if (!GetOwner()->FindComponentByClass<UJGDLevelRatingComponent>())
+	{
+		UJGDLevelRatingComponent* Rating = NewObject<UJGDLevelRatingComponent>(GetOwner());
+		GetOwner()->AddInstanceComponent(Rating);
+		Rating->RegisterComponent();
+	}
 	if (!GetOwner()->FindComponentByClass<UAssemblyPlayerExperienceComponent>())
 	{
 		UAssemblyPlayerExperienceComponent* Experience = NewObject<UAssemblyPlayerExperienceComponent>(GetOwner());

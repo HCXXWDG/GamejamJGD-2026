@@ -19,6 +19,7 @@
 #include "UObject/ConstructorHelpers.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/UnrealType.h"
+#include "Progress/JGDStarRatingWidget.h"
 
 namespace
 {
@@ -159,6 +160,8 @@ void UMenuPlaygroundWidget::InitializeMenu(UUserWidget* InMenu)
 	Menu=InMenu;
 	MainPanel=InMenu->GetWidgetFromName(TEXT("Canvas_Items"));
 	SelectorPanel=InMenu->GetWidgetFromName(TEXT("WBP_LevelSelector"));
+	LevelRatings=NewObject<UJGDLevelSelectionRatings>(this);
+	LevelRatings->Initialize(Cast<UUserWidget>(SelectorPanel.Get()));
 	UWidget* Start=InMenu->GetWidgetFromName(TEXT("Btn_Start"));
 	if (!BindMenuAction(Start,this,TEXT("HandleStart")))
 	if (UButton* Button=FindButton(Start))
@@ -494,6 +497,19 @@ void UMenuPlaygroundWidget::TickMenuTransition(float DeltaTime)
 	{
 		Incoming->SetRenderOpacity(A); Incoming->SetRenderTranslation(FVector2D((bToSelector?1:-1)*(1-A)*54,0));
 		if (TransitionTime>=.22f) { Incoming->SetIsEnabled(true); Incoming->SetRenderOpacity(1); Incoming->SetRenderTranslation(FVector2D::ZeroVector); TransitionStage=0; }
+	}
+}
+
+void UMenuPlaygroundWidget::AdvanceMenuTransition(float DeltaTime)
+{
+	TickMenuTransition(DeltaTime);
+	// The playground's parent is collapsed on the selector screen, so use the menu
+	// subsystem's tick for ratings instead of relying on this widget being painted.
+	RatingRefreshTime += DeltaTime;
+	if (LevelRatings && RatingRefreshTime >= .25f)
+	{
+		RatingRefreshTime = 0;
+		LevelRatings->Refresh();
 	}
 }
 

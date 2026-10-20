@@ -13,6 +13,7 @@
 #include "EngineUtils.h"
 #include "GameFramework/PlayerController.h"
 #include "PaperTileMapComponent.h"
+#include "Progress/JGDLevelRatingComponent.h"
 
 void UAssemblyScreenFadeWidget::NativeOnInitialized()
 {
@@ -78,6 +79,12 @@ void UAssemblyPlayerExperienceComponent::TickComponent(float DeltaTime, ELevelTi
 	}
 	const UAssemblyExperienceSettings* Settings = GetDefault<UAssemblyExperienceSettings>();
 	const bool bPlaying = Model->GetPhase() == EAssemblyPhase::Playing;
+	UJGDLevelRatingComponent* Rating = GetOwner()->FindComponentByClass<UJGDLevelRatingComponent>();
+	if (Rating)
+	{
+		Rating->InitializeRun(Model);
+		if (!FadeState) Rating->UpdateCollection(Core);
+	}
 	if (bPlaying && !FadeState)
 	{
 		const FVector Position = Core->GetComponentLocation();
@@ -93,7 +100,8 @@ void UAssemblyPlayerExperienceComponent::TickComponent(float DeltaTime, ELevelTi
 				Active->ClearHeldInput();
 				Core->SetPhysicsLinearVelocity(FVector::ZeroVector);
 				Core->SetPhysicsAngularVelocityInRadians(FVector::ZeroVector);
-				if (UAssemblyHUDWidget* HUD = Active->GetHUD()) HUD->CompleteLevel();
+				const FJGDLevelRatingResult Score = Rating ? Rating->CompleteRun() : FJGDLevelRatingResult();
+				if (UAssemblyHUDWidget* HUD = Active->GetHUD()) HUD->CompleteLevel(FMath::Max(1, Score.EarnedStars), Score.BestStars);
 				return;
 			}
 		}
