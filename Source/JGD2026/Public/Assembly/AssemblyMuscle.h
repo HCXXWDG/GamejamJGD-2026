@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Assembly/AssemblyMuscleRouting.h"
 #include "Assembly/AssemblyTypes.h"
 #include "GameFramework/Actor.h"
 #include "AssemblyMuscle.generated.h"
@@ -73,6 +74,9 @@ public:
 	// World endpoints belong to preview only. Installed endpoints always come from their bone poses.
 	UFUNCTION(BlueprintCallable, Category = "Muscle|Preview")
 	bool SetPreviewEndpoints(FVector WorldA, FVector WorldB, FText& OutReason);
+	// Native workbench preview uses the same joint-side route as the installed muscle.
+	void SetPreviewRouting(UAssemblyComponent* Assembly, const FAssemblyMuscleEndpoint& EndpointA,
+		const FAssemblyMuscleEndpoint& EndpointB);
 	UFUNCTION(BlueprintCallable, Category = "Muscle|Preview")
 	void SetPreviewValid(bool bValid);
 	UFUNCTION(BlueprintCallable, Category = "Muscle|Visual")
@@ -100,8 +104,12 @@ private:
 	FVector PreviewWorldB = FVector(64.0, 0.0, 0.0);
 	bool bHasWorldPreview = false;
 	bool bPreviewValid = true;
+	TWeakObjectPtr<UAssemblyComponent> PreviewRoutingAssembly;
+	AssemblyMuscleRouting::FGuide RouteGuide;
+	AssemblyMuscleRouting::FState RouteState;
 
 	bool HasUsablePresentation() const;
+	void CaptureRouteGuide(UAssemblyComponent* Assembly, const FAssemblyMuscleInstance& Data);
 	void EnsureSegmentSprites();
 	void HideCurve();
 	FLinearColor GetFeedbackColor() const;

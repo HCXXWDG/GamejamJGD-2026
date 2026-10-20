@@ -583,20 +583,40 @@ bool UJGDAssemblyPhysicsExecutorComponent::ApplyAssemblyPhase_Implementation(
 		const FVector PointB = PoseB->WorldTransform.TransformPosition(
 			FVector(Muscle.EndpointB.BoneLocalPoint.X, 0.0f, Muscle.EndpointB.BoneLocalPoint.Y));
 		const FVector Span = PointB - PointA;
-		const float Length = Span.Size();
+		FMuscleDrive Drive;
+		Drive.BodyA = PoseA->Body;
+		Drive.BodyB = PoseB->Body;
+		Drive.LocalA = Muscle.EndpointA.BoneLocalPoint;
+		Drive.LocalB = Muscle.EndpointB.BoneLocalPoint;
+		AssemblyMuscleRouting::FPath Path;
+		if (AssemblyMuscleRouting::BuildGuide(Muscle, Snapshot.Bones, Snapshot.BoneDefinitions,
+			Snapshot.Joints, Snapshot.FreeSettings, Drive.Guide))
+		{
+			Drive.GuideBody = ResolveBody(Drive.Guide.BoneId);
+		}
+		const UPrimitiveComponent* GuideBody = Drive.GuideBody.Get();
+		const bool bRouted = IsValid(GuideBody)
+			&& AssemblyMuscleRouting::Evaluate(Drive.Guide, PointA, PointB,
+				GuideBody->GetComponentTransform(), Drive.RouteState, Path);
+		if (!bRouted && !AssemblyMuscleRouting::MakeDirect(PointA, PointB, Path))
+		{
+			continue;
+		}
+		const float Length = static_cast<float>(Path.Length);
 		if (FMath::IsFinite(Length) && Length > UE_SMALL_NUMBER)
 		{
 			FMuscleRestState& Rest = MuscleRestStates.Add(Muscle.InstanceId);
 			Rest.Length = Length;
-			Rest.Direction = Span / Length;
-			FMuscleDrive& Drive = MuscleDrives.Add(Muscle.InstanceId);
-			Drive.BodyA = PoseA->Body;
-			Drive.BodyB = PoseB->Body;
-			Drive.LocalA = Muscle.EndpointA.BoneLocalPoint;
-			Drive.LocalB = Muscle.EndpointB.BoneLocalPoint;
+			Rest.Direction = Span.GetSafeNormal();
 			Drive.RestLength = Length;
 			Drive.TargetLength = Length;
 			Drive.LastDirection = Rest.Direction;
+			Drive.PullA = Path.PullA;
+			Drive.PullB = Path.PullB;
+			Drive.TouchA = Path.TouchA;
+			Drive.TouchB = Path.TouchB;
+			Drive.bWrapped = Path.bWrapped;
+			MuscleDrives.Add(Muscle.InstanceId, MoveTemp(Drive));
 		}
 	}
 	bPlaying = true;
@@ -1098,26 +1118,43 @@ void UJGDAssemblyPhysicsExecutorComponent::ApplyCoreRotationDrive(float DeltaSec
 float UJGDAssemblyPhysicsExecutorComponent::ComputeMuscleForceOnB(
 	const FMuscleDrive& Drive, float Length, float RelativeSpeed, float DeltaSeconds) const
 {
-	const FVector Direction = Drive.LastDirection;
-	auto InverseEffectiveMass = [&Direction](const UPrimitiveComponent* Body, FVector2D Local)
+	auto InverseEffectiveMass = [](const UPrimitiveComponent* Body, FVector Gradient, double AngularGradient)
 	{
 		if (!IsValid(Body) || !Body->IsSimulatingPhysics()) return 0.0;
-		const FVector Lever = LocalPointToWorld(Body, Local) - Body->GetCenterOfMass();
 		const FVector Inertia = Body->GetInertiaTensor();
 		const FVector Axis = Body->GetComponentQuat().UnrotateVector(FVector::YAxisVector);
 		const double PlanarInertia = FVector::DotProduct(Axis * Axis, Inertia);
-		const double Moment = FVector::CrossProduct(Lever, Direction).Y;
-		return 1.0 / FMath::Max(0.001, static_cast<double>(Body->GetMass()))
-			+ (PlanarInertia > UE_SMALL_NUMBER ? Moment * Moment / PlanarInertia : 0.0);
+		return Gradient.SizeSquared() / FMath::Max(0.001, static_cast<double>(Body->GetMass()))
+			+ (PlanarInertia > UE_SMALL_NUMBER ? AngularGradient * AngularGradient / PlanarInertia : 0.0);
 	};
-	const double InvMass = InverseEffectiveMass(Drive.BodyA.Get(), Drive.LocalA)
-		+ InverseEffectiveMass(Drive.BodyB.Get(), Drive.LocalB);
-	const double Strength = Drive.bContracting ? DriveProfile->MuscleContractionStrength : 1.0;
+	auto EndpointInverseMass = [&InverseEffectiveMass](const UPrimitiveComponent* Body, FVector2D Local, FVector Gradient)
+	{
+		if (!IsValid(Body)) return 0.0;
+		const FVector Lever = LocalPointToWorld(Body, Local) - Body->GetCenterOfMass();
+		return InverseEffectiveMass(Body, Gradient, FVector::CrossProduct(Lever, Gradient).Y);
+	};
+	const bool bWrapped = Drive.bWrapped && Drive.GuideBody.IsValid();
+	const FVector GradientA = bWrapped ? -Drive.PullA : -Drive.LastDirection;
+	const FVector GradientB = bWrapped ? -Drive.PullB : Drive.LastDirection;
+	double InvMass = EndpointInverseMass(Drive.BodyA.Get(), Drive.LocalA, GradientA)
+		+ EndpointInverseMass(Drive.BodyB.Get(), Drive.LocalB, GradientB);
+	if (bWrapped)
+	{
+		const UPrimitiveComponent* GuideBody = Drive.GuideBody.Get();
+		const FVector CenterOfMass = GuideBody->GetCenterOfMass();
+		const FVector GuideGradient = Drive.PullA + Drive.PullB;
+		const double AngularGradient = (FVector::CrossProduct(Drive.TouchA - CenterOfMass, Drive.PullA)
+			+ FVector::CrossProduct(Drive.TouchB - CenterOfMass, Drive.PullB)).Y;
+		InvMass += InverseEffectiveMass(GuideBody, GuideGradient, AngularGradient);
+	}
+	const double Strength = Drive.bContracting ? DriveProfile->MuscleContractionStrength : Drive.PassiveScale;
 	const double K = DriveProfile->MuscleStiffness * Strength;
-	// At least critical damping for the attachment-point effective mass, including
-	// rotational leverage. Implicit PD avoids frame-rate-dependent stiff-spring kicks.
+	// The routed spring includes both endpoint levers and the guide's reaction.
+	// Implicit PD avoids frame-rate-dependent stiff-spring kicks.
+	const double DampingK = Drive.bContracting ? K : DriveProfile->MuscleStiffness;
 	const double C = FMath::Max(static_cast<double>(DriveProfile->MuscleDamping),
-		InvMass > UE_SMALL_NUMBER ? 2.0 * FMath::Sqrt(K / InvMass) : 0.0);
+		InvMass > UE_SMALL_NUMBER ? 2.0 * FMath::Sqrt(DampingK / InvMass) : 0.0)
+		* (Drive.bContracting ? 1.0 : Drive.PassiveScale);
 	const double Dt = FMath::Max(0.0f, DeltaSeconds);
 	const double Force = -(K * (Length - Drive.TargetLength) + (C + K * Dt) * RelativeSpeed)
 		/ (1.0 + (C * Dt + K * Dt * Dt) * InvMass);
@@ -1146,16 +1183,16 @@ void UJGDAssemblyPhysicsExecutorComponent::ApplyMuscleDrives(float DeltaSeconds)
 		const FVector PointA = LocalPointToWorld(BodyA, Drive.LocalA);
 		const FVector PointB = LocalPointToWorld(BodyB, Drive.LocalB);
 		const FVector Span = PointB - PointA;
-		const float Length = Span.Size();
-		if (!FMath::IsFinite(Length) || Drive.RestLength <= UE_SMALL_NUMBER)
+		const float DirectLength = Span.Size();
+		if (!FMath::IsFinite(DirectLength) || Drive.RestLength <= UE_SMALL_NUMBER)
 		{
 			FinishedDrives.Add(Pair.Key);
 			continue;
 		}
 		// Tiny endpoint offsets have an unstable direction after two simulated bodies coincide.
-		if (Length > 0.01f)
+		if (DirectLength > 0.01f)
 		{
-			Drive.LastDirection = Span / Length;
+			Drive.LastDirection = Span / DirectLength;
 		}
 		const FVector Direction = Drive.LastDirection;
 		if (Direction.IsNearlyZero())
@@ -1163,15 +1200,104 @@ void UJGDAssemblyPhysicsExecutorComponent::ApplyMuscleDrives(float DeltaSeconds)
 			FinishedDrives.Add(Pair.Key);
 			continue;
 		}
+		auto HasGuideConstraint = [this](FGuid Id)
+		{
+			const TObjectPtr<UPhysicsConstraintComponent>* Found = Constraints.Find(Id);
+			return Found && IsValid(Found->Get()) && !Found->Get()->IsBroken();
+		};
+		const bool bLostGuide = Drive.Guide.bValid && (!Drive.GuideBody.IsValid()
+			|| !AssemblyMuscleRouting::IsGuideConnected(Drive.Guide, ActiveSnapshot.Joints)
+			|| !HasGuideConstraint(Drive.Guide.ConnectionA) || !HasGuideConstraint(Drive.Guide.ConnectionB));
+		if (bLostGuide)
+		{
+			Drive.Guide = AssemblyMuscleRouting::FGuide();
+			Drive.RouteState = AssemblyMuscleRouting::FState();
+			Drive.GuideBody.Reset();
+			// A broken connector can no longer act as a pulley. Start the surviving
+			// straight spring at its current length rather than releasing stored wrap energy.
+			Drive.RestLength = FMath::Max(DirectLength, UE_KINDA_SMALL_NUMBER);
+			Drive.TargetLength = Drive.RestLength;
+			if (FMuscleRestState* Rest = MuscleRestStates.Find(Pair.Key))
+			{
+				Rest->Length = Drive.RestLength;
+				Rest->Direction = Direction;
+			}
+		}
+		Drive.PassiveScale = 1.0;
+		if (!Drive.bContracting && Drive.Guide.bValid && Drive.GuideBody.IsValid())
+		{
+			for (const TPair<FGuid, FMuscleDrive>& OtherPair : MuscleDrives)
+			{
+				const FMuscleDrive& Other = OtherPair.Value;
+				UPrimitiveComponent* OtherA = Other.BodyA.Get();
+				UPrimitiveComponent* OtherB = Other.BodyB.Get();
+				if (!Other.bContracting || !Other.Guide.bValid || !IsValid(OtherA) || !IsValid(OtherB)
+					|| OtherA == OtherB || !OtherA->IsSimulatingPhysics() || !OtherB->IsSimulatingPhysics()
+					|| Other.GuideBody.Get() != Drive.GuideBody.Get()
+					|| !AssemblyMuscleRouting::IsGuideConnected(Other.Guide, ActiveSnapshot.Joints)
+					|| !HasGuideConstraint(Other.Guide.ConnectionA) || !HasGuideConstraint(Other.Guide.ConnectionB))
+				{
+					continue;
+				}
+				const bool bSameOrder = OtherA == BodyA && OtherB == BodyB;
+				const bool bReverseOrder = OtherA == BodyB && OtherB == BodyA;
+				const double OtherSign = bReverseOrder ? -Other.Guide.Sign : Other.Guide.Sign;
+				if ((bSameOrder || bReverseOrder) && Drive.Guide.Sign * OtherSign < 0.0)
+				{
+					// Reciprocal inhibition lets an actively pulled limb move while its
+					// opposing muscle retains a small amount of passive support.
+					Drive.PassiveScale = 0.2;
+					break;
+				}
+			}
+		}
+		AssemblyMuscleRouting::FPath Path;
+		UPrimitiveComponent* GuideBody = Drive.GuideBody.Get();
+		const bool bRouted = Drive.Guide.bValid && IsValid(GuideBody)
+			&& AssemblyMuscleRouting::Evaluate(Drive.Guide, PointA, PointB,
+				GuideBody->GetComponentTransform(), Drive.RouteState, Path);
+		if (!bRouted && !AssemblyMuscleRouting::MakeDirect(PointA, PointB, Path))
+		{
+			// Preserve passive recovery at coincident anchors, as in the direct drive.
+			Path.Length = DirectLength;
+			Path.PullA = Direction;
+			Path.PullB = -Direction;
+			Path.TouchA = PointA;
+			Path.TouchB = PointB;
+			Path.bWrapped = false;
+		}
+		Drive.PullA = Path.PullA;
+		Drive.PullB = Path.PullB;
+		Drive.TouchA = Path.TouchA;
+		Drive.TouchB = Path.TouchB;
+		Drive.bWrapped = Path.bWrapped;
+		const float Length = static_cast<float>(Path.Length);
 		const float DesiredLength = Drive.RestLength * (Drive.bContracting ? 1.0f - DriveProfile->MuscleContractionRatio : 1.0f);
 		const float Blend = DriveProfile->MuscleTransitionTime <= UE_SMALL_NUMBER ? 1.0f
 			: 1.0f - FMath::Exp(-FMath::Max(0.0f, DeltaSeconds) / DriveProfile->MuscleTransitionTime);
 		Drive.TargetLength = FMath::Lerp(Drive.TargetLength, DesiredLength, Blend);
-		const float RelativeSpeed = FVector::DotProduct(
-			BodyB->GetPhysicsLinearVelocityAtPoint(PointB) - BodyA->GetPhysicsLinearVelocityAtPoint(PointA), Direction);
-		const FVector ForceOnB = Direction * ComputeMuscleForceOnB(Drive, Length, RelativeSpeed, DeltaSeconds);
-		BodyA->AddForceAtLocation(-ForceOnB, PointA);
-		BodyB->AddForceAtLocation(ForceOnB, PointB);
+		if (Drive.bWrapped && IsValid(GuideBody))
+		{
+			const double RelativeSpeed = -FVector::DotProduct(
+				BodyA->GetPhysicsLinearVelocityAtPoint(PointA) - GuideBody->GetPhysicsLinearVelocityAtPoint(Path.TouchA), Path.PullA)
+				- FVector::DotProduct(
+					BodyB->GetPhysicsLinearVelocityAtPoint(PointB) - GuideBody->GetPhysicsLinearVelocityAtPoint(Path.TouchB), Path.PullB);
+			const float Tension = -ComputeMuscleForceOnB(Drive, Length, static_cast<float>(RelativeSpeed), DeltaSeconds);
+			const FVector ForceA = Path.PullA * Tension;
+			const FVector ForceB = Path.PullB * Tension;
+			BodyA->AddForceAtLocation(ForceA, PointA);
+			BodyB->AddForceAtLocation(ForceB, PointB);
+			GuideBody->AddForceAtLocation(-ForceA, Path.TouchA);
+			GuideBody->AddForceAtLocation(-ForceB, Path.TouchB);
+		}
+		else
+		{
+			const float RelativeSpeed = FVector::DotProduct(
+				BodyB->GetPhysicsLinearVelocityAtPoint(PointB) - BodyA->GetPhysicsLinearVelocityAtPoint(PointA), Direction);
+			const FVector ForceOnB = Direction * ComputeMuscleForceOnB(Drive, Length, RelativeSpeed, DeltaSeconds);
+			BodyA->AddForceAtLocation(-ForceOnB, PointA);
+			BodyB->AddForceAtLocation(ForceOnB, PointB);
+		}
 	}
 	for (const FGuid& Id : FinishedDrives)
 	{

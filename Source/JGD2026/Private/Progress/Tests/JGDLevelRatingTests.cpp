@@ -46,21 +46,52 @@ bool FJGDLevelStockTest::RunTest(const FString& Parameters)
 	TArray<FAssemblyBoneDefinition> Bones = GetDefault<UAssemblyComponent>()->DefaultBones;
 	Bones.Append(GetDefault<UAssemblyComponent>()->DefaultJointParts);
 	TArray<FAssemblyMuscleDefinition> Muscles = GetDefault<UAssemblyComponent>()->DefaultMuscles;
-	AssemblyTutorial::ConfigureInventory(1, Bones, Muscles);
-	int32 BoneStock = 0, JointStock = 0, MuscleStock = 0;
-	for (const auto& Part : Bones)
+	const TArray<FAssemblyBoneDefinition> OriginalBones = Bones;
+	const TArray<FAssemblyMuscleDefinition> OriginalMuscles = Muscles;
+	AssemblyTutorial::ConfigureInventory(INDEX_NONE, Bones, Muscles);
+	for (int32 Index = 0; Index < Bones.Num(); ++Index)
+		TestEqual(TEXT("Sandbox keeps configured rigid stock"), Bones[Index].InitialQuantity, OriginalBones[Index].InitialQuantity);
+	for (int32 Index = 0; Index < Muscles.Num(); ++Index)
+		TestEqual(TEXT("Sandbox keeps configured muscle stock"), Muscles[Index].InitialQuantity, OriginalMuscles[Index].InitialQuantity);
+	for (int32 StageIndex : {1, 2})
 	{
-		if (Part.PartKind == EAssemblyRigidPartKind::Bone) BoneStock += Part.InitialQuantity;
-		else
+		AssemblyTutorial::ConfigureInventory(StageIndex, Bones, Muscles);
+		const int32 ExpectedBonesAndMuscles = StageIndex == 1 ? 8 : 12;
+		const int32 ExpectedMovableJoints = StageIndex == 1 ? 4 : 6;
+		const int32 ExpectedFixedJoints = StageIndex == 1 ? 2 : 3;
+		int32 BoneStock = 0, MuscleStock = 0, MovableTypes = 0, FixedTypes = 0;
+		bool bFoundOrdinaryBone = false;
+		for (const auto& Part : Bones)
 		{
-			JointStock += Part.InitialQuantity;
-			if (Part.InitialQuantity) TestEqual(TEXT("Only purple movable joints supplied"), Part.JointShape, EAssemblyJointPartShape::Round);
+			if (Part.PartKind == EAssemblyRigidPartKind::Bone)
+			{
+				TestEqual(TEXT("Only first ordinary bone type receives stock"), Part.InitialQuantity,
+					bFoundOrdinaryBone ? 0 : ExpectedBonesAndMuscles);
+				bFoundOrdinaryBone = true;
+				BoneStock += Part.InitialQuantity;
+			}
+			else if (Part.JointShape == EAssemblyJointPartShape::Round)
+			{
+				++MovableTypes;
+				TestEqual(TEXT("Purple joint stock follows level allowance"), Part.InitialQuantity, ExpectedMovableJoints);
+			}
+			else
+			{
+				++FixedTypes;
+				TestEqual(TEXT("Every fixed shape has usable stock"), Part.InitialQuantity, ExpectedFixedJoints);
+			}
 		}
+		for (int32 Index = 0; Index < Muscles.Num(); ++Index)
+		{
+			TestEqual(TEXT("Only first muscle type receives stock"), Muscles[Index].InitialQuantity,
+				Index == 0 ? ExpectedBonesAndMuscles : 0);
+			MuscleStock += Muscles[Index].InitialQuantity;
+		}
+		TestEqual(TEXT("Formal level supplies expected bones"), BoneStock, ExpectedBonesAndMuscles);
+		TestEqual(TEXT("Formal level supplies expected muscles"), MuscleStock, ExpectedBonesAndMuscles);
+		TestEqual(TEXT("One purple movable joint shape supplied"), MovableTypes, 1);
+		TestEqual(TEXT("All six fixed shapes supplied"), FixedTypes, 6);
 	}
-	for (const auto& Muscle : Muscles) MuscleStock += Muscle.InitialQuantity;
-	TestEqual(TEXT("Second level has four bones"), BoneStock, 4);
-	TestEqual(TEXT("Second level has two movable joints"), JointStock, 2);
-	TestEqual(TEXT("Second level has four muscles"), MuscleStock, 4);
 	AssemblyTutorial::ConfigureInventory(0, Bones, Muscles);
 	for (const auto& Part : Bones) TestEqual(TEXT("First level remains core-only"), Part.InitialQuantity, 0);
 	for (const auto& Muscle : Muscles) TestEqual(TEXT("First level has no muscle stock"), Muscle.InitialQuantity, 0);

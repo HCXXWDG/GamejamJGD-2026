@@ -1,6 +1,8 @@
 #include "Assembly/AssemblyMuscle.h"
 #include "Assembly/AssemblyComponent.h"
+#include "Assembly/AssemblyInteractionComponent.h"
 #include "AssemblyRenderLayers.h"
+#include "Components/PrimitiveComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/SplineComponent.h"
 #include "Engine/Texture2D.h"
@@ -283,13 +285,61 @@ void AAssemblyMuscle::RefreshCurve()
 	const FVector Side(-Chord.Z, 0.0, Chord.X);
 	const FVector Middle = (A + B) * 0.5
 		+ Side.GetSafeNormal() * Chord.Size() * FMath::Clamp(BendRatio, -1.0f, 1.0f);
-	const TArray<FVector> Points = { A, Middle, B };
+	TArray<FVector> Points = { A, Middle, B };
+	bool bUsesPhysicalRoute = false;
+	UAssemblyComponent* RoutingAssembly = IsMuscleInitialized() ? BoundAssembly.Get() : PreviewRoutingAssembly.Get();
+	if (RouteGuide.bValid && IsValid(RoutingAssembly))
+	{
+		// A broken connection releases its tendon route. Never pick a new side from a
+		// moving pose: the guide was chosen from the player's authored assembly.
+		if (!AssemblyMuscleRouting::IsGuideConnected(RouteGuide, RoutingAssembly->GetJoints()))
+		{
+			RouteGuide = AssemblyMuscleRouting::FGuide();
+			RouteState = AssemblyMuscleRouting::FState();
+		}
+		else
+		{
+			FTransform GuideWorld = RoutingAssembly->GetGridFrameTransform();
+			if (!RouteGuide.BoneId.IsValid())
+			{
+				const FVector2D CorePosition = RoutingAssembly->GetFreeSettings().CoreLocalPosition;
+				GuideWorld.SetTranslation(GuideWorld.TransformPosition(FVector(CorePosition.X, 0.0, CorePosition.Y)));
+				if (AActor* AssemblyOwner = RoutingAssembly->GetOwner())
+				{
+					if (const UAssemblyInteractionComponent* Interaction = AssemblyOwner->FindComponentByClass<UAssemblyInteractionComponent>())
+					{
+						if (const UPrimitiveComponent* Core = Interaction->GetCoreBody())
+						{
+							GuideWorld = Core->GetComponentTransform();
+						}
+					}
+				}
+			}
+			const bool bHasGuidePose = !RouteGuide.BoneId.IsValid()
+				|| RoutingAssembly->GetBoneWorldTransform(RouteGuide.BoneId, GuideWorld);
+			AssemblyMuscleRouting::FPath Path;
+			if (bHasGuidePose && AssemblyMuscleRouting::Evaluate(RouteGuide, A, B, GuideWorld, RouteState, Path)
+				&& Path.Points.Num() >= 2)
+			{
+				Points = MoveTemp(Path.Points);
+				bUsesPhysicalRoute = true;
+			}
+		}
+	}
 	CurveSpline->SetSplinePoints(Points, ESplineCoordinateSpace::World, false);
 	// A straight authored image needs exact arc-length slices. The curved tangent convention
 	// has nonuniform parameter speed even with zero bend, so its sampled distance table drifts.
-	const bool bStraightArtwork = bUseArtworkProportions && !CurveSliceSprites.IsEmpty() && FMath::IsNearlyZero(BendRatio);
+	const bool bStraightArtwork = bUseArtworkProportions && !CurveSliceSprites.IsEmpty()
+		&& !bUsesPhysicalRoute && FMath::IsNearlyZero(BendRatio);
 	for (int32 Point = 0; Point < Points.Num(); ++Point)
 	{
+		if (bUsesPhysicalRoute)
+		{
+			// The helper samples tangent spans and the joint arc. Cubic interpolation
+			// would cut back through the joint and disagree with the force path.
+			CurveSpline->SetSplinePointType(Point, ESplinePointType::Linear, false);
+			continue;
+		}
 		const FVector Tangent = Point == 0 ? (Middle - A) * 2.0
 			: Point == 2 ? (B - Middle) * 2.0 : Chord;
 		CurveSpline->SetTangentsAtSplinePoint(Point, Tangent, Tangent, ESplineCoordinateSpace::World, false);
@@ -388,6 +438,28 @@ void AAssemblyMuscle::RefreshCurve()
 	}
 }
 
+void AAssemblyMuscle::CaptureRouteGuide(UAssemblyComponent* Assembly, const FAssemblyMuscleInstance& Data)
+{
+	RouteGuide = AssemblyMuscleRouting::FGuide();
+	RouteState = AssemblyMuscleRouting::FState();
+	if (IsValid(Assembly))
+	{
+		AssemblyMuscleRouting::BuildGuide(Data, Assembly->GetBones(), Assembly->GetBoneDefinitions(),
+			Assembly->GetJoints(), Assembly->GetFreeSettings(), RouteGuide);
+	}
+}
+
+void AAssemblyMuscle::SetPreviewRouting(UAssemblyComponent* Assembly,
+	const FAssemblyMuscleEndpoint& EndpointA, const FAssemblyMuscleEndpoint& EndpointB)
+{
+	if (IsMuscleInitialized()) { return; }
+	PreviewRoutingAssembly = Assembly;
+	FAssemblyMuscleInstance Preview;
+	Preview.EndpointA = EndpointA;
+	Preview.EndpointB = EndpointB;
+	CaptureRouteGuide(Assembly, Preview);
+}
+
 bool AAssemblyMuscle::InitializeMuscle(UAssemblyComponent* Assembly, FGuid InstanceId, FText& OutReason)
 {
 	OutReason = FText::GetEmpty();
@@ -413,6 +485,8 @@ bool AAssemblyMuscle::InitializeMuscle(UAssemblyComponent* Assembly, FGuid Insta
 	}
 	BoundAssembly = Assembly;
 	MuscleData = Data;
+	PreviewRoutingAssembly.Reset();
+	CaptureRouteGuide(Assembly, Data);
 	Assembly->OnAssemblyChanged.AddUniqueDynamic(this, &AAssemblyMuscle::HandleAssemblyChanged);
 	Assembly->OnAssemblyReset.AddUniqueDynamic(this, &AAssemblyMuscle::HandleAssemblyReset);
 	Assembly->OnMuscleDriveRequested.AddUniqueDynamic(this, &AAssemblyMuscle::HandleMuscleDriveRequested);
@@ -472,6 +546,9 @@ void AAssemblyMuscle::ClearAssemblyBinding()
 	}
 	BoundAssembly.Reset();
 	MuscleData = FAssemblyMuscleInstance();
+	PreviewRoutingAssembly.Reset();
+	RouteGuide = AssemblyMuscleRouting::FGuide();
+	RouteState = AssemblyMuscleRouting::FState();
 	bHasWorldPreview = false;
 	HideCurve();
 }
@@ -486,6 +563,10 @@ void AAssemblyMuscle::HandleAssemblyChanged()
 		return;
 	}
 	MuscleData = Current;
+	if (BoundAssembly->GetPhase() == EAssemblyPhase::Assembly)
+	{
+		CaptureRouteGuide(BoundAssembly.Get(), Current);
+	}
 	RefreshCurve();
 }
 

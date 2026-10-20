@@ -2,10 +2,88 @@
 #include "Assembly/AssemblyComponent.h"
 #include "Assembly/AssemblyInteractionComponent.h"
 #include "Assembly/AssemblyMuscle.h"
+#include "Assembly/AssemblySurfaceGeometry.h"
 #include "Engine/World.h"
 #include "PaperSprite.h"
 
 #define LOCTEXT_NAMESPACE "AssemblyWorkbenchMuscles"
+
+namespace
+{
+	// Workbench clicks choose a tendon attachment on a bone's side. The public
+	// model picker still preserves exact interior coordinates for existing data.
+	bool PickMuscleSide(UAssemblyComponent* Assembly, FVector Pointer, float SnapDistance,
+		FAssemblyMuscleEndpoint& OutEndpoint, const FAssemblyMuscleEndpoint* OtherEndpoint = nullptr)
+	{
+		if (!Assembly->FindMuscleEndpointAtWorldPosition(Pointer, OutEndpoint, SnapDistance)) { return false; }
+		FAssemblyBoneInstance Bone;
+		FAssemblyBoneDefinition Definition;
+		FTransform Pose;
+		AssemblySurfaceGeometry::FShape Shape;
+		FText Reason;
+		if (!Assembly->GetBone(OutEndpoint.BoneId, Bone) || !Assembly->GetBoneDefinition(Bone.TypeId, Definition)
+			|| !Assembly->GetBoneWorldTransform(Bone.InstanceId, Pose)
+			|| !AssemblySurfaceGeometry::BuildShape(Definition, FTransform::Identity, Shape, Reason)
+			|| Shape.Vertices.IsEmpty()) { return false; }
+
+		const FVector LocalPointer = Pose.InverseTransformPosition(Pointer);
+		double Side = LocalPointer.Z < 0.0 ? -1.0 : 1.0;
+		if (FMath::Abs(LocalPointer.Z) <= 0.01 && OtherEndpoint)
+		{
+			FVector OtherWorld;
+			if (Assembly->GetEndpointWorldPosition(*OtherEndpoint, OtherWorld))
+			{
+				const double OtherSide = Pose.InverseTransformPosition(OtherWorld).Z;
+				if (FMath::Abs(OtherSide) > 0.01) { Side = OtherSide < 0.0 ? -1.0 : 1.0; }
+				else
+				{
+					FTransform OtherPose;
+					if (Assembly->GetBoneWorldTransform(OtherEndpoint->BoneId, OtherPose))
+					{
+						const double OtherSign = OtherEndpoint->BoneLocalPoint.Y < 0.0 ? -1.0 : 1.0;
+						const FVector Normal = OtherPose.TransformVectorNoScale(FVector(0.0, 0.0, OtherSign));
+						const double AlignedSide = Pose.InverseTransformVectorNoScale(Normal).Z;
+						if (FMath::Abs(AlignedSide) > 0.01) { Side = AlignedSide < 0.0 ? -1.0 : 1.0; }
+					}
+				}
+			}
+		}
+
+		const double PickX = OutEndpoint.BoneLocalPoint.X;
+		// Intersect the actual contour rather than the sprite bounds or a nominal
+		// rectangle. At a tapered axial tip, move slightly inward to find a side.
+		for (int32 Attempt = 0; Attempt < 9; ++Attempt)
+		{
+			const double X = PickX * (1.0 - static_cast<double>(Attempt) * 0.1);
+			double ChosenY = 0.0;
+			bool bFound = false;
+			auto Consider = [&](double Y)
+			{
+				if (!bFound || Side * Y > Side * ChosenY) { ChosenY = Y; bFound = true; }
+			};
+			for (int32 Edge = 0; Edge < Shape.Vertices.Num(); ++Edge)
+			{
+				const FVector2D A = Shape.Vertices[Edge];
+				const FVector2D B = Shape.Vertices[(Edge + 1) % Shape.Vertices.Num()];
+				const double Width = B.X - A.X;
+				if (FMath::Abs(Width) <= UE_DOUBLE_SMALL_NUMBER)
+				{
+					if (FMath::Abs(X - A.X) <= AssemblySurfaceGeometry::Tolerance) { Consider(A.Y); Consider(B.Y); }
+					continue;
+				}
+				const double Alpha = (X - A.X) / Width;
+				if (Alpha >= 0.0 && Alpha <= 1.0) { Consider(FMath::Lerp(A.Y, B.Y, Alpha)); }
+			}
+			if (bFound && ChosenY * Side > AssemblySurfaceGeometry::Tolerance)
+			{
+				OutEndpoint.BoneLocalPoint = FVector2D(X, ChosenY);
+				return true;
+			}
+		}
+		OutEndpoint = FAssemblyMuscleEndpoint();
+		return false;
+	}
+}
 
 bool UAssemblyWorkbenchComponent::BeginMusclePlacement(FName TypeId, FGuid ExistingId, FText& OutReason)
 {
@@ -89,8 +167,8 @@ bool UAssemblyWorkbenchComponent::UpdateMusclePreview(FText& OutReason)
 		if (IsValid(MusclePreviewActor)) { MusclePreviewActor->SetPreviewValid(false); }
 		return false;
 	}
-	const bool bOnBone = Assembly->FindMuscleEndpointAtWorldPosition(
-		PointerWorld, CandidateEndpoint, MuscleEndpointSnapDistance);
+	const bool bOnBone = PickMuscleSide(Assembly.Get(), PointerWorld, MuscleEndpointSnapDistance,
+		CandidateEndpoint, Tool == EAssemblyWorkbenchTool::MuscleSecond ? &FirstEndpoint : nullptr);
 	if (!bOnBone) { CandidateEndpoint = FAssemblyMuscleEndpoint(); }
 	if (Tool == EAssemblyWorkbenchTool::MuscleFirst)
 	{
@@ -145,6 +223,7 @@ bool UAssemblyWorkbenchComponent::UpdateMusclePreview(FText& OutReason)
 				* FMath::Max(1.0f, MusclePreviewActor->LineWidth);
 		}
 		FText CurveReason;
+		MusclePreviewActor->SetPreviewRouting(bOnBone ? Assembly.Get() : nullptr, FirstEndpoint, CandidateEndpoint);
 		if (!MusclePreviewActor->SetPreviewEndpoints(WorldA, WorldB, CurveReason))
 		{
 			MusclePreview.bValid = false;
@@ -165,8 +244,8 @@ bool UAssemblyWorkbenchComponent::UpdateMusclePreview(FText& OutReason)
 bool UAssemblyWorkbenchComponent::CaptureFirstEndpoint(FText& OutReason)
 {
 	if (!CanEdit(OutReason)) { return Fail(OutReason, OutReason); }
-	if (!bPointerValid || !Assembly->FindMuscleEndpointAtWorldPosition(
-		PointerWorld, FirstEndpoint, MuscleEndpointSnapDistance))
+	if (!bPointerValid || !PickMuscleSide(Assembly.Get(), PointerWorld,
+		MuscleEndpointSnapDistance, FirstEndpoint))
 	{
 		FirstEndpoint = FAssemblyMuscleEndpoint();
 		return Fail(LOCTEXT("CannotCaptureFirst", "请在骨头上点击第一连接点，核心和关节组件不能连接肌肉。"), OutReason);

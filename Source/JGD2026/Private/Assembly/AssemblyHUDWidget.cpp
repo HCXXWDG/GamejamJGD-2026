@@ -705,7 +705,7 @@ FText UAssemblyHUDWidget::GetDefaultMessage() const
 	if (AssemblyTutorial::Stage(this) == 0)
 		return Text(TEXT("第一关：从核心开始。点击“开始操控”，再按住 Space 向前滚动。"));
 	if (AssemblyTutorial::Stage(this) == 1)
-		return Text(TEXT("第二关：四块骨头、两个活动关节、四块肌肉。骨头通过核心或关节连接；先选择 W/A/S/D，再拖动肌肉。"));
+		return Text(TEXT("第二关：八块骨头、八块肌肉、四个活动关节，各种固定关节各两个。骨头通过核心或关节连接；先选择 W/A/S/D，再拖动肌肉。"));
 	return Text(TEXT("将组件从组件栏拖到场景中。仅肌肉需要先选择 WASD；结构连通后点击“开始操控”。"));
 }
 

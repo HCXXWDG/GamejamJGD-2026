@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "Assembly/AssemblyPhysicsLifecycle.h"
+#include "Assembly/AssemblyMuscleRouting.h"
 #include "MessageBus/JGDMessageBusTypes.h"
 #include "PhysicsEngine/BodyInstance.h"
 #include "JGDAssemblyPhysicsExecutorComponent.generated.h"
@@ -83,6 +84,15 @@ private:
 		float RestLength = 0.0f;
 		float TargetLength = 0.0f;
 		FVector LastDirection = FVector::ZeroVector;
+		AssemblyMuscleRouting::FGuide Guide;
+		AssemblyMuscleRouting::FState RouteState;
+		TWeakObjectPtr<UPrimitiveComponent> GuideBody;
+		FVector PullA = FVector::ZeroVector;
+		FVector PullB = FVector::ZeroVector;
+		FVector TouchA = FVector::ZeroVector;
+		FVector TouchB = FVector::ZeroVector;
+		double PassiveScale = 1.0;
+		bool bWrapped = false;
 		bool bContracting = false;
 	};
 	struct FMuscleRestState
