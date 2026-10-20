@@ -30,6 +30,8 @@ public:
 	void InitializeToolbar(UAssemblySessionComponent* InSession, UAssemblyUITheme* InTheme);
 	void SetPlaying(bool bInPlaying);
 	void ResetToolbarState();
+	void CompleteLevel();
+	UFUNCTION(BlueprintPure, Category="Assembly|UI") bool IsLevelComplete() const { return bLevelComplete; }
 	bool IsOverControls(FVector2D AbsolutePosition) const;
 	UFUNCTION(BlueprintPure, Category = "Assembly|UI")
 	bool IsSettingsOpen() const { return bSettingsOpen; }
@@ -55,6 +57,7 @@ private:
 	UPROPERTY(Transient) TObjectPtr<UAssemblyUITheme> Theme;
 	UPROPERTY(Transient) TObjectPtr<UBorder> ToolbarPanel;
 	UPROPERTY(Transient) TObjectPtr<UBorder> SettingsOverlay;
+	UPROPERTY(Transient) TObjectPtr<UBorder> CompletionOverlay;
 	UPROPERTY(Transient) TObjectPtr<UAssemblySpriteImage> PauseImage;
 	UPROPERTY(Transient) TObjectPtr<UTextBlock> PauseCaption;
 	UPROPERTY(Transient) TObjectPtr<UButton> PauseButton;
@@ -87,6 +90,7 @@ private:
 	bool bSettingsApplied = false;
 	bool bStandaloneSettings = false;
 	bool bReturningToMenu = false;
+	bool bLevelComplete = false;
 
 	void BuildUI();
 	UTextBlock* MakeText(const FText& Caption, int32 Size = 16);
@@ -107,6 +111,10 @@ private:
 	UFUNCTION() void HandleApplySettings();
 	UFUNCTION() void HandleCloseSettings();
 	UFUNCTION() void HandleReturnToMenu();
+	UFUNCTION() void HandleNextLevel();
+	UFUNCTION() void HandleCompletionMenu();
+	UFUNCTION() void HandleReplayLevel();
+	void LeaveCompletedLevel(FName Map);
 	UFUNCTION() void HandleVolumeChanged(float Value);
 	UFUNCTION() UWidget* GenerateQualityOption(FString Option);
 };

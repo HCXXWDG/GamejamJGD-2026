@@ -3,6 +3,7 @@
 #include "AssemblyFreeRules.h"
 #include "Assembly/AssemblyJointPartTypes.h"
 #include "Assembly/AssemblySurfaceGeometry.h"
+#include "AssemblyTutorial.h"
 #include "GameFramework/Actor.h"
 
 #define LOCTEXT_NAMESPACE "AssemblyComponent"
@@ -230,7 +231,9 @@ bool UAssemblyComponent::EnterAssembly(FText& OutReason)
 		{
 			TArray<FAssemblyBoneDefinition> Definitions = DefaultBones;
 			Definitions.Append(DefaultJointParts);
-			return ConfigureFreeAssembly(DefaultFreeSettings, Definitions, DefaultMuscles, OutReason);
+			TArray<FAssemblyMuscleDefinition> Muscles = DefaultMuscles;
+			AssemblyTutorial::ConfigureInventory(AssemblyTutorial::Stage(this), Definitions, Muscles);
+			return ConfigureFreeAssembly(DefaultFreeSettings, Definitions, Muscles, OutReason);
 		}
 		return ConfigureAssembly(DefaultGrid, DefaultBones, DefaultMuscles, OutReason);
 	}

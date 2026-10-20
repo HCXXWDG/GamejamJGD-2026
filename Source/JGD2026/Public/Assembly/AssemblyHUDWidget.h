@@ -123,6 +123,8 @@ private:
 	TObjectPtr<UTextBlock> SelectionCaption;
 	UPROPERTY(Transient)
 	TObjectPtr<UTextBlock> StatusCaption;
+	UPROPERTY(Transient) TObjectPtr<UBorder> BindingPrompt;
+	UPROPERTY(Transient) TObjectPtr<UWidget> BindingControls;
 	UPROPERTY(Transient)
 	TObjectPtr<USpinBox> MinAngle;
 	UPROPERTY(Transient)
@@ -170,4 +172,7 @@ private:
 	void HandleChanged();
 	UFUNCTION()
 	void HandleMessage(FText Message);
+	UFUNCTION() void HandleBindingRequired();
+public:
+	void CompleteLevel();
 };

@@ -4,10 +4,12 @@
 #include "Assembly/AssemblySessionComponent.h"
 #include "Assembly/AssemblyInteractionComponent.h"
 #include "Assembly/AssemblyWorkbenchComponent.h"
+#include "Assembly/AssemblyHUDWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
 #include "Components/Border.h"
+#include "Components/BoxComponent.h"
 #include "EngineUtils.h"
 #include "GameFramework/PlayerController.h"
 #include "PaperTileMapComponent.h"
@@ -57,8 +59,45 @@ void UAssemblyPlayerExperienceComponent::TickComponent(float DeltaTime, ELevelTi
 	UPrimitiveComponent* Core = Interaction ? Interaction->GetCoreBody() : nullptr;
 	APlayerController* PC = Active ? Active->GetPlayerController() : nullptr;
 	if (!Model || !Core || !PC || !PC->IsLocalController()) return;
+	if (!bGoalsCaptured)
+	{
+		// Resolve after the pawn has begun play; the goal Blueprint itself references
+		// BP_Player, so loading it inside a native CDO constructor creates a cycle.
+		DestinationClass = LoadClass<AActor>(nullptr, TEXT("/Game/Module/Grid/Blueprints/Destination/BP_Destination.BP_Destination_C"));
+		bGoalsCaptured = true;
+		for (TActorIterator<AActor> It(GetWorld(), DestinationClass); It; ++It)
+			for (UBoxComponent* Box : TInlineComponentArray<UBoxComponent*>(*It))
+				if (Box && Box->GetFName() == TEXT("Box"))
+				{
+					Goals.Add(Box);
+					GoalOverlapEnabled.Add(Box->GetGenerateOverlapEvents());
+					// The legacy Blueprint immediately opens the next map. This session now
+					// detects the real core and presents a paused completion screen first.
+					Box->SetGenerateOverlapEvents(false);
+				}
+	}
 	const UAssemblyExperienceSettings* Settings = GetDefault<UAssemblyExperienceSettings>();
 	const bool bPlaying = Model->GetPhase() == EAssemblyPhase::Playing;
+	if (bPlaying && !FadeState)
+	{
+		const FVector Position = Core->GetComponentLocation();
+		const double Radius = Model->GetFreeSettings().CoreRadius;
+		for (const TWeakObjectPtr<UBoxComponent>& Goal : Goals)
+		{
+			if (!Goal.IsValid()) continue;
+			const FBox Bounds = Goal->Bounds.GetBox();
+			const double DX = FMath::Max(FMath::Max(Bounds.Min.X - Position.X, Position.X - Bounds.Max.X), 0.0);
+			const double DZ = FMath::Max(FMath::Max(Bounds.Min.Z - Position.Z, Position.Z - Bounds.Max.Z), 0.0);
+			if (DX * DX + DZ * DZ <= Radius * Radius)
+			{
+				Active->ClearHeldInput();
+				Core->SetPhysicsLinearVelocity(FVector::ZeroVector);
+				Core->SetPhysicsAngularVelocityInRadians(FVector::ZeroVector);
+				if (UAssemblyHUDWidget* HUD = Active->GetHUD()) HUD->CompleteLevel();
+				return;
+			}
+		}
+	}
 	if (!bCameraReady)
 	{
 		PreviousView = PC->GetViewTarget();
@@ -119,6 +158,8 @@ void UAssemblyPlayerExperienceComponent::TickComponent(float DeltaTime, ELevelTi
 
 void UAssemblyPlayerExperienceComponent::EndPlay(const EEndPlayReason::Type Reason)
 {
+	for (int32 Index = 0; Index < Goals.Num(); ++Index)
+		if (Goals[Index].IsValid()) Goals[Index]->SetGenerateOverlapEvents(GoalOverlapEnabled[Index]);
 	if (FadeWidget) FadeWidget->RemoveFromParent();
 	if (Session.IsValid())
 		if (APlayerController* PC = Session->GetPlayerController())

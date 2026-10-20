@@ -13,6 +13,7 @@ class UPaperSprite;
 class UAssemblySpriteImage;
 class UAssemblyPlayingToolbarWidget;
 class UMenuPlaygroundWidget;
+class UTextBlock;
 
 UENUM(BlueprintType)
 enum class EMenuPieceCollision : uint8 { Box, Circle };
@@ -72,10 +73,13 @@ public:
 protected:
 	virtual void NativeOnInitialized() override;
 	virtual void NativeTick(const FGeometry&, float DeltaTime) override;
+	virtual int32 NativePaint(const FPaintArgs&, const FGeometry&, const FSlateRect&,
+		FSlateWindowElementList&, int32 LayerId, const FWidgetStyle&, bool bParentEnabled) const override;
 	virtual void NativeDestruct() override;
 private:
 	UPROPERTY(Transient) TWeakObjectPtr<UUserWidget> Menu;
 	UPROPERTY(Transient) TObjectPtr<UCanvasPanel> Canvas;
+	UPROPERTY(Transient) TObjectPtr<UTextBlock> GuideCaption;
 	UPROPERTY(Transient) TObjectPtr<UPrimitiveComponent> DraggedBody;
 	UPROPERTY(Transient) TObjectPtr<UPhysicsHandleComponent> GrabHandle;
 	UPROPERTY(Transient) TObjectPtr<UAssemblyPlayingToolbarWidget> SettingsWidget;
@@ -93,6 +97,7 @@ private:
 	FVector ThrowVelocity = FVector::ZeroVector;
 	double LastPointerTime = 0;
 	float TransitionTime = 0;
+	float GuideTime = 0;
 	uint8 TransitionStage = 0;
 	bool bToSelector = true;
 	bool bBuilt = false;

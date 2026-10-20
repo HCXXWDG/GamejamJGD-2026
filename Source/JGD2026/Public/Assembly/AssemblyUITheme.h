@@ -57,9 +57,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|UI|Text")
 	TObjectPtr<UFont> TextFont;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|UI|Text")
-	FLinearColor TextColor = FLinearColor(0.19f, 0.18f, 0.11f, 1.0f);
+	FLinearColor TextColor = FLinearColor(FColor(35, 29, 18));
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|UI|Text")
-	FLinearColor MutedTextColor = FLinearColor(0.36f, 0.34f, 0.25f, 1.0f);
+	FLinearColor MutedTextColor = FLinearColor(FColor(72, 61, 41));
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|UI|Selection")
 	FLinearColor SelectedTint = FLinearColor(0.76f, 0.90f, 0.40f, 1.0f);
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Assembly|UI|Text", meta = (ClampMin = "10", ClampMax = "32"))

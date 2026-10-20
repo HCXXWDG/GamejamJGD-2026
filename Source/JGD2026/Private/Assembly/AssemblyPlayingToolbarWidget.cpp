@@ -87,7 +87,6 @@ UButton* UAssemblyPlayingToolbarWidget::MakeArtButton(const FText& Caption, UPap
 {
 	UButton* Button = WidgetTree->ConstructWidget<UAssemblyPointerButton>();
 	Button->SetStyle(TransparentButton());
-	Button->SetToolTipText(Caption);
 	UVerticalBox* Contents = WidgetTree->ConstructWidget<UVerticalBox>();
 	Contents->SetVisibility(ESlateVisibility::HitTestInvisible);
 	UAssemblySpriteImage* Icon = WidgetTree->ConstructWidget<UAssemblySpriteImage>();
@@ -142,7 +141,6 @@ void UAssemblyPlayingToolbarWidget::BuildUI()
 	PauseButton->OnClicked.AddDynamic(this, &ThisClass::HandlePause);
 	UButton* Restart = MakeArtButton(Label(TEXT("重置")), Theme ? Theme->RestartIconSprite.Get() : nullptr);
 	RestartButton = Restart;
-	Restart->SetToolTipText(Label(TEXT("保留当前装配，回到出生点重新组装")));
 	Restart->OnClicked.AddDynamic(this, &ThisClass::HandleRestart);
 	for (UButton* Button : {Settings, PauseButton.Get(), Restart})
 	{
@@ -252,7 +250,6 @@ void UAssemblyPlayingToolbarWidget::BuildUI()
 		SettingActions->AddChildToHorizontalBox(Button)->SetPadding(FMargin(8, 0));
 	SettingsContents->AddChildToVerticalBox(SettingActions)->SetHorizontalAlignment(HAlign_Center);
 	MainMenuButton = MakeTextButton(Label(TEXT("返回主菜单")));
-	MainMenuButton->SetToolTipText(Label(TEXT("离开当前关卡；当前组装和关卡进度不会保留")));
 	MainMenuButton->OnClicked.AddDynamic(this, &ThisClass::HandleReturnToMenu);
 	UVerticalBoxSlot* MenuSlot = SettingsContents->AddChildToVerticalBox(MainMenuButton);
 	MenuSlot->SetHorizontalAlignment(HAlign_Center);
@@ -264,6 +261,33 @@ void UAssemblyPlayingToolbarWidget::BuildUI()
 	UOverlaySlot* SettingsSlot = Root->AddChildToOverlay(SettingsOverlay);
 	SettingsSlot->SetHorizontalAlignment(HAlign_Fill);
 	SettingsSlot->SetVerticalAlignment(VAlign_Fill);
+	CompletionOverlay = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("LevelCompleteOverlay"));
+	CompletionOverlay->SetBrushColor(FLinearColor(0, 0, 0, .55f));
+	CompletionOverlay->SetHorizontalAlignment(HAlign_Center);
+	CompletionOverlay->SetVerticalAlignment(VAlign_Center);
+	UBorder* CompletionPaper = WidgetTree->ConstructWidget<UBorder>();
+	if (Theme) CompletionPaper->SetBrush(Theme->MakeBrush(Theme->SettingsPanelSprite, FVector2D(560, 320)));
+	CompletionPaper->SetBrushColor(Theme ? FLinearColor::White : FLinearColor(.92f, .88f, .72f));
+	CompletionPaper->SetPadding(FMargin(48));
+	UVerticalBox* CompletionContents = WidgetTree->ConstructWidget<UVerticalBox>();
+	UTextBlock* Success = MakeText(Label(TEXT("抵达终点！")), 32);
+	Success->SetJustification(ETextJustify::Center);
+	CompletionContents->AddChildToVerticalBox(Success)->SetPadding(FMargin(0, 0, 0, 24));
+	const bool bLastLevel = UGameplayStatics::GetCurrentLevelName(this, true) == TEXT("Level_2");
+	UButton* Next = MakeTextButton(Label(bLastLevel ? TEXT("完成旅程") : TEXT("下一关")));
+	Next->OnClicked.AddDynamic(this, &ThisClass::HandleNextLevel);
+	UButton* Replay = MakeTextButton(Label(TEXT("重新挑战")));
+	Replay->OnClicked.AddDynamic(this, &ThisClass::HandleReplayLevel);
+	UButton* Menu = MakeTextButton(Label(TEXT("返回主菜单")));
+	Menu->OnClicked.AddDynamic(this, &ThisClass::HandleCompletionMenu);
+	for (UButton* Button : {Next, Replay, Menu})
+		CompletionContents->AddChildToVerticalBox(Button)->SetPadding(FMargin(12, 6));
+	CompletionPaper->SetContent(CompletionContents);
+	CompletionOverlay->SetContent(CompletionPaper);
+	CompletionOverlay->SetVisibility(ESlateVisibility::Collapsed);
+	UOverlaySlot* CompletionSlot = Root->AddChildToOverlay(CompletionOverlay);
+	CompletionSlot->SetHorizontalAlignment(HAlign_Fill);
+	CompletionSlot->SetVerticalAlignment(VAlign_Fill);
 	bBuilt = true;
 	SetVisibility(Session.IsValid() ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
 }
@@ -285,6 +309,8 @@ void UAssemblyPlayingToolbarWidget::SetPlaying(bool bInPlaying)
 
 void UAssemblyPlayingToolbarWidget::ResetToolbarState()
 {
+	bLevelComplete = false;
+	if (CompletionOverlay) CompletionOverlay->SetVisibility(ESlateVisibility::Collapsed);
 	if (bSettingsOpen) CloseSettings(false);
 	bSettingsOpen = false;
 	bManualPaused = false;
@@ -298,11 +324,11 @@ void UAssemblyPlayingToolbarWidget::ResetToolbarState()
 	if (SettingsOverlay) SettingsOverlay->SetVisibility(ESlateVisibility::Collapsed);
 }
 
-bool UAssemblyPlayingToolbarWidget::CanReleasePause() { return !bManualPaused && !bSettingsOpen; }
+bool UAssemblyPlayingToolbarWidget::CanReleasePause() { return !bManualPaused && !bSettingsOpen && !bLevelComplete; }
 
 bool UAssemblyPlayingToolbarWidget::UpdatePauseState()
 {
-	const bool bWantPause = bManualPaused || bSettingsOpen;
+	const bool bWantPause = bManualPaused || bSettingsOpen || bLevelComplete;
 	UWorld* World = GetWorld();
 	if (!World) return false;
 	if (!bWantPause)
@@ -322,7 +348,7 @@ bool UAssemblyPlayingToolbarWidget::UpdatePauseState()
 	// Input-release listeners may synchronously shut down or replace the Session.
 	// Never acquire an invisible pause lease after that callback detached this HUD.
 	if ((!bStandaloneSettings && (!Active || Session.Get() != Active || Active->GetAssemblyComponent() != Model
-		|| Model->GetPhase() != ExpectedPhase)) || (!bManualPaused && !bSettingsOpen)) return false;
+		|| Model->GetPhase() != ExpectedPhase)) || (!bManualPaused && !bSettingsOpen && !bLevelComplete)) return false;
 	// A pre-existing external pause is left untouched. Tick can acquire our own lease
 	// later if that owner releases its pause while this modal is still open.
 	if (bOwnPauseLease || World->IsPaused()) return true;
@@ -348,13 +374,12 @@ void UAssemblyPlayingToolbarWidget::RefreshPauseButton()
 	const bool bPaused = bManualPaused || (GetWorld() && GetWorld()->IsPaused());
 	const FText Caption = Label(bPaused ? TEXT("继续") : TEXT("暂停"));
 	if (PauseCaption) PauseCaption->SetText(Caption);
-	if (PauseButton) PauseButton->SetToolTipText(Caption);
 	if (PauseImage && Theme) PauseImage->SetSprite(bPaused ? Theme->ResumeIconSprite.Get() : Theme->PauseIconSprite.Get());
 }
 
 void UAssemblyPlayingToolbarWidget::HandlePause()
 {
-	if (!bPlaying || bSettingsOpen) return;
+	if (!bPlaying || bSettingsOpen || bLevelComplete) return;
 	UJGDInputFeedbackLibrary::PlayInputPress(this);
 	bManualPaused = !bManualPaused;
 	if (!UpdatePauseState())
@@ -496,6 +521,49 @@ void UAssemblyPlayingToolbarWidget::HandleRestart()
 	else Report(Reason);
 }
 
+void UAssemblyPlayingToolbarWidget::CompleteLevel()
+{
+	if (bLevelComplete || !bPlaying || !Session.IsValid()) return;
+	if (bSettingsOpen) CloseSettings(false);
+	bLevelComplete = true;
+	Session->ClearHeldInput();
+	RouteProgress = 1;
+	if (RouteCaption) RouteCaption->SetText(Label(TEXT("已抵达终点")));
+	if (CompletionOverlay) CompletionOverlay->SetVisibility(ESlateVisibility::Visible);
+	UpdatePauseState();
+}
+
+void UAssemblyPlayingToolbarWidget::LeaveCompletedLevel(FName Map)
+{
+	if (!bLevelComplete || bReturningToMenu) return;
+	bReturningToMenu = true;
+	UWorld* World = GetWorld();
+	UAssemblySessionComponent* Active = Session.Get();
+	UJGDInputFeedbackLibrary::PlayInputPress(this);
+	ResetToolbarState();
+	if (Active) Active->ShutdownSession();
+	UGameplayStatics::OpenLevel(World, Map);
+}
+
+void UAssemblyPlayingToolbarWidget::HandleNextLevel()
+{
+	const FString Current = UGameplayStatics::GetCurrentLevelName(this, true);
+	LeaveCompletedLevel(Current == TEXT("Level_0") ? FName(TEXT("/Game/Maps/Levels/Level_1"))
+		: Current == TEXT("Level_1") ? FName(TEXT("/Game/Maps/Levels/Level_2")) : FName(TEXT("/Game/Maps/Menu")));
+}
+
+void UAssemblyPlayingToolbarWidget::HandleCompletionMenu() { LeaveCompletedLevel(FName(TEXT("/Game/Maps/Menu"))); }
+
+void UAssemblyPlayingToolbarWidget::HandleReplayLevel()
+{
+	if (!bLevelComplete || !Session.IsValid()) return;
+	UJGDInputFeedbackLibrary::PlayInputPress(this);
+	UAssemblySessionComponent* Active = Session.Get();
+	ResetToolbarState();
+	FText Reason;
+	if (!Active->RestartSession(Reason)) Report(Reason);
+}
+
 void UAssemblyPlayingToolbarWidget::Report(const FText& Message)
 {
 	if (UAssemblySessionComponent* Active = Session.Get()) Active->ShowMessage(Message);
@@ -569,7 +637,7 @@ void UAssemblyPlayingToolbarWidget::NativeTick(const FGeometry& Geometry, float 
 		return;
 	}
 	if (bPlaying && Active->GetAssemblyComponent()->GetPhase() != EAssemblyPhase::Playing) SetPlaying(false);
-	if ((bSettingsOpen || bManualPaused) && GetWorld() && !GetWorld()->IsPaused()) UpdatePauseState();
+	if ((bSettingsOpen || bManualPaused || bLevelComplete) && GetWorld() && !GetWorld()->IsPaused()) UpdatePauseState();
 	RouteRefreshTime += DeltaTime;
 	if (bPlaying && RouteRefreshTime >= 0.10f)
 	{
@@ -581,7 +649,7 @@ void UAssemblyPlayingToolbarWidget::NativeTick(const FGeometry& Geometry, float 
 
 bool UAssemblyPlayingToolbarWidget::IsOverControls(FVector2D Position) const
 {
-	return bSettingsOpen || (Session.IsValid() && ToolbarPanel && ToolbarPanel->GetCachedGeometry().IsUnderLocation(Position));
+	return bLevelComplete || bSettingsOpen || (Session.IsValid() && ToolbarPanel && ToolbarPanel->GetCachedGeometry().IsUnderLocation(Position));
 }
 
 FReply UAssemblyPlayingToolbarWidget::NativeOnMouseButtonDown(const FGeometry& Geometry, const FPointerEvent& MouseEvent)

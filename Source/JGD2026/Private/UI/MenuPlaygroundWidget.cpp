@@ -2,6 +2,7 @@
 #include "Audio/JGDInputFeedbackLibrary.h"
 #include "Assembly/AssemblyPlayingToolbarWidget.h"
 #include "Assembly/AssemblySpriteImage.h"
+#include "Assembly/AssemblyUITheme.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/BoxComponent.h"
 #include "Components/Button.h"
@@ -9,6 +10,8 @@
 #include "Components/CanvasPanelSlot.h"
 #include "Components/PanelWidget.h"
 #include "Components/SphereComponent.h"
+#include "Components/TextBlock.h"
+#include "Rendering/DrawElements.h"
 #include "GameFramework/PlayerController.h"
 #include "Kismet/GameplayStatics.h"
 #include "PaperSprite.h"
@@ -76,7 +79,6 @@ void UMenuPhysicsPieceWidget::InitializePiece(UMenuPlaygroundWidget* Owner, int3
 {
 	Playground = Owner; PieceIndex = Index;
 	Image->SetSprite(Sprite); Image->SetDesiredSize(Size);
-	SetToolTipText(FText::Format(NSLOCTEXT("MenuPlayground", "PieceHint", "{0}：点一下散架，按住拖动，松手保留惯性"), Label));
 }
 
 FReply UMenuPhysicsPieceWidget::NativeOnMouseButtonDown(const FGeometry& Geometry, const FPointerEvent& Event)
@@ -139,6 +141,16 @@ void UMenuPlaygroundWidget::NativeOnInitialized()
 	Canvas=WidgetTree->ConstructWidget<UCanvasPanel>();
 	Canvas->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
 	WidgetTree->RootWidget=Canvas;
+	GuideCaption=WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("MenuComponentGuide"));
+	GuideCaption->SetText(FText::FromString(TEXT("试着拖动这些组件")));
+	GuideCaption->SetVisibility(ESlateVisibility::HitTestInvisible);
+	GuideCaption->SetColorAndOpacity(FSlateColor(FLinearColor(FColor(244, 230, 166))));
+	GuideCaption->SetShadowColorAndOpacity(FLinearColor(.02f,.015f,.006f,.9f));
+	GuideCaption->SetShadowOffset(FVector2D(1,2));
+	FSlateFontInfo Font=GuideCaption->GetFont(); Font.Size=22;
+	if (UAssemblyUITheme* Theme=UAssemblyUITheme::LoadDefault()) Font=Theme->ApplyFont(Font);
+	GuideCaption->SetFont(Font);
+	Canvas->AddChildToCanvas(GuideCaption)->SetAutoSize(true);
 	SetVisibility(ESlateVisibility::SelfHitTestInvisible);
 }
 
@@ -257,7 +269,11 @@ void UMenuPlaygroundWidget::ClearPieces()
 	EndPieceDrag(false);
 	// A user widget can be removed and re-added without being garbage-collected.
 	// Its old presentation children must leave with their physics bodies.
-	if (Canvas) Canvas->ClearChildren();
+	if (Canvas)
+	{
+		Canvas->ClearChildren();
+		if (GuideCaption) Canvas->AddChildToCanvas(GuideCaption)->SetAutoSize(true);
+	}
 	for (AActor* Actor:Actors) if (IsValid(Actor)) Actor->Destroy();
 	Actors.Reset(); Bodies.Reset(); Pieces.Reset(); Obstacles.Reset(); PieceSizes.Reset(); PieceScatterImpulses.Reset();
 	GrabHandle=nullptr; BuiltViewSize=FVector2D::ZeroVector;
@@ -485,6 +501,19 @@ void UMenuPlaygroundWidget::NativeTick(const FGeometry& Geometry,float DeltaTime
 {
 	Super::NativeTick(Geometry,DeltaTime);
 	TickGeometry=Geometry;
+	GuideTime+=DeltaTime;
+	if (GuideCaption)
+	{
+		const bool bShow=!bScattered && TransitionStage==0 && (!SelectorPanel.IsValid() || !SelectorPanel->IsVisible())
+			&& !Bodies.IsEmpty() && (!SettingsWidget || !SettingsWidget->IsSettingsOpen());
+		GuideCaption->SetVisibility(bShow ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+		if (bShow)
+		{
+			const FVector P=Bodies[0]->GetComponentLocation();
+			const double Y=-P.Z-PieceSizes[0].Y*.5-140+FMath::Sin(GuideTime*2.5f)*6;
+			CastChecked<UCanvasPanelSlot>(GuideCaption->Slot)->SetPosition(FVector2D(P.X+30,FMath::Max(30.0,Y)));
+		}
+	}
 	const FVector2D Size=Geometry.GetLocalSize();
 	if (Size.X>100 && Size.Y>100)
 	{
@@ -509,6 +538,35 @@ void UMenuPlaygroundWidget::NativeTick(const FGeometry& Geometry,float DeltaTime
 			Pieces[Index]->SetRenderTransformAngle(FMath::RadiansToDegrees(FMath::Atan2(-Axis.Z,Axis.X)));
 		}
 	}
+}
+int32 UMenuPlaygroundWidget::NativePaint(const FPaintArgs& Args, const FGeometry& Geometry,
+	const FSlateRect& Culling, FSlateWindowElementList& Elements, int32 LayerId,
+	const FWidgetStyle& Style, bool bEnabled) const
+{
+	const int32 Base=Super::NativePaint(Args,Geometry,Culling,Elements,LayerId,Style,bEnabled);
+	if (!GuideCaption || GuideCaption->GetVisibility()!=ESlateVisibility::HitTestInvisible || Bodies.IsEmpty()) return Base;
+	const FVector P=Bodies[0]->GetComponentLocation();
+	const float Bob=FMath::Sin(GuideTime*2.5f)*6;
+	const FVector2f End(P.X,-P.Z-PieceSizes[0].Y*.5-12+Bob);
+	const FVector2f Start=End+FVector2f(110,-98);
+	const FVector2f Control=End+FVector2f(-15,-110);
+	TArray<FVector2f> Points;
+	for (int32 I=0;I<=24;++I)
+	{
+		const float T=I/24.f;
+		Points.Add((1-T)*(1-T)*Start+2*(1-T)*T*Control+T*T*End);
+	}
+	const FVector2f Direction=(End-Control).GetSafeNormal();
+	const FVector2f Perp(-Direction.Y,Direction.X);
+	TArray<FVector2f> Head {End-Direction*20+Perp*12,End,End-Direction*20-Perp*12};
+	for (const TArray<FVector2f>* Line : {&Points,&Head})
+	{
+		FSlateDrawElement::MakeLines(Elements,Base+1,Geometry.ToPaintGeometry(),*Line,ESlateDrawEffect::None,
+			FLinearColor(FColor(91,79,38)),true,9);
+		FSlateDrawElement::MakeLines(Elements,Base+2,Geometry.ToPaintGeometry(),*Line,ESlateDrawEffect::None,
+			FLinearColor(FColor(244,230,166)),true,4);
+	}
+	return Base+2;
 }
 void UMenuPlaygroundWidget::NativeDestruct()
 {

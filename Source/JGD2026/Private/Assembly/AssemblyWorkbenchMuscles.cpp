@@ -31,6 +31,7 @@ bool UAssemblyWorkbenchComponent::BeginMusclePlacement(FName TypeId, FGuid Exist
 	}
 	else if (Assembly->GetSelectedMuscleKey() == EAssemblyMuscleKey::None)
 	{
+		OnMuscleBindingRequired.Broadcast();
 		return Fail(LOCTEXT("ChooseBindingFirst", "请先选择 W、A、S 或 D 作为新肌肉的绑定键，再开始放置。"), OutReason);
 	}
 	if (!Presenter->MuscleActorClass || !GetWorld())

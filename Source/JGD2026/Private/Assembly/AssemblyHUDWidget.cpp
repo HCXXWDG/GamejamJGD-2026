@@ -8,6 +8,7 @@
 #include "Assembly/AssemblySpriteImage.h"
 #include "Assembly/AssemblyShelfCardWidget.h"
 #include "Assembly/AssemblyUITheme.h"
+#include "AssemblyTutorial.h"
 #include "Assembly/AssemblyWorkbenchComponent.h"
 #include "Blueprint/SlateBlueprintLibrary.h"
 #include "Blueprint/WidgetTree.h"
@@ -155,11 +156,13 @@ void UAssemblyHUDWidget::BindPresentation()
 	{
 		// The session coalesces workbench/model changes after model notifications unwind.
 		BoundWorkbench = ActiveWorkbench;
+		ActiveWorkbench->OnMuscleBindingRequired.AddUniqueDynamic(this, &ThisClass::HandleBindingRequired);
 	}
 }
 
 void UAssemblyHUDWidget::UnbindPresentation()
 {
+	if (BoundWorkbench.IsValid()) BoundWorkbench->OnMuscleBindingRequired.RemoveDynamic(this, &ThisClass::HandleBindingRequired);
 	if (UAssemblySessionComponent* ActiveSession = BoundSession.Get())
 	{
 		ActiveSession->OnSessionChanged.RemoveDynamic(this, &UAssemblyHUDWidget::HandleChanged);
@@ -206,7 +209,6 @@ UButton* UAssemblyHUDWidget::MakeButton(const FText& Value, EAssemblyHUDAction A
 		Style.SetNormal(Empty).SetHovered(Empty).SetPressed(Empty).SetDisabled(Empty);
 		Style.SetNormalPadding(FMargin(0)).SetPressedPadding(FMargin(0, 1, 0, -1));
 		Button->SetStyle(Style);
-		Button->SetToolTipText(Text(TEXT("保留当前装配，回到出生点重新组装")));
 	}
 	USizeBox* Size = WidgetTree->ConstructWidget<USizeBox>();
 	Size->SetMinDesiredWidth(bJointAction ? 256.0f : 48.0f);
@@ -282,6 +284,8 @@ void UAssemblyHUDWidget::BuildPlaceholder()
 	USizeBox* ActionSize = WidgetTree->ConstructWidget<USizeBox>();
 	ActionSize->SetWidthOverride(400);
 	UVerticalBox* ActionContents = WidgetTree->ConstructWidget<UVerticalBox>();
+	BindingControls = WidgetTree->ConstructWidget<UVerticalBox>();
+	UVerticalBox* BindingContents = CastChecked<UVerticalBox>(BindingControls);
 	ActionSize->SetContent(ActionContents);
 	AssemblyActionsPanel->SetContent(ActionSize);
 	UOverlaySlot* ActionsSlot = Root->AddChildToOverlay(AssemblyActionsPanel);
@@ -314,8 +318,9 @@ void UAssemblyHUDWidget::BuildPlaceholder()
 		UHorizontalBoxSlot* KeySlot = Keys->AddChildToHorizontalBox(Button);
 		KeySlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
 	}
-	ActionContents->AddChildToVerticalBox(MakeText(Text(TEXT("肌肉绑定键"))))->SetHorizontalAlignment(HAlign_Center);
-	ActionContents->AddChild(Keys);
+	BindingContents->AddChildToVerticalBox(MakeText(Text(TEXT("放肌肉前，先选择绑定键"))))->SetHorizontalAlignment(HAlign_Center);
+	BindingContents->AddChild(Keys);
+	ActionContents->AddChild(BindingControls);
 	ActionContents->AddChildToVerticalBox(SessionActions)->SetPadding(FMargin(0,8,0,0));
 	UVerticalBoxSlot* ScrollSlot = EditContents->AddChildToVerticalBox(Scroll);
 	ScrollSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
@@ -450,9 +455,9 @@ void UAssemblyHUDWidget::RefreshShelf()
 	const TArray<FAssemblyMuscleDefinition> Muscles = Model->GetMuscleDefinitions();
 	for (const FAssemblyBoneDefinition& Bone : Bones)
 		Signature += (Bone.PartKind == EAssemblyRigidPartKind::JointPart ? TEXT("J:") : TEXT("B:"))
-			+ Bone.TypeId.ToString() + TEXT(":") + Bone.DisplayName.ToString() + TEXT(";");
-	for (const FAssemblyMuscleDefinition& Muscle : Muscles) Signature += TEXT("M:") + Muscle.TypeId.ToString() + TEXT(":") + Muscle.DisplayName.ToString() + TEXT(";");
-	if (Signature != ShelfSignature || Cards.Num() != Bones.Num() + Muscles.Num())
+			+ Bone.TypeId.ToString() + TEXT(":") + Bone.DisplayName.ToString() + FString::FromInt(Bone.InitialQuantity) + TEXT(";");
+	for (const FAssemblyMuscleDefinition& Muscle : Muscles) Signature += TEXT("M:") + Muscle.TypeId.ToString() + TEXT(":") + Muscle.DisplayName.ToString() + FString::FromInt(Muscle.InitialQuantity) + TEXT(";");
+	if (Signature != ShelfSignature)
 	{
 		ShelfSignature = Signature;
 		Shelf->ClearChildren();
@@ -467,10 +472,10 @@ void UAssemblyHUDWidget::RefreshShelf()
 			Cards.Add(Card);
 		};
 		for (const FAssemblyBoneDefinition& Bone : Bones)
-			if (Bone.PartKind == EAssemblyRigidPartKind::Bone) AddCard(Bone.TypeId, Bone.DisplayName, EAssemblyShelfPartKind::Bone);
-		for (const FAssemblyMuscleDefinition& Muscle : Muscles) AddCard(Muscle.TypeId, Muscle.DisplayName, EAssemblyShelfPartKind::Muscle);
+			if (Bone.InitialQuantity > 0 && Bone.PartKind == EAssemblyRigidPartKind::Bone) AddCard(Bone.TypeId, Bone.DisplayName, EAssemblyShelfPartKind::Bone);
+		for (const FAssemblyMuscleDefinition& Muscle : Muscles) if (Muscle.InitialQuantity > 0) AddCard(Muscle.TypeId, Muscle.DisplayName, EAssemblyShelfPartKind::Muscle);
 		for (const FAssemblyBoneDefinition& Part : Bones)
-			if (Part.PartKind == EAssemblyRigidPartKind::JointPart) AddCard(Part.TypeId, Part.DisplayName, EAssemblyShelfPartKind::JointPart);
+			if (Part.InitialQuantity > 0 && Part.PartKind == EAssemblyRigidPartKind::JointPart) AddCard(Part.TypeId, Part.DisplayName, EAssemblyShelfPartKind::JointPart);
 	}
 	for (UAssemblyShelfCardWidget* Card : Cards) if (Card) Card->RefreshQuantity();
 }
@@ -511,6 +516,10 @@ void UAssemblyHUDWidget::RefreshPresentation()
 	if (Model)
 	{
 		const bool bAssembly = Model->GetPhase() == EAssemblyPhase::Assembly;
+		const bool bCoreOnly = AssemblyTutorial::Stage(this) == 0;
+		if (BindingControls) BindingControls->SetVisibility(bCoreOnly ? ESlateVisibility::Collapsed : ESlateVisibility::Visible);
+		if (BindingPrompt && (!bAssembly || Model->GetSelectedMuscleKey() != EAssemblyMuscleKey::None))
+			BindingPrompt->SetVisibility(ESlateVisibility::Collapsed);
 		if (PlayingToolbar)
 		{
 			PlayingToolbar->InitializeToolbar(Session.Get(), UITheme);
@@ -528,8 +537,8 @@ void UAssemblyHUDWidget::RefreshPresentation()
 		// that stale error with its own instructions; pointer-only refreshes do not.
 		if (!bShowingExplicitMessage || (bToolChanged && CurrentTool != EAssemblyWorkbenchTool::None) || bPhaseChanged)
 			HandleMessage(FText::GetEmpty());
-		if (EditPanel) EditPanel->SetVisibility(bAssembly ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
-		if (InspectorPanel) InspectorPanel->SetVisibility(bAssembly ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+		if (EditPanel) EditPanel->SetVisibility(bAssembly && !bCoreOnly ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+		if (InspectorPanel) InspectorPanel->SetVisibility(bAssembly && !bCoreOnly ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
 		if (AssemblyActionsPanel) AssemblyActionsPanel->SetVisibility(bAssembly ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
 		const bool bHasBreakableJoint = Model->GetJoints().ContainsByPredicate([](const FAssemblyJointInstance& Joint)
 		{
@@ -618,6 +627,45 @@ void UAssemblyHUDWidget::RefreshPresentation()
 
 void UAssemblyHUDWidget::HandleChanged() { RefreshPresentation(); }
 
+void UAssemblyHUDWidget::CompleteLevel()
+{
+	if (PlayingToolbar) PlayingToolbar->CompleteLevel();
+}
+
+void UAssemblyHUDWidget::HandleBindingRequired()
+{
+	if (!BindingPrompt)
+	{
+		UOverlay* Root = Cast<UOverlay>(GetRootWidget());
+		if (!Root) return;
+		BindingPrompt = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("MuscleBindingPrompt"));
+		BindingPrompt->SetBrushColor(FLinearColor(0, 0, 0, .45f));
+		BindingPrompt->SetHorizontalAlignment(HAlign_Center);
+		BindingPrompt->SetVerticalAlignment(VAlign_Center);
+		UBorder* Paper = WidgetTree->ConstructWidget<UBorder>();
+		if (UITheme) Paper->SetBrush(UITheme->MakeBrush(UITheme->StatusSprite, FVector2D(520, 220)));
+		Paper->SetBrushColor(UITheme ? FLinearColor::White : FLinearColor(.9f, .85f, .65f));
+		Paper->SetPadding(FMargin(36));
+		UVerticalBox* Content = WidgetTree->ConstructWidget<UVerticalBox>();
+		UTextBlock* Title = MakeText(Text(TEXT("先为这块肌肉绑定一个按键")));
+		FSlateFontInfo Font = Title->GetFont(); Font.Size = 22; Title->SetFont(Font);
+		Content->AddChildToVerticalBox(Title)->SetPadding(FMargin(0, 0, 0, 12));
+		Content->AddChildToVerticalBox(MakeText(Text(TEXT("选好后，再把肌肉拖到两块骨头之间。"))))->SetPadding(FMargin(0, 0, 0, 12));
+		UHorizontalBox* Keys = WidgetTree->ConstructWidget<UHorizontalBox>();
+		for (int32 Key = 1; Key <= 4; ++Key)
+			Keys->AddChildToHorizontalBox(MakeButton(Text(*KeyName(static_cast<EAssemblyMuscleKey>(Key))), EAssemblyHUDAction::Binding, Key))
+				->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+		Content->AddChild(Keys);
+		Content->AddChild(MakeButton(Text(TEXT("取消")), EAssemblyHUDAction::Cancel));
+		Paper->SetContent(Content);
+		BindingPrompt->SetContent(Paper);
+		UOverlaySlot* PromptSlot = Root->AddChildToOverlay(BindingPrompt);
+		PromptSlot->SetHorizontalAlignment(HAlign_Fill);
+		PromptSlot->SetVerticalAlignment(VAlign_Fill);
+	}
+	BindingPrompt->SetVisibility(ESlateVisibility::Visible);
+}
+
 void UAssemblyHUDWidget::HandleMessage(FText Message)
 {
 	bShowingExplicitMessage = !Message.IsEmpty();
@@ -647,9 +695,17 @@ FText UAssemblyHUDWidget::GetDefaultMessage() const
 		if (const UAssemblyComponent* Model = ActiveWorkbench->GetAssemblyComponent())
 		{
 			if (Model->GetPhase() == EAssemblyPhase::Playing)
+			{
+				if (AssemblyTutorial::Stage(this) == 0)
+					return Text(TEXT("按住 Space 向前滚动，松开停止施力。滚到终点即可通关！"));
 				return Text(TEXT("WASD 按住收缩，松开舒张；Space 旋转核心。右上方可暂停、设置或重置回组装。"));
+			}
 		}
 	}
+	if (AssemblyTutorial::Stage(this) == 0)
+		return Text(TEXT("第一关：从核心开始。点击“开始操控”，再按住 Space 向前滚动。"));
+	if (AssemblyTutorial::Stage(this) == 1)
+		return Text(TEXT("第二关：两块骨头、一块肌肉。把骨头接到核心上；先选择 W/A/S/D，再拖动肌肉连接两块骨头。"));
 	return Text(TEXT("将组件从组件栏拖到场景中。仅肌肉需要先选择 WASD；结构连通后点击“开始操控”。"));
 }
 
@@ -662,6 +718,8 @@ void UAssemblyHUDWidget::PresentReason(bool bSucceeded, const FText& Reason)
 
 void UAssemblyHUDWidget::ExecuteAction(EAssemblyHUDAction Action, int32 Argument, FGuid InstanceId)
 {
+	if (BindingPrompt && (Action == EAssemblyHUDAction::Cancel || Action == EAssemblyHUDAction::Binding))
+		BindingPrompt->SetVisibility(ESlateVisibility::Collapsed);
 	UAssemblySessionComponent* ActiveSession = Session.Get();
 	UAssemblyWorkbenchComponent* ActiveWorkbench = GetWorkbench();
 	if (!ActiveSession || !ActiveWorkbench) return;
@@ -697,6 +755,7 @@ FVector2D UAssemblyHUDWidget::ToViewportPixels(FVector2D AbsolutePosition) const
 
 bool UAssemblyHUDWidget::IsOverPlaceholderPanel(FVector2D AbsolutePosition) const
 {
+	if (BindingPrompt && BindingPrompt->GetVisibility() == ESlateVisibility::Visible) return true;
 	if (!bPlaceholderBuilt) return false;
 	return (PlayingToolbar && PlayingToolbar->IsOverControls(AbsolutePosition))
 		|| (EditPanel && EditPanel->GetVisibility() == ESlateVisibility::Visible && EditPanel->GetCachedGeometry().IsUnderLocation(AbsolutePosition))

@@ -39,6 +39,8 @@ public:
 	FAssemblySelectionChanged OnSelectionChanged;
 	UPROPERTY(BlueprintAssignable, Category = "Assembly|Events")
 	FAssemblyWorkbenchMessage OnMessage;
+	UPROPERTY(BlueprintAssignable, Category = "Assembly|Events")
+	FAssemblyWorkbenchChanged OnMuscleBindingRequired;
 
 	UFUNCTION(BlueprintCallable, Category = "Assembly|Workbench")
 	bool InitializeWorkbench(UAssemblyComponent* Model, UAssemblyInteractionComponent* Interaction, APlayerController* PC, FText& OutReason);

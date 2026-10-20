@@ -167,7 +167,7 @@ void UAssemblyShelfCardWidget::RefreshQuantity()
 	{
 		Caption->SetColorAndOpacity(FSlateColor(UITheme && UITheme->ButtonNormalSprite
 			? (Remaining > 0 ? UITheme->TextColor : UITheme->MutedTextColor) : FLinearColor::White));
-		FString Instruction = bMuscle ? TEXT("拖至骨头，再选第二端") : TEXT("拖到场景中摆放");
+		FString Instruction = bMuscle ? TEXT("先绑定按键，再连接骨头") : TEXT("拖到场景中摆放");
 		const UAssemblyWorkbenchComponent* ActiveWorkbench = Workbench.Get();
 		const UAssemblyComponent* Model = ActiveWorkbench ? ActiveWorkbench->GetAssemblyComponent() : nullptr;
 		FAssemblyBoneDefinition Definition;
@@ -198,6 +198,16 @@ void UAssemblyShelfCardWidget::RefreshQuantity()
 
 FReply UAssemblyShelfCardWidget::NativeOnMouseButtonDown(const FGeometry& Geometry, const FPointerEvent& MouseEvent)
 {
+	if (PartKind == EAssemblyShelfPartKind::Muscle && MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton && Workbench.IsValid())
+	{
+		UAssemblyComponent* Model = Workbench->GetAssemblyComponent();
+		if (Model && Model->GetRemainingQuantity(TypeId) > 0 && Model->GetSelectedMuscleKey() == EAssemblyMuscleKey::None)
+		{
+			FText Reason;
+			Workbench->BeginMusclePlacement(TypeId, FGuid(), Reason);
+			return FReply::Handled();
+		}
+	}
 	FReply Reply = Super::NativeOnMouseButtonDown(Geometry, MouseEvent);
 	if (Reply.IsEventHandled()) return Reply;
 	if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)

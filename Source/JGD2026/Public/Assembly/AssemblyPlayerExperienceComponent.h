@@ -7,6 +7,7 @@
 class UBorder;
 class ACameraActor;
 class UAssemblySessionComponent;
+class UBoxComponent;
 
 UCLASS()
 class JGD2026_API UAssemblyScreenFadeWidget : public UUserWidget
@@ -41,6 +42,10 @@ private:
 	UPROPERTY(Transient) TObjectPtr<UAssemblyScreenFadeWidget> FadeWidget;
 	UPROPERTY(Transient) TWeakObjectPtr<AActor> PreviousView;
 	UPROPERTY(Transient) TWeakObjectPtr<UAssemblySessionComponent> Session;
+	UPROPERTY() TSubclassOf<AActor> DestinationClass;
+	UPROPERTY(Transient) TArray<TWeakObjectPtr<UBoxComponent>> Goals;
+	TArray<bool> GoalOverlapEnabled;
+	bool bGoalsCaptured = false;
 	float FallThreshold = -1200;
 	float FadeTime = 0;
 	uint8 FadeState = 0;
